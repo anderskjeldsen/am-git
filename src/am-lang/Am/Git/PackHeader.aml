@@ -1,0 +1,35 @@
+namespace Am.Git
+{
+    // The 12-byte fixed header of a packfile: magic `PACK`, a 4-byte
+    // big-endian version (2 or 3), and a 4-byte big-endian object
+    // count. We don't yet parse the body; this just lets us sanity-
+    // check what we downloaded before we write it to disk.
+    class PackHeader(var version: UInt, var objectCount: UInt)
+    {
+        import Am.Lang
+
+        static fun parse(bytes: UByte[]): PackHeader {
+            if (bytes.length() < 12UI) {
+                throw new Exception("Packfile too short to contain a header (" + bytes.length().toString() + " bytes)")
+            }
+            // 'P' 'A' 'C' 'K' = 0x50 0x41 0x43 0x4B
+            if (bytes[0UI] != 80UB || bytes[1UI] != 65UB || bytes[2UI] != 67UB || bytes[3UI] != 75UB) {
+                throw new Exception("Not a packfile — magic bytes not 'PACK'")
+            }
+            var version = PackHeader.readBE32(bytes, 4)
+            var objectCount = PackHeader.readBE32(bytes, 8)
+            if (version != 2UI && version != 3UI) {
+                throw new Exception("Unsupported packfile version: " + version.toString())
+            }
+            return new PackHeader(version, objectCount)
+        }
+
+        private static fun readBE32(bytes: UByte[], offset: Int): UInt {
+            var b0 = bytes[offset.toUInt()].toUInt()
+            var b1 = bytes[(offset + 1).toUInt()].toUInt()
+            var b2 = bytes[(offset + 2).toUInt()].toUInt()
+            var b3 = bytes[(offset + 3).toUInt()].toUInt()
+            return ((b0 * 16777216UI) + (b1 * 65536UI) + (b2 * 256UI) + b3) as UInt
+        }
+    }
+}

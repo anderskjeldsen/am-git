@@ -1,0 +1,19 @@
+namespace Am.Git
+{
+    // Return value from `PackParser.parseAll`. Splits the entries by
+    // resolved-or-not so callers can drive step 3 (delta resolution)
+    // explicitly:
+    //
+    //   * `objects` — full commit/tree/blob/tag entries, keyed by hex
+    //     SHA-1. Ready to use.
+    //   * `deltas`  — OFS_DELTA / REF_DELTA entries whose `content`
+    //     holds the inflated delta-instruction stream and whose
+    //     `baseOffset` or `baseSha` points at the base they apply to.
+    //     Empty `sha` until resolved.
+    class PackParseResult(var objects: HashMap<String, PackObject>,
+                          var deltas: List<PackObject>)
+    {
+        import Am.Lang
+        import Am.Collections
+    }
+}

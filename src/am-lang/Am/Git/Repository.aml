@@ -1,0 +1,116 @@
+namespace Am.Git
+{
+    // Represents an on-disk git repository — specifically, the .git
+    // directory layout. We only create the bits a freshly-cloned repo
+    // needs: HEAD, refs/heads, refs/tags, objects/pack, plus a `config`
+    // file with the remote configured. No working tree checkout yet.
+    class Repository(private var workTreePath: String)
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        private var gitDirPath: String
+
+        fun getGitDir(): String {
+            return this.gitDirPath
+        }
+
+        fun getWorkTree(): String {
+            return this.workTreePath
+        }
+
+        // Build the .git skeleton on disk, with `defaultBranch` recorded
+        // in HEAD. The branch's ref file is *not* written here — that's
+        // the job of the clone code, which only knows the SHA after the
+        // ref advertisement comes back.
+        static fun init(workTreePath: String, defaultBranch: String, bare: Bool): Repository {
+            var repo = new Repository(workTreePath)
+            if (bare) {
+                repo.gitDirPath = workTreePath
+            } else {
+                repo.gitDirPath = workTreePath + "/.git"
+            }
+
+            Repository.ensureDir(workTreePath)
+            Repository.ensureDir(repo.gitDirPath)
+            Repository.ensureDir(repo.gitDirPath + "/objects/pack")
+            Repository.ensureDir(repo.gitDirPath + "/objects/info")
+            Repository.ensureDir(repo.gitDirPath + "/refs/heads")
+            Repository.ensureDir(repo.gitDirPath + "/refs/tags")
+
+            var headContent = "ref: refs/heads/" + defaultBranch + "\n"
+            headContent.writeToFile(repo.gitDirPath + "/HEAD")
+
+            return repo
+        }
+
+        // Persist a remote config — `[remote "origin"] url = <url>` plus
+        // a default fetch refspec. Mimics what `git clone` writes so
+        // subsequent `git fetch`/`git pull` from a real git binary work.
+        fun writeRemoteConfig(remoteName: String, url: String, defaultBranch: String) {
+            var sb = new StringBuilder()
+            sb.add("[core]\n")
+            sb.add("\trepositoryformatversion = 0\n")
+            sb.add("\tfilemode = true\n")
+            sb.add("\tbare = false\n")
+            sb.add("\tlogallrefupdates = true\n")
+            sb.add("[remote \"").add(remoteName).add("\"]\n")
+            sb.add("\turl = ").add(url).add("\n")
+            sb.add("\tfetch = +refs/heads/*:refs/remotes/").add(remoteName).add("/*\n")
+            sb.add("[branch \"").add(defaultBranch).add("\"]\n")
+            sb.add("\tremote = ").add(remoteName).add("\n")
+            sb.add("\tmerge = refs/heads/").add(defaultBranch).add("\n")
+
+            sb.toString().writeToFile(this.gitDirPath + "/config")
+        }
+
+        fun writeRef(refName: String, sha: String) {
+            var refPath = this.gitDirPath + "/" + refName
+            Repository.ensureParentDir(refPath)
+            (sha + "\n").writeToFile(refPath)
+        }
+
+        fun objectsPackDir(): String {
+            return this.gitDirPath + "/objects/pack"
+        }
+
+        // Write a binary blob to a file at the given absolute path,
+        // creating any required parents.
+        static fun writeBytes(path: String, bytes: UByte[]) {
+            Repository.ensureParentDir(path)
+            var file = new File(path)
+            var stream = new FileStream(file, FileAccess.writeOnly)
+            stream.write(bytes, 0L, bytes.length())
+        }
+
+        // mkdir -p — create every missing component along the way.
+        // The native File.createDirectory only mkdirs the leaf.
+        static fun ensureParentDir(path: String) {
+            var lastSlash = path.lastIndexOf("/")
+            if (lastSlash <= 0) {
+                return
+            }
+            var dir = path.substring(0UI, lastSlash.toUInt())
+            Repository.ensureDir(dir)
+        }
+
+        static fun ensureDir(path: String) {
+            // Build the path one segment at a time, mkdir-ing each. Existing
+            // directories make mkdir return false — we don't care. Only the
+            // final fopen() call has to succeed.
+            if (path.length() == 0) {
+                return
+            }
+            var len = path.length().toUInt()
+            var i = 1UI
+            while (i <= len) {
+                if (i == len || path.characterAt(i) == 47US) {
+                    var prefix = path.substring(0UI, i)
+                    File.createDirectory(prefix)
+                }
+                i++
+            }
+        }
+    }
+}

@@ -1,0 +1,74 @@
+namespace Am.Git
+{
+    // A single ref reported by the server in the smart-HTTP info/refs
+    // response. `sha` is the 40-char hex object id, `name` is the full
+    // ref path (e.g. `refs/heads/main`), and `peeledSha` is set when
+    // the ref is a tag with a `^{}` peeled entry.
+    class RefEntry(var sha: String, var name: String)
+    {
+        import Am.Lang
+        var peeledSha: String = null
+    }
+
+    // Result of parsing the info/refs response.
+    class RefAdvertisement(var capabilities: String[], var refs: RefEntry[])
+    {
+        import Am.Lang
+
+        // Find the SHA pointed at by `HEAD`. Servers always advertise
+        // HEAD as the first ref; we still scan the list to be safe.
+        fun headSha(): String {
+            var i = 0
+            while (i < this.refs.length().toInt()) {
+                if (this.refs[i.toUInt()].name == "HEAD") {
+                    return this.refs[i.toUInt()].sha
+                }
+                i++
+            }
+            return null
+        }
+
+        fun findRef(name: String): RefEntry {
+            var i = 0
+            while (i < this.refs.length().toInt()) {
+                if (this.refs[i.toUInt()].name == name) {
+                    return this.refs[i.toUInt()]
+                }
+                i++
+            }
+            return null
+        }
+
+        // Best-effort: determine which `refs/heads/<x>` ref currently
+        // shares HEAD's SHA. The smart-HTTP v1 advertisement doesn't
+        // explicitly tell us which branch HEAD tracks, so we infer it
+        // from the SHA. Falls back to "main" when unknown — matching
+        // what `git clone` does today.
+        fun defaultBranch(): String {
+            var head = this.headSha()
+            if (head != null) {
+                var i = 0
+                while (i < this.refs.length().toInt()) {
+                    var r = this.refs[i.toUInt()]
+                    if (r.sha == head && r.name.startsWith("refs/heads/")) {
+                        return r.name.substringToEnd(11UI)
+                    }
+                    i++
+                }
+            }
+            return "main"
+        }
+
+        fun hasCapability(cap: String): Bool {
+            var i = 0
+            while (i < this.capabilities.length().toInt()) {
+                var c = this.capabilities[i.toUInt()]
+                if (c == cap || c.startsWith(cap + "=")) {
+                    return true
+                }
+                i++
+            }
+            return false
+        }
+    }
+}

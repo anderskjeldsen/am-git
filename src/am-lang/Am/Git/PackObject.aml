@@ -1,0 +1,64 @@
+namespace Am.Git
+{
+    // One parsed entry from a packfile. Same class is used whether
+    // the entry is a full object (commit/tree/blob/tag) or a delta
+    // (OFS_DELTA / REF_DELTA) that still needs resolving — the
+    // `typeCode` field distinguishes, and a couple of extra fields
+    // carry the base-object reference for the two delta forms.
+    //
+    // Type codes follow git's on-wire numbering
+    // (Documentation/technical/pack-format.txt):
+    //   1 = commit       2 = tree
+    //   3 = blob         4 = tag
+    //   6 = OFS_DELTA    7 = REF_DELTA
+    //   (5 is reserved.)
+    class PackObject(var typeCode: Int, var content: UByte[])
+    {
+        import Am.Lang
+
+        // SHA-1 hex (40 lowercase chars). Set for full objects after
+        // the parser hashes the wrapped form. Stays null for delta
+        // entries until step 3 (delta resolution) fills it in.
+        var sha: String = null
+
+        // Absolute byte offset of this entry's start inside the pack
+        // body. Needed so an OFS_DELTA can resolve its negative-offset
+        // base reference to an absolute pack position.
+        var packOffset: Long = 0L
+
+        // OFS_DELTA: absolute pack-byte offset of the base entry
+        // (computed as `packOffset - relative_offset`).
+        var baseOffset: Long = 0L
+
+        // REF_DELTA: hex SHA-1 of the base object.
+        var baseSha: String = null
+
+        fun isDelta(): Bool {
+            return this.typeCode == 6 || this.typeCode == 7
+        }
+
+        // Lowercase ASCII name matching what git uses in the SHA-1
+        // wrapper prefix (e.g. `"blob 1234\0..."`).
+        fun typeName(): String {
+            if (this.typeCode == 1) {
+                return "commit"
+            }
+            if (this.typeCode == 2) {
+                return "tree"
+            }
+            if (this.typeCode == 3) {
+                return "blob"
+            }
+            if (this.typeCode == 4) {
+                return "tag"
+            }
+            if (this.typeCode == 6) {
+                return "ofs-delta"
+            }
+            if (this.typeCode == 7) {
+                return "ref-delta"
+            }
+            return "unknown"
+        }
+    }
+}

@@ -1,0 +1,8 @@
+builds/*
+*.generated.c
+*.o
+.DS_Store
+c-libs/AmiSSL*
+c-libs/openssl
+amlc.jar
+examples/*/builds

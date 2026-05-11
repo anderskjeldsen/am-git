@@ -1,0 +1,171 @@
+namespace Am.Git
+{
+    // Git's pkt-line framing: every chunk is prefixed with a 4-char hex
+    // length covering the prefix itself plus the payload. `0000` is the
+    // flush packet (terminator); `0001` and `0002` are delim/response-end
+    // packets used by protocol v2 (we don't emit those, but we tolerate
+    // them on input). Reference: Documentation/technical/protocol-common.txt
+    class PktLine
+    {
+        import Am.Lang
+        import Am.Collections
+
+        // Encode `payload` (which should already include any trailing LF
+        // git expects) as a single pkt-line.
+        static fun encode(payload: String): UByte[] {
+            var bytes = payload.toBytes("UTF-8")
+            return PktLine.encodeBytes(bytes)
+        }
+
+        static fun encodeBytes(payload: UByte[]): UByte[] {
+            var total = (payload.length() + 4) as UInt
+            var header = PktLine.formatLength(total.toInt())
+            var headerBytes = header.toBytes("UTF-8")
+            var out = new UByte[total]
+            var i = 0
+            while (i < 4) {
+                out[i.toUInt()] = headerBytes[i]
+                i++
+            }
+            var j = 0
+            while (j < payload.length()) {
+                out[(j + 4).toUInt()] = payload[j]
+                j++
+            }
+            return out
+        }
+
+        // 4-char zero-padded lowercase hex.
+        static fun formatLength(n: Int): String {
+            var sb = new StringBuilder()
+            // hi nibble of high byte
+            sb.addChar(PktLine.hexChar((n / 4096) % 16))
+            sb.addChar(PktLine.hexChar((n / 256) % 16))
+            sb.addChar(PktLine.hexChar((n / 16) % 16))
+            sb.addChar(PktLine.hexChar(n % 16))
+            return sb.toString()
+        }
+
+        private static fun hexChar(n: Int): UShort {
+            if (n < 10) {
+                return (n + 48).toUShort()
+            }
+            return (n + 87).toUShort()
+        }
+
+        static fun flushPacket(): UByte[] {
+            var out = new UByte[4]
+            out[0UI] = 48UB
+            out[1UI] = 48UB
+            out[2UI] = 48UB
+            out[3UI] = 48UB
+            return out
+        }
+
+        // Read `count` bytes from the buffer starting at offset, as ASCII
+        // hex digits. Returns -1 if a non-hex byte is encountered.
+        static fun parseHex(buffer: UByte[], offset: Int, count: Int): Int {
+            var v = 0
+            var i = 0
+            while (i < count) {
+                var c = buffer[(offset + i).toUInt()].toInt()
+                var digit = -1
+                if (c >= 48 && c <= 57) {
+                    digit = c - 48
+                } else if (c >= 97 && c <= 102) {
+                    digit = c - 87
+                } else if (c >= 65 && c <= 70) {
+                    digit = c - 55
+                } else {
+                    return -1
+                }
+                v = (v * 16) + digit
+                i++
+            }
+            return v
+        }
+    }
+
+    // Holds a single pkt-line plus the next read offset, so callers can
+    // walk a buffer of advertised refs without re-parsing.
+    class PktLineFrame(var length: Int, var payload: UByte[], var nextOffset: Int)
+    {
+        import Am.Lang
+
+        // payload as UTF-8 string with trailing LF stripped (git always
+        // ends ref-advertisement lines with `\n`).
+        fun textPayload(): String {
+            var s = String.fromBytes(this.payload, "UTF-8")
+            if (s.endsWith("\n")) {
+                s = s.substring(0UI, (s.length() - 1).toUInt())
+            }
+            return s
+        }
+
+        fun isFlush(): Bool {
+            return this.length == 0
+        }
+
+        fun isDelim(): Bool {
+            return this.length == 1
+        }
+
+        fun isResponseEnd(): Bool {
+            return this.length == 2
+        }
+    }
+
+    class PktLineReader(private var buffer: UByte[])
+    {
+        import Am.Lang
+        import Am.Collections
+
+        private var offset: Int = 0
+
+        fun setOffset(off: Int) {
+            this.offset = off
+        }
+
+        fun getOffset(): Int {
+            return this.offset
+        }
+
+        fun hasMore(): Bool {
+            return this.offset < this.buffer.length()
+        }
+
+        // Reads the next pkt-line from the buffer. Returns null at EOF.
+        // Throws on a malformed length prefix.
+        fun next(): PktLineFrame {
+            if (this.offset + 4 > this.buffer.length()) {
+                return null
+            }
+            var len = PktLine.parseHex(this.buffer, this.offset, 4)
+            if (len < 0) {
+                throw new Exception("Malformed pkt-line length at offset " + this.offset.toString())
+            }
+            // Special framing packets carry no payload.
+            if (len == 0 || len == 1 || len == 2) {
+                var emptyFrame = new PktLineFrame(len, new UByte[0UI], this.offset + 4)
+                this.offset = this.offset + 4
+                return emptyFrame
+            }
+            if (len < 4) {
+                throw new Exception("Pkt-line length below minimum: " + len.toString())
+            }
+            var payloadLen = (len - 4) as UInt
+            if ((this.offset + len) > this.buffer.length()) {
+                throw new Exception("Truncated pkt-line: header says " + len.toString() + " bytes")
+            }
+            var payload = new UByte[payloadLen]
+            var i = 0UI
+            while (i < payloadLen) {
+                payload[i] = this.buffer[(this.offset + 4).toUInt() + i]
+                i++
+            }
+            var frame = new PktLineFrame(len, payload, this.offset + len)
+            this.offset = this.offset + len
+            return frame
+        }
+    }
+}

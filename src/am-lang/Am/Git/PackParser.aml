@@ -1,0 +1,181 @@
+namespace Am.Git
+{
+    // Walks the body of a downloaded packfile and decodes every entry.
+    //
+    // Pack body layout (after the 12-byte `PACK\0\0\0\2<count>` header
+    // parsed by PackHeader):
+    //
+    //   for each of <count> entries:
+    //     1. variable-length type+size varint
+    //          byte 0: bit7 = continuation
+    //                  bits 4-6 = 3-bit type code (1..7)
+    //                  bits 0-3 = 4 low bits of inflated-size
+    //          continuation bytes: bit7 = more, bits 0-6 = 7 more size bits
+    //          (each step shifts in 7 more bits, starting at shift 4)
+    //     2. for OFS_DELTA (type 6): a "negative-offset" varint
+    //          (different encoding from the size varint — see readOfsOffset)
+    //        for REF_DELTA (type 7): a raw 20-byte SHA-1 of the base
+    //     3. zlib stream of length matching the type+size header:
+    //          - full object (1..4): inflated content
+    //          - delta (6..7):       inflated delta-instruction stream
+    //
+    // This class fully decodes every entry up to and including step 3
+    // (we have am-z's `Zlib.inflate` for that). For full objects we
+    // also compute the SHA-1 of git's `"<type> <size>\0<content>"`
+    // wrapper and stash the entry in the returned map. Delta entries
+    // come back unresolved in a separate list — step 3 of the
+    // pack-import plan walks that list, applies each delta to its
+    // base (recursively), and adds the result to `objects`.
+    //
+    // The 20-byte pack trailer SHA-1 is intentionally not verified
+    // here yet.
+    class PackParser(private var packBytes: UByte[])
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.Crypto
+        import Am.Z
+
+        // Pack body starts at byte 12 (after `PACK` + 4-byte version
+        // + 4-byte count). We stop `objectCount` entries in. The pack
+        // trailer (20 bytes of SHA-1) sits after the last entry.
+        private static var bodyStart: Int = 12
+
+        // Walk the pack and return both fully decoded objects and
+        // still-deferred deltas. See [PackParseResult] for shape.
+        fun parseAll(): PackParseResult {
+            var header = PackHeader.parse(this.packBytes)
+            var objects = new HashMap<String, PackObject>()
+            var deltas = List<PackObject>.newList<PackObject>()
+
+            var offset = PackParser.bodyStart
+            var i = 0UI
+            while (i < header.objectCount) {
+                offset = this.readEntry(offset, objects, deltas)
+                i++
+            }
+
+            return new PackParseResult(objects, deltas)
+        }
+
+        // Decode one entry starting at `offset`. Adds the parsed
+        // object to either `objects` (full) or `deltas` (still
+        // deferred), and returns the offset of the next entry.
+        private fun readEntry(offset: Int,
+                              objects: HashMap<String, PackObject>,
+                              deltas: List<PackObject>): Int {
+            var entryStart = offset
+
+            // --- step 1: type+size varint -----------------------
+            var b = this.packBytes[offset.toUInt()].toInt()
+            var typeCode = (b / 16) & 0x07
+            var size: Long = (b & 0x0F).toLong()
+            // After byte 0 we already have 4 bits of size. Every
+            // continuation byte adds 7 more bits, shifted up by 7
+            // more each step. Implementing as multiplication by a
+            // running Long power-of-two avoids any mixed-type shift
+            // ambiguity around Long << Int.
+            var multiplier: Long = 16L
+            var pos = offset + 1
+            while ((b & 0x80) != 0) {
+                b = this.packBytes[pos.toUInt()].toInt()
+                size = size + ((b & 0x7F).toLong() * multiplier)
+                multiplier = multiplier * 128L
+                pos = pos + 1
+            }
+
+            // --- step 2: base reference for deltas --------------
+            var baseOffset: Long = 0L
+            var baseSha: String = null
+            if (typeCode == 6) {
+                // OFS_DELTA: read negative-offset varint.
+                //
+                //   offset = byte[0] & 0x7F
+                //   while byte[i] continues:
+                //       offset = ((offset + 1) << 7) | (byte[i+1] & 0x7F)
+                //
+                // The encoding is deliberately different from the
+                // size varint — using `<<= 7` per step instead of an
+                // ever-widening shift gives shorter representations
+                // for typical "base is N entries back" deltas.
+                var co = this.packBytes[pos.toUInt()].toInt()
+                pos = pos + 1
+                var relOff: Long = (co & 0x7F).toLong()
+                while ((co & 0x80) != 0) {
+                    co = this.packBytes[pos.toUInt()].toInt()
+                    pos = pos + 1
+                    relOff = (relOff + 1L) * 128L + (co & 0x7F).toLong()
+                }
+                baseOffset = entryStart.toLong() - relOff
+            } else if (typeCode == 7) {
+                // REF_DELTA: raw 20-byte SHA-1, hex-encoded for use
+                // as the HashMap key matching `objects`.
+                var subBytes = new UByte[20UI]
+                var k = 0
+                while (k < 20) {
+                    subBytes[k.toUInt()] = this.packBytes[(pos + k).toUInt()]
+                    k = k + 1
+                }
+                baseSha = HexUtil.toHex(subBytes)
+                pos = pos + 20
+            }
+
+            // --- step 3: zlib stream ---------------------------
+            //
+            // For non-delta entries `size` is the inflated content
+            // size; for deltas it's the inflated delta-instruction
+            // stream size. Either way that's what we hand Zlib.
+            var consumed = new Int[1]
+            var available = this.packBytes.length().toInt() - pos
+            var inflated = Zlib.inflate(this.packBytes, pos, available,
+                                         size.toInt(), consumed)
+            var nextOffset = pos + consumed[0UI]
+
+            // --- record the entry ------------------------------
+            var obj = new PackObject(typeCode, inflated)
+            obj.packOffset = entryStart.toLong()
+
+            if (typeCode == 6) {
+                obj.baseOffset = baseOffset
+                deltas.add(obj)
+            } else if (typeCode == 7) {
+                obj.baseSha = baseSha
+                deltas.add(obj)
+            } else {
+                // Full object — SHA the git-wrapped form.
+                var wrapped = PackParser.wrapForSha(obj.typeName(), inflated)
+                var digest = Sha1.digest(wrapped)
+                obj.sha = HexUtil.toHex(digest)
+                objects.set(obj.sha, obj)
+            }
+
+            return nextOffset
+        }
+
+        // Build the bytes git SHA-1s for an object's id:
+        //
+        //     "<typename> <decimal-size>\0<raw content>"
+        //
+        // Constructed bytewise so the embedded NUL doesn't get mangled
+        // by any String/UTF-8 round-trip — the prefix is pure ASCII
+        // but content is opaque bytes.
+        private static fun wrapForSha(typeName: String, content: UByte[]): UByte[] {
+            var prefix = typeName + " " + content.length().toString()
+            var prefixBytes = prefix.toBytes("UTF-8")
+            var totalLen = prefixBytes.length() + 1UI + content.length()
+            var out = new UByte[totalLen]
+            var i = 0UI
+            while (i < prefixBytes.length()) {
+                out[i] = prefixBytes[i]
+                i++
+            }
+            out[prefixBytes.length()] = 0UB
+            var j = 0UI
+            while (j < content.length()) {
+                out[prefixBytes.length() + 1UI + j] = content[j]
+                j++
+            }
+            return out
+        }
+    }
+}

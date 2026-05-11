@@ -1,0 +1,109 @@
+namespace Am.Git
+{
+    // A parsed git remote URL. Only the smart-HTTP forms are supported for
+    // now — `http(s)://[user[:pass]@]host[:port]/path[.git]`. The path is
+    // kept verbatim (without a trailing slash) so requests can append
+    // `/info/refs?service=...` or `/git-upload-pack` directly.
+    class GitUrl(var scheme: String,
+                 var host: String,
+                 var port: Int,
+                 var path: String,
+                 var userInfo: String)
+    {
+        import Am.Lang
+        import Am.Collections
+
+        fun isHttps(): Bool {
+            return this.scheme == "https"
+        }
+
+        fun infoRefsPath(service: String): String {
+            return this.path + "/info/refs?service=" + service
+        }
+
+        fun servicePath(service: String): String {
+            return this.path + "/" + service
+        }
+
+        override fun toString(): String {
+            return this.scheme + "://" + this.host + ":" + this.port.toString() + this.path
+        }
+
+        // Parse `http(s)://host[:port]/path` — returns null if the URL
+        // can't be understood. We're intentionally strict; the smart-HTTP
+        // transport is the only one wired up so far.
+        static fun parse(raw: String): GitUrl {
+            var s = raw.trim()
+            var scheme = ""
+            var rest = ""
+
+            var schemeEnd = s.indexOf("://")
+            if (schemeEnd < 0) {
+                throw new Exception("URL is missing scheme: " + raw)
+            }
+            scheme = s.substring(0UI, schemeEnd.toUInt()).toLowerCase()
+            var afterScheme = (schemeEnd + 3).toUInt()
+            rest = s.substringToEnd(afterScheme)
+
+            if (scheme != "http" && scheme != "https") {
+                throw new Exception("Only http/https remotes are supported, got: " + scheme)
+            }
+
+            var userInfo = ""
+            var atIndex = rest.indexOf("@")
+            var slashIndex = rest.indexOf("/")
+            // userinfo only counts if the @ comes before the path slash
+            if (atIndex >= 0 && (slashIndex < 0 || atIndex < slashIndex)) {
+                userInfo = rest.substring(0UI, atIndex.toUInt())
+                rest = rest.substringToEnd((atIndex + 1).toUInt())
+                slashIndex = rest.indexOf("/")
+            }
+
+            var hostAndPort = rest
+            var path = "/"
+            if (slashIndex >= 0) {
+                hostAndPort = rest.substring(0UI, slashIndex.toUInt())
+                path = rest.substringToEnd(slashIndex.toUInt())
+            }
+
+            // Strip a trailing slash on the path so we can append cleanly.
+            while (path.length() > 1 && path.endsWith("/")) {
+                path = path.substring(0UI, (path.length() - 1).toUInt())
+            }
+
+            var host = hostAndPort
+            var port = 443
+            if (scheme == "http") {
+                port = 80
+            }
+            var colon = hostAndPort.indexOf(":")
+            if (colon >= 0) {
+                host = hostAndPort.substring(0UI, colon.toUInt())
+                var portStr = hostAndPort.substringToEnd((colon + 1).toUInt())
+                port = Int.parse(portStr)
+            }
+
+            return new GitUrl(scheme, host, port, path, userInfo)
+        }
+
+        // Pull a sensible repository name out of the path — last path
+        // segment, with any trailing `.git` stripped. Used as the default
+        // target directory for `clone`.
+        fun repositoryName(): String {
+            var p = this.path
+            // strip trailing /
+            while (p.length() > 0 && p.endsWith("/")) {
+                p = p.substring(0UI, (p.length() - 1).toUInt())
+            }
+            var lastSlash = p.lastIndexOf("/")
+            var name = p
+            if (lastSlash >= 0) {
+                name = p.substringToEnd((lastSlash + 1).toUInt())
+            }
+            if (name.endsWith(".git")) {
+                name = name.substring(0UI, (name.length() - 4).toUInt())
+            }
+            return name
+        }
+    }
+}

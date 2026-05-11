@@ -1,0 +1,395 @@
+namespace Am.Git
+{
+    // Drives a smart-HTTP `git clone`:
+    //
+    //  1. GET <repo>/info/refs?service=git-upload-pack
+    //  2. Parse pkt-line ref advertisement → list of refs + capabilities.
+    //  3. POST <repo>/git-upload-pack with `want <sha>` lines + `done`.
+    //  4. Read NAK pkt-line, then the raw packfile bytes.
+    //  5. Write the .git layout: HEAD, refs/heads/<branch>, the pack.
+    //
+    // What's intentionally NOT done (yet):
+    //
+    //  * Packfile index (.idx) generation. `git index-pack` on the saved
+    //    .pack will produce one; or we write our own loader later.
+    //  * Working-tree checkout. The repo on disk is effectively bare-
+    //    on-the-inside until we walk the HEAD tree and decompress blobs.
+    //  * Smart-HTTP protocol v2 — we ask for v1 explicitly via the
+    //    `Git-Protocol` request header and the v0 capability list.
+    //
+    // Those land in follow-up commits; this gets the bytes onto disk.
+    class CloneClient
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        // Conservative capability set:
+        //   side-band-64k — server multiplexes pack + progress on bands 1/2/3
+        //   ofs-delta     — pack may use OFS_DELTA (smaller, well-supported)
+        //   agent=...     — informational only
+        // Skipping multi_ack/no-done/thin-pack since we send `done` and have
+        // no haves — the server will reply NAK then pack.
+        static var capabilitiesToRequest: String = "side-band-64k ofs-delta agent=am-git/0.1.0"
+
+        static fun clone(remoteUrl: String, targetDir: String) {
+            var url = GitUrl.parse(remoteUrl)
+            ("Cloning " + url.toString() + " into " + targetDir).println()
+
+            var advertisement = CloneClient.fetchRefAdvertisement(url)
+            ("Server advertised " + advertisement.refs.length().toString() + " refs").println()
+
+            var headSha = advertisement.headSha()
+            if (headSha == null) {
+                throw new Exception("Server did not advertise a HEAD ref — repository may be empty")
+            }
+            var defaultBranch = advertisement.defaultBranch()
+            ("HEAD: " + headSha + " → refs/heads/" + defaultBranch).println()
+
+            var packBytes = CloneClient.fetchPack(url, advertisement)
+            ("Received packfile: " + packBytes.length().toString() + " bytes").println()
+
+            var header = PackHeader.parse(packBytes)
+            ("Pack version " + header.version.toString() + " with " + header.objectCount.toString() + " objects").println()
+
+            CloneClient.writeRepository(targetDir, remoteUrl, advertisement, defaultBranch, packBytes)
+
+            // Step 2 of the pack-import plan: walk the pack and SHA
+            // every full object. Deltas are inflated but their bases
+            // aren't applied yet — that lands in step 3. For repos
+            // dominated by deltas (i.e. anything from GitHub) the
+            // "objects" count below will be small and "deltas" large
+            // until that's wired.
+            "Parsing pack...".println()
+            var parser = new PackParser(packBytes)
+            var parsed = parser.parseAll()
+            ("Pack contents: " + parsed.objects.getSize().toString() +
+             " full objects, " + parsed.deltas.getSize().toString() +
+             " deltas (deferred)").println()
+            // Spot-check the SHA pipeline: HEAD's commit SHA came from
+            // the server's ref advertisement — it's git's authoritative
+            // id. If our wrapped-form SHA-1 matches, our hashing and
+            // entry-walk are correct. (HEAD's commit is always a full
+            // object, never a delta, so it has to land in `objects`
+            // even at this stage.)
+            if (parsed.objects.containsKey(headSha)) {
+                ("HEAD commit SHA matches: " + headSha).println()
+            } else {
+                ("WARN: HEAD commit " + headSha + " not found in parsed objects — " +
+                 "either it's a delta (unlikely) or our SHA pipeline is off.").println()
+            }
+
+            ("Done. Note: this clone does not yet build a pack index or check out a working tree.").println()
+        }
+
+        // Step 1+2.
+        private static fun fetchRefAdvertisement(url: GitUrl): RefAdvertisement {
+            var response = HttpClient.getInfoRefs(url, "git-upload-pack")
+            if (!response.isSuccess()) {
+                throw new Exception("info/refs returned HTTP " + response.statusCode.toString() + " " + response.statusText)
+            }
+            // Smart server should set this Content-Type. Dumb HTTP
+            // servers (no `?service=` handler) won't, and we bail —
+            // we don't speak the dumb protocol.
+            var contentType = response.getHeader("content-type")
+            if (contentType == null || contentType.indexOf("application/x-git-upload-pack-advertisement") < 0) {
+                throw new Exception("Server is not smart-HTTP capable (Content-Type: " + contentType + ")")
+            }
+            return CloneClient.parseRefAdvertisement(response.body)
+        }
+
+        // The advertisement format is documented in
+        // Documentation/technical/http-protocol.txt — a "# service=..."
+        // pkt-line, a flush, then refs (first carrying capabilities
+        // after a NUL), and a final flush.
+        private static fun parseRefAdvertisement(body: UByte[]): RefAdvertisement {
+            var reader = new PktLineReader(body)
+
+            var first = reader.next()
+            if (first == null) {
+                throw new Exception("Empty ref advertisement")
+            }
+            var firstText = first.textPayload()
+            if (!firstText.startsWith("# service=")) {
+                throw new Exception("Expected service header, got: " + firstText)
+            }
+
+            // Expect a flush after the service line.
+            var flush = reader.next()
+            if (flush == null || !flush.isFlush()) {
+                throw new Exception("Expected flush packet after service header")
+            }
+
+            var refs = List<RefEntry>.newList<RefEntry>()
+            var capabilities: String[] = new String[0UI]
+            var first_real = true
+
+            loop {
+                var frame = reader.next()
+                if (frame == null) {
+                    break
+                }
+                if (frame.isFlush()) {
+                    break
+                }
+                if (frame.length < 4) {
+                    continue
+                }
+                var line = frame.textPayload()
+                if (first_real) {
+                    first_real = false
+                    // First ref line: "<sha> <name>\0<cap1> <cap2> ..."
+                    var nul = CloneClient.indexOfChar(line, 0US)
+                    if (nul >= 0) {
+                        var refPart = line.substring(0UI, nul.toUInt())
+                        var capPart = line.substringToEnd((nul + 1).toUInt())
+                        capabilities = capPart.split(32US)
+                        var entry = CloneClient.parseRefLine(refPart)
+                        if (entry != null) {
+                            refs.add(entry)
+                        }
+                    } else {
+                        var entry = CloneClient.parseRefLine(line)
+                        if (entry != null) {
+                            refs.add(entry)
+                        }
+                    }
+                } else {
+                    var entry = CloneClient.parseRefLine(line)
+                    if (entry != null) {
+                        // Detect a peeled tag entry — ref name ends with ^{}.
+                        if (entry.name.endsWith("^{}")) {
+                            var realName = entry.name.substring(0UI, (entry.name.length() - 3).toUInt())
+                            var prev = CloneClient.findLast(refs, realName)
+                            if (prev != null) {
+                                prev.peeledSha = entry.sha
+                            }
+                        } else {
+                            refs.add(entry)
+                        }
+                    }
+                }
+            }
+
+            return new RefAdvertisement(capabilities, refs.toArray())
+        }
+
+        private static fun parseRefLine(line: String): RefEntry {
+            var sp = line.indexOf(" ")
+            if (sp < 0) {
+                return null
+            }
+            var sha = line.substring(0UI, sp.toUInt())
+            var name = line.substringToEnd((sp + 1).toUInt())
+            if (sha.length() != 40) {
+                return null
+            }
+            return new RefEntry(sha, name)
+        }
+
+        private static fun findLast(list: List<RefEntry>, name: String): RefEntry {
+            var i = list.getSize() - 1
+            while (i >= 0) {
+                var e = list.get(i)
+                if (e.name == name) {
+                    return e
+                }
+                i--
+            }
+            return null
+        }
+
+        // String doesn't ship an indexOf(UShort) — character-level
+        // search for a NUL needs to walk the code units ourselves.
+        private static fun indexOfChar(s: String, c: UShort): Int {
+            var i = 0UI
+            var len = s.length().toUInt()
+            while (i < len) {
+                if (s.characterAt(i) == c) {
+                    return i.toInt()
+                }
+                i++
+            }
+            return -1
+        }
+
+        // Step 3+4.
+        private static fun fetchPack(url: GitUrl, ad: RefAdvertisement): UByte[] {
+            var requestBody = CloneClient.buildUploadPackRequest(ad)
+            var response = HttpClient.postUploadPack(url, requestBody)
+            if (!response.isSuccess()) {
+                throw new Exception("git-upload-pack returned HTTP " + response.statusCode.toString() + " " + response.statusText)
+            }
+            var contentType = response.getHeader("content-type")
+            if (contentType == null || contentType.indexOf("application/x-git-upload-pack-result") < 0) {
+                throw new Exception("Unexpected upload-pack Content-Type: " + contentType)
+            }
+            return CloneClient.extractPack(response.body)
+        }
+
+        // Build the wants/done body. The first `want` line carries our
+        // capability set; subsequent ones omit it. We send `want` for
+        // every advertised ref under refs/heads (and HEAD's SHA) so the
+        // server gives us a full clone.
+        private static fun buildUploadPackRequest(ad: RefAdvertisement): UByte[] {
+            var wants = List<String>.newList<String>()
+
+            // Deduplicate by SHA — multiple refs often share commits.
+            var seen = new HashMap<String, Bool>()
+
+            var headSha = ad.headSha()
+            if (headSha != null) {
+                seen.set(headSha, true)
+                wants.add(headSha)
+            }
+
+            var i = 0
+            while (i < ad.refs.length().toInt()) {
+                var r = ad.refs[i.toUInt()]
+                if (!seen.containsKey(r.sha)) {
+                    if (r.name.startsWith("refs/heads/") || r.name.startsWith("refs/tags/")) {
+                        seen.set(r.sha, true)
+                        wants.add(r.sha)
+                    }
+                }
+                i++
+            }
+
+            var collected = List<UByte>.newList<UByte>()
+            var first = true
+            var j = 0
+            while (j < wants.getSize()) {
+                var sha = wants.get(j)
+                var line = ""
+                if (first) {
+                    line = "want " + sha + " " + CloneClient.capabilitiesToRequest + "\n"
+                    first = false
+                } else {
+                    line = "want " + sha + "\n"
+                }
+                var encoded = PktLine.encode(line)
+                CloneClient.appendBytes(collected, encoded)
+                j++
+            }
+            // Flush packet ends the wants section.
+            CloneClient.appendBytes(collected, PktLine.flushPacket())
+            // `done` tells the server we have nothing already.
+            CloneClient.appendBytes(collected, PktLine.encode("done\n"))
+
+            return collected.toArray()
+        }
+
+        private static fun appendBytes(list: List<UByte>, bytes: UByte[]) {
+            var i = 0
+            while (i < bytes.length().toInt()) {
+                list.add(bytes[i.toUInt()])
+                i++
+            }
+        }
+
+        // The body returned by the server is a sequence of pkt-lines
+        // followed by raw packfile bytes (when side-band-64k is in
+        // use, the pack rides on band 1 inside pkt-lines instead).
+        // We always advertise side-band-64k, so we expect that form.
+        private static fun extractPack(body: UByte[]): UByte[] {
+            var reader = new PktLineReader(body)
+            var sawAck = false
+            var collected = List<UByte>.newList<UByte>()
+
+            loop {
+                var frame = reader.next()
+                if (frame == null) {
+                    break
+                }
+                if (frame.isFlush()) {
+                    // Flush before the pack means side-band channel ended.
+                    continue
+                }
+                var payload = frame.payload
+                if (payload.length() == 0UI) {
+                    continue
+                }
+                // Ack/Nak handshake lines come before the pack stream.
+                var asText = String.fromBytes(payload, "UTF-8")
+                if (!sawAck && (asText.startsWith("NAK") || asText.startsWith("ACK"))) {
+                    sawAck = true
+                    continue
+                }
+                // side-band: byte 0 is the channel — 1=pack, 2=progress, 3=fatal.
+                var band = payload[0UI].toInt()
+                if (band == 1) {
+                    var k = 1
+                    while (k < payload.length().toInt()) {
+                        collected.add(payload[k.toUInt()])
+                        k++
+                    }
+                } else if (band == 2) {
+                    // Progress messages — print for visibility.
+                    var msg = String.fromBytes(CloneClient.sliceBytes(payload, 1, payload.length().toInt() - 1), "UTF-8")
+                    ("remote: " + msg.trim()).println()
+                } else if (band == 3) {
+                    var msg = String.fromBytes(CloneClient.sliceBytes(payload, 1, payload.length().toInt() - 1), "UTF-8")
+                    throw new Exception("Server reported fatal error: " + msg)
+                } else {
+                    // Not side-band — must be raw pack bytes that happened
+                    // to fit inside a pkt-line frame? Treat as raw.
+                    var k = 0
+                    while (k < payload.length().toInt()) {
+                        collected.add(payload[k.toUInt()])
+                        k++
+                    }
+                }
+            }
+            return collected.toArray()
+        }
+
+        private static fun sliceBytes(src: UByte[], start: Int, length: Int): UByte[] {
+            var out = new UByte[length.toUInt()]
+            var i = 0
+            while (i < length) {
+                out[i.toUInt()] = src[(start + i).toUInt()]
+                i++
+            }
+            return out
+        }
+
+        // Step 5.
+        private static fun writeRepository(targetDir: String,
+                                            remoteUrl: String,
+                                            ad: RefAdvertisement,
+                                            defaultBranch: String,
+                                            packBytes: UByte[]) {
+            var repo = Repository.init(targetDir, defaultBranch, false)
+            repo.writeRemoteConfig("origin", remoteUrl, defaultBranch)
+
+            // Persist every advertised branch and tag — that's what
+            // git clone's "fetch all refs" semantics buy us. Tags are
+            // stored peeled-aware: we always store the original SHA;
+            // the `peeledSha` is only used by index lookup later.
+            var i = 0
+            while (i < ad.refs.length().toInt()) {
+                var r = ad.refs[i.toUInt()]
+                if (r.name.startsWith("refs/heads/")) {
+                    var local = "refs/heads/" + r.name.substringToEnd(11UI)
+                    repo.writeRef(local, r.sha)
+                    var remoteRef = "refs/remotes/origin/" + r.name.substringToEnd(11UI)
+                    repo.writeRef(remoteRef, r.sha)
+                } else if (r.name.startsWith("refs/tags/")) {
+                    repo.writeRef(r.name, r.sha)
+                }
+                i++
+            }
+            // Also record origin/HEAD so `git remote show origin` works.
+            var symref = "ref: refs/remotes/origin/" + defaultBranch + "\n"
+            symref.writeToFile(repo.getGitDir() + "/refs/remotes/origin/HEAD")
+
+            // The pack file's "real" name is pack-<sha-of-trailer>.pack
+            // — for now we use a fixed name. `git index-pack` will
+            //   rename it on its first run.
+            var packPath = repo.objectsPackDir() + "/pack-tmp.pack"
+            Repository.writeBytes(packPath, packBytes)
+            ("Wrote pack to " + packPath).println()
+            ("Run `git index-pack -v " + packPath + "` from inside the cloned dir to build the index.").println()
+        }
+    }
+}

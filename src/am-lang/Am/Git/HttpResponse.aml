@@ -1,0 +1,34 @@
+namespace Am.Git
+{
+    // HTTP/1.1 response after headers are parsed and the body has been
+    // fully read into memory. We keep the body as raw bytes because the
+    // smart-HTTP packfile reply is binary, not text.
+    class HttpResponse(var statusCode: Int,
+                       var statusText: String,
+                       var headers: HashMap<String, String>,
+                       var body: UByte[])
+    {
+        import Am.Lang
+        import Am.Collections
+
+        fun getHeader(name: String): String {
+            var key = name.toLowerCase()
+            if (!this.headers.containsKey(key)) {
+                return null
+            }
+            return this.headers.get(key)
+        }
+
+        fun bodyAsString(): String {
+            return String.fromBytes(this.body, "UTF-8")
+        }
+
+        fun isSuccess(): Bool {
+            return this.statusCode >= 200 && this.statusCode < 300
+        }
+
+        fun isRedirect(): Bool {
+            return this.statusCode >= 300 && this.statusCode < 400
+        }
+    }
+}

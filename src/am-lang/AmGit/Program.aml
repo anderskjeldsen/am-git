@@ -1,0 +1,64 @@
+namespace AmGit
+{
+    // CLI entry point. Currently only `clone` is wired up:
+    //
+    //     am-git clone <url> [target-dir]
+    //
+    // The target dir defaults to the last segment of the URL with any
+    // trailing `.git` stripped — same convention as upstream git.
+    class Program
+    {
+        import Am.Lang
+        import Am.Git
+
+        static fun main(args: String[]) {
+            if (args.length() == 0UI) {
+                Program.printUsage()
+                return
+            }
+            var command = args[0UI]
+            if (command == "clone") {
+                Program.runClone(args)
+            } else if (command == "help" || command == "--help" || command == "-h") {
+                Program.printUsage()
+            } else if (command == "version" || command == "--version") {
+                "am-git 0.1.0".println()
+            } else {
+                ("am-git: unknown command '" + command + "'").println()
+                Program.printUsage()
+            }
+        }
+
+        private static fun runClone(args: String[]) {
+            if (args.length() < 2UI) {
+                "usage: am-git clone <url> [target-dir]".println()
+                return
+            }
+            try {
+                var url = args[1UI]
+                var target = ""
+                if (args.length() >= 3UI) {
+                    target = args[2UI]
+                } else {
+                    var parsed = GitUrl.parse(url)
+                    target = parsed.repositoryName()
+                }
+                if (target.length() == 0) {
+                    target = "repo"
+                }
+                CloneClient.clone(url, target)
+            } catch (ex: Exception) {
+                ("clone failed: " + ex.message).println()
+            }
+        }
+
+        private static fun printUsage() {
+            "am-git — a small git client written in AmLang".println()
+            "".println()
+            "Commands:".println()
+            "  clone <url> [target-dir]   Clone a remote repository over smart-HTTP".println()
+            "  version                    Print version information".println()
+            "  help                       Show this help".println()
+        }
+    }
+}

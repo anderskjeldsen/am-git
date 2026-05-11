@@ -1,0 +1,66 @@
+namespace Am.Git
+{
+    // Hex helpers — git identifies objects by 40-char lowercase hex SHA-1.
+    // We round-trip those between String and the raw 20-byte form.
+    class HexUtil
+    {
+        import Am.Lang
+
+        // 0..9 -> '0'..'9' (48..57), 10..15 -> 'a'..'f' (97..102)
+        private static fun nibble(n: UByte): UByte {
+            if (n < 10UB) {
+                return (n + 48UB) as UByte
+            }
+            return (n + 87UB) as UByte
+        }
+
+        // 'A'..'F' -> 10..15, 'a'..'f' -> 10..15, '0'..'9' -> 0..9
+        private static fun parseNibble(c: UShort): Int {
+            if (c >= 48US && c <= 57US) {
+                return (c - 48US).toInt()
+            }
+            if (c >= 97US && c <= 102US) {
+                return (c - 87US).toInt()
+            }
+            if (c >= 65US && c <= 70US) {
+                return (c - 55US).toInt()
+            }
+            return -1
+        }
+
+        static fun toHex(bytes: UByte[]): String {
+            var len = bytes.length()
+            var out = new UByte[(len * 2) as UInt]
+            var i = 0
+            while (i < len) {
+                var b = bytes[i]
+                var hi = ((b.toInt() / 16) as UByte) & 0x0FUB
+                var lo = (b.toInt() % 16) as UByte
+                out[(i * 2) as UInt] = HexUtil.nibble(hi)
+                out[((i * 2) + 1) as UInt] = HexUtil.nibble(lo)
+                i++
+            }
+            return String.fromBytes(out, "UTF-8")
+        }
+
+        static fun fromHex(hex: String): UByte[] {
+            var len = hex.length()
+            if ((len % 2) != 0) {
+                throw new Exception("Hex string must have an even length")
+            }
+            var outLen = (len / 2) as UInt
+            var out = new UByte[outLen]
+            var i = 0
+            while (i < len) {
+                var hi = HexUtil.parseNibble(hex.characterAt(i.toUInt()))
+                var lo = HexUtil.parseNibble(hex.characterAt((i + 1).toUInt()))
+                if (hi < 0 || lo < 0) {
+                    throw new Exception("Invalid hex character in: " + hex)
+                }
+                out[(i / 2).toUInt()] = ((hi * 16) + lo).toUByte()
+                i = i + 2
+            }
+            return out
+        }
+    }
+}
