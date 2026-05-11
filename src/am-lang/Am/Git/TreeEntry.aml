@@ -1,0 +1,40 @@
+namespace Am.Git
+{
+    // One entry inside a parsed git tree object. Wire format is
+    //
+    //     <mode> SP <name> NUL <20-byte raw sha>
+    //
+    // packed end-to-end without any outer length or count — the
+    // parser just reads until the tree's content bytes run out.
+    //
+    // Modes (ASCII octal, no leading zero):
+    //   40000   directory / subtree
+    //   100644  regular file
+    //   100755  executable file
+    //   120000  symlink — blob content is the link target
+    //   160000  gitlink (submodule pointer) — we skip these
+    class TreeEntry(var mode: String, var name: String, var sha: String)
+    {
+        import Am.Lang
+
+        fun isTree(): Bool {
+            return this.mode == "40000"
+        }
+
+        fun isFile(): Bool {
+            return this.mode == "100644" || this.mode == "100755"
+        }
+
+        fun isSymlink(): Bool {
+            return this.mode == "120000"
+        }
+
+        fun isExecutable(): Bool {
+            return this.mode == "100755"
+        }
+
+        fun isSubmodule(): Bool {
+            return this.mode == "160000"
+        }
+    }
+}

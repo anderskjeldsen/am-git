@@ -28,56 +28,22 @@ dependencies:
 platforms:
   - id: libc
     abstract: true
-    additionalHeaders:
-    additionalCSources:
   - id: amigaos
     extends: libc
     gccCommand: m68k-amigaos-gcc
-    # No additionalCSources / additionalHeaders here — the AmiSSL bring-up
-    # (errno.c, amissl_init.c, amissl_init.h) ships with am-ssl and am-crypto.
-    # Apps that pull both libraries would otherwise link duplicate copies of
-    # `errno` and `am_*_amissl_ensure_initialised`, breaking the link.
     gccAdditionalOptions:
       - -noixemul
     additionalLinkerFlags:
       - -noixemul
-    additionalIncludePaths:
-      - /opt/amiga/m68k-amigaos/AmiSSL/include
-    gccLibraryPaths:
-      - /opt/amiga/m68k-amigaos/AmiSSL/lib/AmigaOS3
-    gccAdditionalLibraries:
-      - amisslstubs
-      - amisslauto
-      - z
   - id: linux-x64
     extends: libc
     gccCommand: gcc
-    gccAdditionalLibraries:
-      - ssl
-      - crypto
-      - z
   - id: macos
     extends: libc
     gccCommand: gcc -O3
-    additionalIncludePaths:
-      - /opt/homebrew/opt/openssl/include
-    gccLibraryPaths:
-      - /opt/homebrew/opt/openssl/lib
-    gccAdditionalLibraries:
-      - ssl
-      - crypto
-      - z
   - id: macos-arm
     extends: libc
     gccCommand: gcc
-    additionalIncludePaths:
-      - /opt/homebrew/opt/openssl/include
-    gccLibraryPaths:
-      - /opt/homebrew/opt/openssl/lib
-    gccAdditionalLibraries:
-      - ssl
-      - crypto
-      - z
   - id: morphos-ppc
     extends: libc
     gccCommand: ppc-morphos-gcc -O3
@@ -85,11 +51,6 @@ platforms:
       - -noixemul
     additionalLinkerFlags:
       - -noixemul
-    gccAdditionalLibraries:
-      - ssl_shared
-      - crypto_shared
-      - z
-      - atomic
 
 buildTargets:
   - id: amigaos_docker

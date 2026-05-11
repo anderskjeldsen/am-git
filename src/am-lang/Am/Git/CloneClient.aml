@@ -80,13 +80,15 @@ namespace Am.Git
             // reachable in `objects`. If the resolver is right, every
             // commit in the pack — full or delta-encoded — ends up
             // here with the same id git uses.
-            if (parsed.objects.containsKey(headSha)) {
-                ("HEAD commit SHA matches: " + headSha).println()
-            } else {
-                ("WARN: HEAD commit " + headSha + " not found in parsed objects").println()
+            if (!parsed.objects.containsKey(headSha)) {
+                throw new Exception("HEAD commit " + headSha +
+                                     " not found in parsed objects")
             }
 
-            ("Done. Note: this clone does not yet build a pack index or check out a working tree.").println()
+            "Checking out working tree...".println()
+            var workTree = new WorkTree(targetDir, parsed.objects)
+            var fileCount = workTree.checkout(headSha)
+            ("Wrote " + fileCount.toString() + " files into " + targetDir).println()
         }
 
         // Step 1+2.
@@ -390,13 +392,15 @@ namespace Am.Git
             var symref = "ref: refs/remotes/origin/" + defaultBranch + "\n"
             symref.writeToFile(repo.getGitDir() + "/refs/remotes/origin/HEAD")
 
-            // The pack file's "real" name is pack-<sha-of-trailer>.pack
-            // — for now we use a fixed name. `git index-pack` will
-            //   rename it on its first run.
+            // Stash the raw pack on disk so the result is also usable
+            // by real `git` after a one-time `git index-pack` (we
+            // don't write a .idx ourselves yet — that's a follow-up).
+            // The pack's canonical name is pack-<trailer-sha>.pack;
+            // we use a fixed name for now and `git index-pack`
+            // renames it on its first run.
             var packPath = repo.objectsPackDir() + "/pack-tmp.pack"
             Repository.writeBytes(packPath, packBytes)
             ("Wrote pack to " + packPath).println()
-            ("Run `git index-pack -v " + packPath + "` from inside the cloned dir to build the index.").println()
         }
     }
 }

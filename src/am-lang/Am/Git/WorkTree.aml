@@ -1,0 +1,151 @@
+namespace Am.Git
+{
+    // Materialise the working tree for a commit. Driven by the
+    // object map that `PackParser` + `DeltaResolver` produce — every
+    // commit / tree / blob is in there, keyed by SHA.
+    //
+    // Algorithm:
+    //   1. Look up the commit. Its first line is `tree <sha>\n` —
+    //      that's the root tree's SHA.
+    //   2. Recursively walk: for each `TreeEntry` in a tree, either
+    //      write a blob to `<dir>/<name>` (file) or recurse into a
+    //      subtree under `<dir>/<name>/`.
+    //
+    // What we don't do (yet):
+    //   * No `chmod +x` for executable blobs (mode 100755 is recorded
+    //     in the tree but `Repository.writeBytes` just writes 0644 —
+    //     scripts won't be directly runnable until we add a native
+    //     chmod helper).
+    //   * Symlinks (mode 120000) are written as regular files
+    //     containing the link target string. Real symlinks need a
+    //     native `symlink(2)` binding.
+    //   * Submodules (mode 160000) are skipped silently.
+    //   * No collision check — the working tree must be empty when
+    //     `checkout()` runs. Repository.init creates a fresh dir.
+    class WorkTree(private var workTreePath: String,
+                   private var objects: HashMap<String, PackObject>)
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        // Resolve `commitSha` to a working tree under `workTreePath`.
+        // Returns the number of blob files written so the caller can
+        // log a summary.
+        fun checkout(commitSha: String): Int {
+            if (!this.objects.containsKey(commitSha)) {
+                throw new Exception("checkout: commit " + commitSha + " not in object map")
+            }
+            var commit = this.objects.get(commitSha)
+            if (commit.typeCode != 1) {
+                throw new Exception("checkout: " + commitSha + " is not a commit (type=" +
+                                     commit.typeCode.toString() + ")")
+            }
+            var rootTreeSha = WorkTree.extractRootTreeSha(commit.content)
+            return this.checkoutTree(rootTreeSha, this.workTreePath)
+        }
+
+        // Walk a single tree object, materialising it under `dirPath`.
+        // Returns the number of files written below (subtree-recursive).
+        private fun checkoutTree(treeSha: String, dirPath: String): Int {
+            if (!this.objects.containsKey(treeSha)) {
+                throw new Exception("checkout: tree " + treeSha + " not in object map")
+            }
+            var tree = this.objects.get(treeSha)
+            if (tree.typeCode != 2) {
+                throw new Exception("checkout: " + treeSha + " is not a tree (type=" +
+                                     tree.typeCode.toString() + ")")
+            }
+            Repository.ensureDir(dirPath)
+
+            var entries = WorkTree.parseTree(tree.content)
+            var written = 0
+            var i = 0
+            while (i < entries.getSize()) {
+                var entry = entries.get(i)
+                var entryPath = dirPath + "/" + entry.name
+
+                if (entry.isTree()) {
+                    written = written + this.checkoutTree(entry.sha, entryPath)
+                } else if (entry.isFile()) {
+                    var blob = this.objects.get(entry.sha)
+                    Repository.writeBytes(entryPath, blob.content)
+                    written = written + 1
+                } else if (entry.isSymlink()) {
+                    // No native symlink() yet — write the link target as
+                    // a regular file. Loses the symlink semantics but
+                    // keeps the bytes addressable.
+                    var blob = this.objects.get(entry.sha)
+                    Repository.writeBytes(entryPath, blob.content)
+                    written = written + 1
+                } else if (entry.isSubmodule()) {
+                    ("skipping submodule: " + entryPath).println()
+                } else {
+                    ("skipping unknown mode " + entry.mode + " at " + entryPath).println()
+                }
+                i = i + 1
+            }
+            return written
+        }
+
+        // A commit's content starts with `tree <40-char hex sha>\n`.
+        // We don't need any other header here — `parent`, `author`,
+        // and `committer` come after, but they're irrelevant for
+        // materialising the working tree.
+        static fun extractRootTreeSha(commitBytes: UByte[]): String {
+            // "tree " is 5 bytes; then 40 hex chars; then '\n'.
+            if (commitBytes.length() < 46UI) {
+                throw new Exception("commit content too short to contain 'tree <sha>\\n'")
+            }
+            var sb = new StringBuilder()
+            var i = 5UI
+            while (i < 45UI) {
+                sb.addChar(commitBytes[i].toUShort())
+                i++
+            }
+            return sb.toString()
+        }
+
+        // Decode a tree object's content into a list of TreeEntry.
+        // Wire format is `<mode> SP <name> NUL <20-byte raw sha>`
+        // packed back-to-back until the bytes run out.
+        static fun parseTree(treeBytes: UByte[]): List<TreeEntry> {
+            var entries = List<TreeEntry>.newList<TreeEntry>()
+            var pos = 0
+            var total = treeBytes.length().toInt()
+            while (pos < total) {
+                // Read ASCII octal mode up to the SP delimiter.
+                var modeSb = new StringBuilder()
+                while (treeBytes[pos.toUInt()] != 32UB) {
+                    modeSb.addChar(treeBytes[pos.toUInt()].toUShort())
+                    pos = pos + 1
+                }
+                pos = pos + 1
+
+                // Filename — bytes up to the NUL. We treat the bytes
+                // as UTF-8 (git stores names as raw bytes, but ASCII
+                // is the common case and UTF-8 names round-trip).
+                var nameSb = new StringBuilder()
+                while (treeBytes[pos.toUInt()] != 0UB) {
+                    nameSb.addChar(treeBytes[pos.toUInt()].toUShort())
+                    pos = pos + 1
+                }
+                pos = pos + 1
+
+                // 20 raw SHA bytes — hex-encode for use as a map key.
+                var rawSha = new UByte[20UI]
+                var k = 0
+                while (k < 20) {
+                    rawSha[k.toUInt()] = treeBytes[(pos + k).toUInt()]
+                    k = k + 1
+                }
+                pos = pos + 20
+
+                entries.add(new TreeEntry(modeSb.toString(),
+                                           nameSb.toString(),
+                                           HexUtil.toHex(rawSha)))
+            }
+            return entries
+        }
+    }
+}

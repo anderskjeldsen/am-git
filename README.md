@@ -7,36 +7,42 @@ Built on top of:
 - `am-lang-core` — strings, collections, file I/O, sockets-adjacent runtime
 - `am-net` — POSIX/AmiSSL-compatible TCP sockets
 - `am-ssl` — TLS via OpenSSL on libc / AmiSSL on AmigaOS
+- `am-z` — zlib bindings for packfile inflate
+- `am-crypto` — SHA-1 for git object ids
 - `am-json`, `am-yaml` — pulled in for future config / metadata work
-
-`am-crypto` (SHA-1) will be added when we start producing pack indexes —
-right now it isn't pulled in because both it and `am-ssl` ship an `errno.c`
-and `amissl_init.c` as `additionalCSources` with identical output names,
-which collides on the AmigaOS link.
 
 ## Status
 
-This is the *starter* of an Amiga-friendly git client. The current code:
+End-to-end `git clone` works. From an `https://...` URL, am-git:
 
-- Parses `http(s)://host[:port]/path` git URLs
-- Speaks smart-HTTP `git-upload-pack` v1
-- Handles chunked transfer encoding and side-band-64k framing
-- Downloads the packfile and writes it to `<dir>/.git/objects/pack/pack-tmp.pack`
-- Initialises a `.git` directory: `HEAD`, `config`, `refs/heads/*`,
-  `refs/remotes/origin/*`, `refs/tags/*`
+1. Negotiates the smart-HTTP `git-upload-pack` v1 protocol (with
+   `side-band-64k`, `ofs-delta`).
+2. Downloads the packfile.
+3. Walks every entry: full objects are SHA-1'd and indexed; delta
+   entries (OFS_DELTA / REF_DELTA) are inflated, applied to their
+   bases via the delta resolver, and added to the same index.
+4. Materialises the HEAD commit's tree into the target directory —
+   one file per blob, recursing into subdirectories.
+
+The resulting working tree is **byte-identical to what real `git clone`
+produces** (verified by `diff -r` against a reference clone). The
+`.git` directory is also populated with `HEAD`, `config`, and refs
+under `refs/heads/`, `refs/remotes/origin/`, `refs/tags/`, plus the
+raw `pack-tmp.pack` (no `.idx` yet — `git index-pack` regenerates it
+if you want real git to use the pack).
 
 What it does **not** do yet:
 
-- Build a `.idx` for the saved pack (run `git index-pack` against the file
-  for now)
-- Walk the HEAD tree and check out a working copy
-- Implement the SSH or git:// transports
-- Speak smart-HTTP protocol v2
-
-So a `clone` finishes with a fully populated `.git` directory but no working
-tree. Pointing real `git` at the same directory and running
-`git index-pack` followed by `git checkout HEAD -- .` will produce the same
-result as a normal clone.
+- Generate the `.pack`'s companion `.idx` index file. (Pack contents
+  are fully decoded in memory and used for the checkout; the on-disk
+  pack is a bonus for interop.)
+- Set executable mode on `mode 100755` blobs (we record the mode but
+  write all files at 0644 — needs a native `chmod` binding).
+- Real symbolic links (`mode 120000` blobs are written as regular
+  files containing the link target).
+- Submodules (`mode 160000` entries are skipped silently).
+- The SSH or git:// transports.
+- Smart-HTTP protocol v2.
 
 ## Usage
 
