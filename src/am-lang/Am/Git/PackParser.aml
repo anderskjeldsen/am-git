@@ -23,9 +23,13 @@ namespace Am.Git
     // (we have am-z's `Zlib.inflate` for that). For full objects we
     // also compute the SHA-1 of git's `"<type> <size>\0<content>"`
     // wrapper and stash the entry in the returned map. Delta entries
-    // come back unresolved in a separate list — step 3 of the
-    // pack-import plan walks that list, applies each delta to its
-    // base (recursively), and adds the result to `objects`.
+    // come back unresolved in a separate list — `DeltaResolver` walks
+    // that list, applies each delta to its base (recursively), and
+    // adds the result to `objects`.
+    //
+    // Every entry — full or delta — is also indexed by its absolute
+    // pack-byte offset in `byOffset`, so OFS_DELTA's pack-position
+    // references can find their bases at resolution time.
     //
     // The 20-byte pack trailer SHA-1 is intentionally not verified
     // here yet.
@@ -33,7 +37,6 @@ namespace Am.Git
     {
         import Am.Lang
         import Am.Collections
-        import Am.Crypto
         import Am.Z
 
         // Pack body starts at byte 12 (after `PACK` + 4-byte version
@@ -41,28 +44,29 @@ namespace Am.Git
         // trailer (20 bytes of SHA-1) sits after the last entry.
         private static var bodyStart: Int = 12
 
-        // Walk the pack and return both fully decoded objects and
-        // still-deferred deltas. See [PackParseResult] for shape.
         fun parseAll(): PackParseResult {
             var header = PackHeader.parse(this.packBytes)
             var objects = new HashMap<String, PackObject>()
+            var byOffset = new HashMap<Long, PackObject>()
             var deltas = List<PackObject>.newList<PackObject>()
 
             var offset = PackParser.bodyStart
             var i = 0UI
             while (i < header.objectCount) {
-                offset = this.readEntry(offset, objects, deltas)
+                offset = this.readEntry(offset, objects, byOffset, deltas)
                 i++
             }
 
-            return new PackParseResult(objects, deltas)
+            return new PackParseResult(objects, byOffset, deltas)
         }
 
-        // Decode one entry starting at `offset`. Adds the parsed
-        // object to either `objects` (full) or `deltas` (still
-        // deferred), and returns the offset of the next entry.
+        // Decode one entry starting at `offset`. Indexes the parsed
+        // object in `byOffset` (always), `objects` (if a full object),
+        // or `deltas` (if a deferred delta). Returns the offset of the
+        // next entry.
         private fun readEntry(offset: Int,
                               objects: HashMap<String, PackObject>,
+                              byOffset: HashMap<Long, PackObject>,
                               deltas: List<PackObject>): Int {
             var entryStart = offset
 
@@ -134,6 +138,7 @@ namespace Am.Git
             // --- record the entry ------------------------------
             var obj = new PackObject(typeCode, inflated)
             obj.packOffset = entryStart.toLong()
+            byOffset.set(obj.packOffset, obj)
 
             if (typeCode == 6) {
                 obj.baseOffset = baseOffset
@@ -143,39 +148,11 @@ namespace Am.Git
                 deltas.add(obj)
             } else {
                 // Full object — SHA the git-wrapped form.
-                var wrapped = PackParser.wrapForSha(obj.typeName(), inflated)
-                var digest = Sha1.digest(wrapped)
-                obj.sha = HexUtil.toHex(digest)
+                obj.sha = PackObject.computeSha(obj.typeName(), inflated)
                 objects.set(obj.sha, obj)
             }
 
             return nextOffset
-        }
-
-        // Build the bytes git SHA-1s for an object's id:
-        //
-        //     "<typename> <decimal-size>\0<raw content>"
-        //
-        // Constructed bytewise so the embedded NUL doesn't get mangled
-        // by any String/UTF-8 round-trip — the prefix is pure ASCII
-        // but content is opaque bytes.
-        private static fun wrapForSha(typeName: String, content: UByte[]): UByte[] {
-            var prefix = typeName + " " + content.length().toString()
-            var prefixBytes = prefix.toBytes("UTF-8")
-            var totalLen = prefixBytes.length() + 1UI + content.length()
-            var out = new UByte[totalLen]
-            var i = 0UI
-            while (i < prefixBytes.length()) {
-                out[i] = prefixBytes[i]
-                i++
-            }
-            out[prefixBytes.length()] = 0UB
-            var j = 0UI
-            while (j < content.length()) {
-                out[prefixBytes.length() + 1UI + j] = content[j]
-                j++
-            }
-            return out
         }
     }
 }

@@ -1,0 +1,215 @@
+namespace Am.Git
+{
+    // Resolves the delta entries that `PackParser` leaves deferred.
+    //
+    // Pack delta format (Documentation/technical/pack-format.txt):
+    //
+    //   The inflated content of an OFS_DELTA / REF_DELTA entry is:
+    //
+    //     varint base_size       — size of the base object
+    //     varint result_size     — size of the result we're producing
+    //     instruction_stream     — repeated COPY / INSERT ops
+    //
+    //   Each instruction's first byte selects which kind:
+    //     * bit 7 set  → COPY from base.
+    //         Low 7 bits is a bitmap of which extra fields follow:
+    //           bits 0..3 = offset bytes 0..3 (little-endian)
+    //           bits 4..6 = size bytes 0..2 (little-endian)
+    //         Read those bytes, then `copy(base[offset..offset+size])`
+    //         onto the result. If size came out 0, treat as 0x10000.
+    //     * bit 7 clear → INSERT literal.
+    //         Low 7 bits is N; the next N bytes are appended to result.
+    //
+    // Bases may themselves be deltas — we recurse and resolve those
+    // first. The pack format guarantees acyclic delta chains and that
+    // each base appears before its dependants in the pack body, so
+    // simple recursion terminates.
+    class DeltaResolver(private var result: PackParseResult)
+    {
+        import Am.Lang
+        import Am.Collections
+
+        // Resolve every entry in `result.deltas`. Successful results
+        // are also added to `result.objects` (keyed by SHA) so the
+        // caller can look any object up the same way regardless of
+        // whether it arrived as a full or delta entry.
+        fun resolveAll() {
+            var i = 0
+            while (i < this.result.deltas.getSize()) {
+                this.resolve(this.result.deltas.get(i))
+                i++
+            }
+        }
+
+        // Returns the (now-full) object. If the entry is still in
+        // delta form, resolve it (possibly recursing into the base).
+        // No-op if `delta.sha` is already populated.
+        private fun resolve(delta: PackObject): PackObject {
+            if (delta.sha != null) {
+                return delta
+            }
+
+            // Find the base entry. OFS_DELTA points by absolute pack
+            // offset; REF_DELTA by SHA. Both lookups go through the
+            // maps PackParser populated during step 2.
+            var baseObj: PackObject = null
+            if (delta.typeCode == 6) {
+                if (!this.result.byOffset.containsKey(delta.baseOffset)) {
+                    throw new Exception("OFS_DELTA base at offset " +
+                                         delta.baseOffset.toString() +
+                                         " not present in pack")
+                }
+                baseObj = this.result.byOffset.get(delta.baseOffset)
+            } else if (delta.typeCode == 7) {
+                if (this.result.objects.containsKey(delta.baseSha)) {
+                    baseObj = this.result.objects.get(delta.baseSha)
+                } else {
+                    // REF_DELTA bases that aren't in the pack are
+                    // "thin pack" references to objects the client
+                    // already has. We didn't advertise `thin-pack`,
+                    // so this shouldn't happen — surface clearly if
+                    // it does.
+                    throw new Exception("REF_DELTA base " + delta.baseSha +
+                                         " not present in pack (thin pack?)")
+                }
+            } else {
+                throw new Exception("resolve() called on non-delta entry type " +
+                                     delta.typeCode.toString())
+            }
+
+            // The base may itself still be a delta — drive it to
+            // completion before we try to apply our own instructions.
+            if (baseObj.isDelta() && baseObj.sha == null) {
+                baseObj = this.resolve(baseObj)
+            }
+
+            // Apply the delta and SHA the resulting content. The
+            // resolved object has the same TYPE as its base — git's
+            // pack-format doc says so, and the new SHA is the SHA of
+            // the wrapped result.
+            var resultBytes = DeltaResolver.applyDelta(baseObj.content, delta.content)
+            delta.typeCode = baseObj.typeCode
+            delta.content = resultBytes
+            delta.sha = PackObject.computeSha(delta.typeName(), resultBytes)
+            this.result.objects.set(delta.sha, delta)
+            return delta
+        }
+
+        // Apply `delta`'s instruction stream against `baseBytes`,
+        // returning the reconstructed bytes. Pure function — no state
+        // from the surrounding parse. (`base` is a reserved keyword
+        // in AmLang, hence `baseBytes`.)
+        private static fun applyDelta(baseBytes: UByte[], delta: UByte[]): UByte[] {
+            var pos = 0
+
+            // Read the two leading varints. The encoding is the same
+            // 7-bit-continuation form used for the entry's size, but
+            // starting at shift 0 instead of 4.
+            var baseSize: Long = 0L
+            var multiplier: Long = 1L
+            var go = true
+            while (go) {
+                var b = delta[pos.toUInt()].toInt()
+                pos = pos + 1
+                baseSize = baseSize + ((b & 0x7F).toLong() * multiplier)
+                multiplier = multiplier * 128L
+                if ((b & 0x80) == 0) {
+                    go = false
+                }
+            }
+            // Sanity — if the delta thinks the base is a different
+            // size than what we actually have, the chain is corrupt.
+            if (baseSize != baseBytes.length().toLong()) {
+                throw new Exception("Delta base size mismatch: header says " +
+                                     baseSize.toString() + ", base is " +
+                                     baseBytes.length().toString())
+            }
+
+            var resultSize: Long = 0L
+            multiplier = 1L
+            go = true
+            while (go) {
+                var b = delta[pos.toUInt()].toInt()
+                pos = pos + 1
+                resultSize = resultSize + ((b & 0x7F).toLong() * multiplier)
+                multiplier = multiplier * 128L
+                if ((b & 0x80) == 0) {
+                    go = false
+                }
+            }
+
+            var out = new UByte[resultSize.toInt().toUInt()]
+            var outPos = 0
+            var deltaLen = delta.length().toInt()
+
+            while (pos < deltaLen) {
+                var op = delta[pos.toUInt()].toInt()
+                pos = pos + 1
+
+                if ((op & 0x80) != 0) {
+                    // COPY — read the offset and size sub-fields the
+                    // op's low bits asked for.
+                    var copyOffset = 0
+                    if ((op & 0x01) != 0) {
+                        copyOffset = copyOffset | (delta[pos.toUInt()].toInt() & 0xFF)
+                        pos = pos + 1
+                    }
+                    if ((op & 0x02) != 0) {
+                        copyOffset = copyOffset | ((delta[pos.toUInt()].toInt() & 0xFF) * 256)
+                        pos = pos + 1
+                    }
+                    if ((op & 0x04) != 0) {
+                        copyOffset = copyOffset | ((delta[pos.toUInt()].toInt() & 0xFF) * 65536)
+                        pos = pos + 1
+                    }
+                    if ((op & 0x08) != 0) {
+                        copyOffset = copyOffset | ((delta[pos.toUInt()].toInt() & 0xFF) * 16777216)
+                        pos = pos + 1
+                    }
+                    var copySize = 0
+                    if ((op & 0x10) != 0) {
+                        copySize = copySize | (delta[pos.toUInt()].toInt() & 0xFF)
+                        pos = pos + 1
+                    }
+                    if ((op & 0x20) != 0) {
+                        copySize = copySize | ((delta[pos.toUInt()].toInt() & 0xFF) * 256)
+                        pos = pos + 1
+                    }
+                    if ((op & 0x40) != 0) {
+                        copySize = copySize | ((delta[pos.toUInt()].toInt() & 0xFF) * 65536)
+                        pos = pos + 1
+                    }
+                    if (copySize == 0) {
+                        // Spec: a literal-zero size means 65536. Lets
+                        // a single COPY ever-so-slightly outrun what
+                        // 3 size bytes can encode.
+                        copySize = 65536
+                    }
+                    var k = 0
+                    while (k < copySize) {
+                        out[(outPos + k).toUInt()] = baseBytes[(copyOffset + k).toUInt()]
+                        k = k + 1
+                    }
+                    outPos = outPos + copySize
+                } else {
+                    // INSERT — `op` bytes of literal data follow.
+                    // (op == 0 is reserved and shouldn't appear.)
+                    var n = op & 0x7F
+                    var k = 0
+                    while (k < n) {
+                        out[(outPos + k).toUInt()] = delta[(pos + k).toUInt()]
+                        k = k + 1
+                    }
+                    pos = pos + n
+                    outPos = outPos + n
+                }
+            }
+
+            if (outPos != resultSize.toInt()) {
+                throw new Exception("Delta produced " + outPos.toString() +
+                                     " bytes; header said " + resultSize.toString())
+            }
+            return out
+        }
+    }
+}

@@ -54,29 +54,36 @@ namespace Am.Git
 
             CloneClient.writeRepository(targetDir, remoteUrl, advertisement, defaultBranch, packBytes)
 
-            // Step 2 of the pack-import plan: walk the pack and SHA
-            // every full object. Deltas are inflated but their bases
-            // aren't applied yet — that lands in step 3. For repos
-            // dominated by deltas (i.e. anything from GitHub) the
-            // "objects" count below will be small and "deltas" large
-            // until that's wired.
+            // Walk the pack and SHA every entry: full objects get
+            // hashed inline by `PackParser`; deltas are inflated
+            // there but resolved against their bases by
+            // `DeltaResolver` immediately afterwards. End state:
+            // `parsed.objects` keyed by SHA, with every entry
+            // verifiably matching what `git index-pack` would produce
+            // for the same pack.
             "Parsing pack...".println()
             var parser = new PackParser(packBytes)
             var parsed = parser.parseAll()
             ("Pack contents: " + parsed.objects.getSize().toString() +
              " full objects, " + parsed.deltas.getSize().toString() +
-             " deltas (deferred)").println()
-            // Spot-check the SHA pipeline: HEAD's commit SHA came from
-            // the server's ref advertisement — it's git's authoritative
-            // id. If our wrapped-form SHA-1 matches, our hashing and
-            // entry-walk are correct. (HEAD's commit is always a full
-            // object, never a delta, so it has to land in `objects`
-            // even at this stage.)
+             " deltas").println()
+
+            if (parsed.deltas.getSize() > 0) {
+                "Resolving deltas...".println()
+                var resolver = new DeltaResolver(parsed)
+                resolver.resolveAll()
+                ("After resolution: " + parsed.objects.getSize().toString() +
+                 " total objects").println()
+            }
+
+            // Sanity check: every advertised ref's SHA should now be
+            // reachable in `objects`. If the resolver is right, every
+            // commit in the pack — full or delta-encoded — ends up
+            // here with the same id git uses.
             if (parsed.objects.containsKey(headSha)) {
                 ("HEAD commit SHA matches: " + headSha).println()
             } else {
-                ("WARN: HEAD commit " + headSha + " not found in parsed objects — " +
-                 "either it's a delta (unlikely) or our SHA pipeline is off.").println()
+                ("WARN: HEAD commit " + headSha + " not found in parsed objects").println()
             }
 
             ("Done. Note: this clone does not yet build a pack index or check out a working tree.").println()

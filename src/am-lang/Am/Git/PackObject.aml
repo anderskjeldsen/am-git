@@ -15,6 +15,7 @@ namespace Am.Git
     class PackObject(var typeCode: Int, var content: UByte[])
     {
         import Am.Lang
+        import Am.Crypto
 
         // SHA-1 hex (40 lowercase chars). Set for full objects after
         // the parser hashes the wrapped form. Stays null for delta
@@ -59,6 +60,40 @@ namespace Am.Git
                 return "ref-delta"
             }
             return "unknown"
+        }
+
+        // Build the bytes git SHA-1s for an object's id:
+        //
+        //     "<typename> <decimal-size>\0<raw content>"
+        //
+        // Constructed bytewise so the embedded NUL doesn't get mangled
+        // by any String/UTF-8 round-trip — the prefix is pure ASCII
+        // but content is opaque bytes.
+        static fun wrapForSha(typeName: String, content: UByte[]): UByte[] {
+            var prefix = typeName + " " + content.length().toString()
+            var prefixBytes = prefix.toBytes("UTF-8")
+            var totalLen = prefixBytes.length() + 1UI + content.length()
+            var out = new UByte[totalLen]
+            var i = 0UI
+            while (i < prefixBytes.length()) {
+                out[i] = prefixBytes[i]
+                i++
+            }
+            out[prefixBytes.length()] = 0UB
+            var j = 0UI
+            while (j < content.length()) {
+                out[prefixBytes.length() + 1UI + j] = content[j]
+                j++
+            }
+            return out
+        }
+
+        // SHA-1 of the wrapped form, hex-encoded — git's authoritative
+        // id for an object of the given type and content.
+        static fun computeSha(typeName: String, content: UByte[]): String {
+            var wrapped = PackObject.wrapForSha(typeName, content)
+            var digest = Sha1.digest(wrapped)
+            return HexUtil.toHex(digest)
         }
     }
 }
