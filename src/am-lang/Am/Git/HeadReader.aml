@@ -1,0 +1,64 @@
+namespace Am.Git
+{
+    // Resolves `<gitDir>/HEAD` to a `HeadInfo`.
+    //
+    // `.git/HEAD` is one of two forms:
+    //   * `ref: refs/heads/<branch>\n` — the normal "on a branch" case
+    //   * `<40-char hex sha>\n`        — detached HEAD
+    //
+    // For the symbolic-ref form we then follow the indirection to
+    // `<gitDir>/<refpath>`; if that file doesn't exist (e.g. after a
+    // fresh `git init` before the first commit) we report
+    // `commitSha = null` so the caller knows to omit the commit
+    // object's `parent` line.
+    //
+    // We don't read `packed-refs` yet — am-git's own clones always
+    // write loose refs, and a freshly-init'd repo has no packed-refs
+    // either. Cross-repo cases that rely on `git gc`-packed refs
+    // come later.
+    class HeadReader
+    {
+        import Am.Lang
+        import Am.IO
+
+        static fun read(gitDir: String): HeadInfo {
+            var headPath = gitDir + "/HEAD"
+            var headFile = new File(headPath)
+            if (!headFile.exists()) {
+                throw new Exception("HEAD not found at " + headPath +
+                                     " — not a git repository?")
+            }
+
+            var content = String.readFromFile(headPath).trim()
+
+            if (content.startsWith("ref: ")) {
+                // "ref: refs/heads/<branch>" → resolve.
+                var refPath = content.substringToEnd(5UI)
+                if (!refPath.startsWith("refs/heads/")) {
+                    throw new Exception("HEAD points outside refs/heads/: " + refPath)
+                }
+                var branch = refPath.substringToEnd(11UI)
+
+                var branchFilePath = gitDir + "/" + refPath
+                var branchFile = new File(branchFilePath)
+                if (!branchFile.exists()) {
+                    // Unborn branch — `git init` left HEAD pointing
+                    // at refs/heads/<branch> but never created the
+                    // ref file. The first commit creates it.
+                    return new HeadInfo(branch, null, false)
+                }
+                var sha = String.readFromFile(branchFilePath).trim()
+                if (sha.length() != 40) {
+                    throw new Exception("ref " + refPath + " has unexpected content: " + sha)
+                }
+                return new HeadInfo(branch, sha, false)
+            }
+
+            // Detached HEAD — raw SHA after trim().
+            if (content.length() != 40) {
+                throw new Exception("HEAD content is neither a ref nor a 40-char SHA: " + content)
+            }
+            return new HeadInfo(null, content, true)
+        }
+    }
+}

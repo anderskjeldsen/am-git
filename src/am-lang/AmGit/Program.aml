@@ -1,14 +1,17 @@
 namespace AmGit
 {
-    // CLI entry point. Currently only `clone` is wired up:
+    // CLI entry point. Supports:
     //
     //     am-git clone <url> [target-dir]
+    //     am-git hash-object [-w] <file>
     //
-    // The target dir defaults to the last segment of the URL with any
-    // trailing `.git` stripped — same convention as upstream git.
+    // The target dir for `clone` defaults to the last segment of the
+    // URL with any trailing `.git` stripped — same convention as
+    // upstream git.
     class Program
     {
         import Am.Lang
+        import Am.IO
         import Am.Git
 
         static fun main(args: String[]) {
@@ -19,6 +22,12 @@ namespace AmGit
             var command = args[0UI]
             if (command == "clone") {
                 Program.runClone(args)
+            } else if (command == "hash-object") {
+                Program.runHashObject(args)
+            } else if (command == "whoami") {
+                Program.runWhoAmI(args)
+            } else if (command == "head") {
+                Program.runHead(args)
             } else if (command == "help" || command == "--help" || command == "-h") {
                 Program.printUsage()
             } else if (command == "version" || command == "--version") {
@@ -52,11 +61,90 @@ namespace AmGit
             }
         }
 
+        // Mirrors `git hash-object [-w] <file>`. Without `-w` just
+        // prints the SHA-1 the file would have if it were a blob;
+        // with `-w` also writes it as a loose object under ./.git/
+        // (caller's cwd is assumed to be a working tree root for
+        // now — no upward search yet).
+        private static fun runHashObject(args: String[]) {
+            var write = false
+            var fileArgIdx = 1UI
+            if (args.length() >= 3UI && args[1UI] == "-w") {
+                write = true
+                fileArgIdx = 2UI
+            }
+            if (args.length() <= fileArgIdx) {
+                "usage: am-git hash-object [-w] <file>".println()
+                return
+            }
+            try {
+                var path = args[fileArgIdx]
+                var file = new File(path)
+                if (!file.exists()) {
+                    ("hash-object: " + path + " does not exist").println()
+                    return
+                }
+                var stream = new FileStream(file, FileAccess.readOnly)
+                var content = stream.readAll()
+                if (write) {
+                    var writer = new LooseObjectWriter(".git")
+                    writer.write("blob", content).println()
+                } else {
+                    PackObject.computeSha("blob", content).println()
+                }
+            } catch (ex: Exception) {
+                ("hash-object failed: " + ex.message).println()
+            }
+        }
+
+        // Diagnostic: print what identity am-git would commit as.
+        // Resolves Identity from env vars and prints author/committer
+        // lines as they'd appear in a commit object right now. Useful
+        // for confirming AM_GIT_USER_NAME/EMAIL are picked up before
+        // running a real commit.
+        private static fun runWhoAmI(args: String[]) {
+            var now = new DateTime()
+            var author = Identity.loadAuthor()
+            var committer = Identity.loadCommitter()
+            if (author == null) {
+                "author: <unset — set GIT_AUTHOR_NAME/EMAIL or AM_GIT_USER_NAME/EMAIL>".println()
+            } else {
+                ("author    " + author.formatLine(now)).println()
+            }
+            if (committer == null) {
+                "committer: <unset — set GIT_COMMITTER_NAME/EMAIL or AM_GIT_USER_NAME/EMAIL>".println()
+            } else {
+                ("committer " + committer.formatLine(now)).println()
+            }
+        }
+
+        // Diagnostic: read `.git/HEAD` (and the branch ref it points
+        // at) and print the resolved state. Mirrors `git rev-parse
+        // HEAD` + `git symbolic-ref HEAD` rolled together. Runs
+        // against `./.git` in the cwd.
+        private static fun runHead(args: String[]) {
+            try {
+                var info = HeadReader.read(".git")
+                if (info.detached) {
+                    ("detached HEAD at " + info.commitSha).println()
+                } else if (info.isInitial()) {
+                    ("on branch " + info.branch + " (unborn — no commits yet)").println()
+                } else {
+                    ("on branch " + info.branch + " at " + info.commitSha).println()
+                }
+            } catch (ex: Exception) {
+                ("head: " + ex.message).println()
+            }
+        }
+
         private static fun printUsage() {
             "am-git — a small git client written in AmLang".println()
             "".println()
             "Commands:".println()
             "  clone <url> [target-dir]   Clone a remote repository over smart-HTTP".println()
+            "  hash-object [-w] <file>    Compute (and optionally write) a blob's SHA-1".println()
+            "  whoami                     Print author/committer as a commit would record".println()
+            "  head                       Print resolved HEAD (branch / commit / detached)".println()
             "  version                    Print version information".println()
             "  help                       Show this help".println()
         }

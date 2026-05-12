@@ -1,0 +1,51 @@
+namespace Am.Git
+{
+    // Writes a single git object to disk as a "loose" file under
+    //
+    //     .git/objects/<first-2-hex-chars>/<remaining-38-hex-chars>
+    //
+    // contents being zlib-deflated `"<type> <decimal-size>\0<raw-bytes>"`
+    // (the same wrapped form `PackObject.computeSha` already hashes).
+    //
+    // The store is content-addressed: if a file at that path already
+    // exists its content is — by construction — bit-equivalent (modulo
+    // zlib compression-level choices) to what we'd write, so we skip
+    // and return the SHA. That makes `write` cheap to call repeatedly
+    // and harmless if two TreeBuilder branches happen to produce the
+    // same blob/tree.
+    //
+    // This is the only place am-git needs zlib *deflate* (vs inflate
+    // for pack reads / checkout); the round-trip is exercised by
+    // am-z's own tests.
+    class LooseObjectWriter(private var gitDir: String)
+    {
+        import Am.Lang
+        import Am.IO
+        import Am.Z
+
+        // Write the object (or noop if already on disk). Returns the
+        // 40-char hex SHA-1 — caller plugs that into tree entries,
+        // commit headers, or refs.
+        fun write(typeName: String, content: UByte[]): String {
+            var sha = PackObject.computeSha(typeName, content)
+            var path = this.pathFor(sha)
+            var existing = new File(path)
+            if (existing.exists()) {
+                return sha
+            }
+            var wrapped = PackObject.wrapForSha(typeName, content)
+            var compressed = Zlib.deflate(wrapped)
+            Repository.writeBytes(path, compressed)
+            return sha
+        }
+
+        // Compose the on-disk path for a SHA without writing anything.
+        // Public so callers can probe / read existing loose objects in
+        // a follow-up.
+        fun pathFor(sha: String): String {
+            var dir = sha.substring(0UI, 2UI)
+            var rest = sha.substringToEnd(2UI)
+            return this.gitDir + "/objects/" + dir + "/" + rest
+        }
+    }
+}

@@ -1,0 +1,87 @@
+namespace Am.Git
+{
+    // The "who is making this commit" part of a commit object.
+    // Authors and committers are formatted the same way:
+    //
+    //     <name> <email> <unix-seconds> <±HHMM>
+    //
+    // e.g. `Anders Kjeldsen <kjeldsenanders@gmail.com> 1715520000 +0200`
+    //
+    // The fields come from environment variables — same names real
+    // git checks, plus an am-git-specific fallback so users who don't
+    // already have GIT_* set can configure us in one place:
+    //
+    //   author:    GIT_AUTHOR_NAME    → AM_GIT_USER_NAME
+    //              GIT_AUTHOR_EMAIL   → AM_GIT_USER_EMAIL
+    //   committer: GIT_COMMITTER_NAME → AM_GIT_USER_NAME
+    //              GIT_COMMITTER_EMAIL→ AM_GIT_USER_EMAIL
+    //
+    // No `~/.gitconfig` parsing yet — env vars only. `loadAuthor` /
+    // `loadCommitter` return null when neither override is set; the
+    // CLI is expected to bail loudly rather than commit as
+    // `unknown <unknown>`.
+    class Identity(var name: String, var email: String)
+    {
+        import Am.Lang
+
+        static fun loadAuthor(): Identity {
+            return Identity.loadFrom("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL")
+        }
+
+        static fun loadCommitter(): Identity {
+            return Identity.loadFrom("GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")
+        }
+
+        private static fun loadFrom(nameVar: String, emailVar: String): Identity {
+            var name = Environment.get(nameVar)
+            if (name == null) {
+                name = Environment.get("AM_GIT_USER_NAME")
+            }
+            var email = Environment.get(emailVar)
+            if (email == null) {
+                email = Environment.get("AM_GIT_USER_EMAIL")
+            }
+            if (name == null || email == null) {
+                return null
+            }
+            return new Identity(name, email)
+        }
+
+        // Format as git expects for the author/committer line. Caller
+        // typically creates one `DateTime` and hands it to both
+        // identities so author and committer timestamps stay in sync.
+        fun formatLine(now: DateTime): String {
+            var unixSec = (now.getEpochMillis() / 1000UL).toString()
+            var tz = Identity.formatTimezone(now.getTimezoneOffsetMinutes())
+            return this.name + " <" + this.email + "> " + unixSec + " " + tz
+        }
+
+        // Render a tz offset in minutes as git's ±HHMM string:
+        //     0     -> "+0000"
+        //     60    -> "+0100"
+        //     -480  -> "-0800"   (UTC-8, e.g. PST)
+        //     330   -> "+0530"   (UTC+5:30, e.g. IST)
+        private static fun formatTimezone(minutes: Int): String {
+            var sign = "+"
+            var abs = minutes
+            if (abs < 0) {
+                sign = "-"
+                abs = -abs
+            }
+            var hours = abs / 60
+            var mins = abs % 60
+            var sb = new StringBuilder()
+            sb.add(sign)
+            sb.add(Identity.pad2(hours))
+            sb.add(Identity.pad2(mins))
+            return sb.toString()
+        }
+
+        private static fun pad2(n: Int): String {
+            if (n < 10) {
+                return "0" + n.toString()
+            }
+            return n.toString()
+        }
+    }
+}
