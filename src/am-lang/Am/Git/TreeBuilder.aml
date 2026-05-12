@@ -1,0 +1,203 @@
+namespace Am.Git
+{
+    // Reverse of `WorkTree.checkout` — walks an on-disk working tree
+    // and produces git tree + blob objects, returning the root tree
+    // SHA.
+    //
+    // Algorithm (recursive, depth-first):
+    //
+    //   buildDir(path):
+    //     for each child of path (skipping `.git`):
+    //       if subdirectory:
+    //         sub = buildDir(child)
+    //         if sub != null: entries += (40000, name, sub)
+    //       else:
+    //         bytes = read child
+    //         blob = writer.write("blob", bytes)
+    //         entries += (100644, name, blob)
+    //     if entries empty AND not root: return null  (git doesn't
+    //                                                  record empty
+    //                                                  subdirs)
+    //     sort entries with git's tree-name comparator
+    //     return writer.write("tree", serialize(entries))
+    //
+    // v1 limitations (matching what `WorkTree` already does on the
+    // other side):
+    //
+    //   * Every file is recorded at mode 100644. We don't probe for
+    //     +x (no `stat()` binding); executables get downgraded on
+    //     round-trip.
+    //   * No symlink detection. Symlinks are followed and their
+    //     target content is recorded as a regular file.
+    //   * No `.gitignore`. Everything that isn't literally named
+    //     `.git` lands in the tree.
+    //   * No staging — `build()` always reflects the live working
+    //     tree, no index involvement.
+    class TreeBuilder(private var workTreePath: String,
+                      private var writer: LooseObjectWriter)
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        // Build the entire tree starting from `workTreePath`.
+        // Returns the root tree's SHA. The empty working-tree case
+        // returns the well-known empty-tree SHA
+        // `4b825dc642cb6eb9a060e54bf8d69288fbee4904` (`SHA-1("tree 0\0")`).
+        fun build(): String {
+            var sha = this.buildDir(this.workTreePath, true)
+            if (sha == null) {
+                // Should be unreachable — `buildDir(..., isRoot=true)`
+                // writes the empty tree explicitly rather than
+                // returning null.
+                throw new Exception("TreeBuilder.build: root buildDir returned null")
+            }
+            return sha
+        }
+
+        // Recursive walk. `isRoot=true` forces a tree object to be
+        // written even for an empty directory (matching git's
+        // "every commit has a root tree" rule); for nested empty
+        // subdirs we return null and the caller skips the parent
+        // reference, matching git's "don't record empty subdirs"
+        // behaviour.
+        private fun buildDir(dirPath: String, isRoot: Bool): String {
+            var dir = new File(dirPath)
+            var children = dir.listFiles()
+            var entries = List<TreeEntry>.newList<TreeEntry>()
+
+            var i = 0
+            while (i < children.length().toInt()) {
+                var child = children[i.toUInt()]
+                var name = child.getName()
+
+                // Skip git's metadata dir. Defensive — git itself
+                // wouldn't let `.git` appear nested, but the cost
+                // of checking is zero.
+                if (name == ".git") {
+                    i = i + 1
+                    continue
+                }
+
+                if (child.isDirectory()) {
+                    var subSha = this.buildDir(child.toString(), false)
+                    if (subSha != null) {
+                        entries.add(new TreeEntry("40000", name, subSha))
+                    }
+                } else {
+                    var blobBytes = TreeBuilder.readFileBytes(child.toString())
+                    var blobSha = this.writer.write("blob", blobBytes)
+                    entries.add(new TreeEntry("100644", name, blobSha))
+                }
+                i = i + 1
+            }
+
+            if (entries.getSize() == 0 && !isRoot) {
+                return null
+            }
+
+            TreeBuilder.sortEntries(entries)
+            var serialized = TreeBuilder.serialize(entries)
+            return this.writer.write("tree", serialized)
+        }
+
+        // Read a file's full contents as raw bytes.
+        private static fun readFileBytes(path: String): UByte[] {
+            var file = new File(path)
+            var stream = new FileStream(file, FileAccess.readOnly)
+            return stream.readAll()
+        }
+
+        // git's tree-name comparator. Compare names byte-wise; if one
+        // name is a prefix of the other, the "next" byte for the
+        // shorter side is `/` (0x2F) when that entry is a tree and 0
+        // when it's a file. See ROADMAP / the discussion around
+        // `app.c` vs `app/` for why this matters.
+        private static fun compareEntries(a: TreeEntry, b: TreeEntry): Int {
+            var aName = a.name
+            var bName = b.name
+            var aLen = aName.length()
+            var bLen = bName.length()
+            var minLen = aLen
+            if (bLen < minLen) {
+                minLen = bLen
+            }
+
+            var i = 0
+            while (i < minLen) {
+                var ac = aName.characterAt(i.toUInt()).toInt()
+                var bc = bName.characterAt(i.toUInt()).toInt()
+                if (ac < bc) { return -1 }
+                if (ac > bc) { return 1 }
+                i = i + 1
+            }
+
+            // Shared prefix equal. The "past-end" byte breaks the
+            // tie — `/` for trees, NUL (0) for files.
+            var aChar = 0
+            var bChar = 0
+            if (aLen > minLen) {
+                aChar = aName.characterAt(minLen.toUInt()).toInt()
+            } else if (a.isTree()) {
+                aChar = 47
+            }
+            if (bLen > minLen) {
+                bChar = bName.characterAt(minLen.toUInt()).toInt()
+            } else if (b.isTree()) {
+                bChar = 47
+            }
+            if (aChar < bChar) { return -1 }
+            if (aChar > bChar) { return 1 }
+            return 0
+        }
+
+        // In-place insertion sort using compareEntries. Directories
+        // rarely have more than a few dozen entries, so n² is fine.
+        private static fun sortEntries(entries: List<TreeEntry>) {
+            var n = entries.getSize()
+            var i = 1
+            while (i < n) {
+                var key = entries.get(i)
+                var j = i - 1
+                while (j >= 0 && TreeBuilder.compareEntries(entries.get(j), key) > 0) {
+                    entries.set(j + 1, entries.get(j))
+                    j = j - 1
+                }
+                entries.set(j + 1, key)
+                i = i + 1
+            }
+        }
+
+        // Serialise a list of TreeEntries into the bytes git's tree
+        // object format expects:
+        //
+        //     <ascii-octal-mode> SP <name> NUL <20-byte-raw-sha>
+        //
+        // packed end-to-end with no separator. No outer length —
+        // the entry stream is exactly as long as the tree object's
+        // size field promises.
+        private static fun serialize(entries: List<TreeEntry>): UByte[] {
+            var buf = List<UByte>.newList<UByte>()
+            var i = 0
+            while (i < entries.getSize()) {
+                var entry = entries.get(i)
+                TreeBuilder.appendBytes(buf, entry.mode.toBytes("UTF-8"))
+                buf.add(32UB)
+                TreeBuilder.appendBytes(buf, entry.name.toBytes("UTF-8"))
+                buf.add(0UB)
+                // Hex SHA back to its raw 20-byte form.
+                TreeBuilder.appendBytes(buf, HexUtil.fromHex(entry.sha))
+                i = i + 1
+            }
+            return buf.toArray()
+        }
+
+        private static fun appendBytes(list: List<UByte>, bytes: UByte[]) {
+            var i = 0
+            while (i < bytes.length().toInt()) {
+                list.add(bytes[i.toUInt()])
+                i = i + 1
+            }
+        }
+    }
+}

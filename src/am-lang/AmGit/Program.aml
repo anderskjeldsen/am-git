@@ -28,6 +28,8 @@ namespace AmGit
                 Program.runWhoAmI(args)
             } else if (command == "head") {
                 Program.runHead(args)
+            } else if (command == "write-tree") {
+                Program.runWriteTree(args)
             } else if (command == "help" || command == "--help" || command == "-h") {
                 Program.printUsage()
             } else if (command == "version" || command == "--version") {
@@ -137,6 +139,21 @@ namespace AmGit
             }
         }
 
+        // Diagnostic: walk the working tree (cwd) and write blobs +
+        // trees as loose objects under ./.git/. Prints the root tree
+        // SHA. Mirrors `git write-tree` — useful to confirm our
+        // TreeBuilder's SHA matches what real git produces for the
+        // same on-disk state.
+        private static fun runWriteTree(args: String[]) {
+            try {
+                var writer = new LooseObjectWriter(".git")
+                var builder = new TreeBuilder(".", writer)
+                builder.build().println()
+            } catch (ex: Exception) {
+                ("write-tree: " + ex.message).println()
+            }
+        }
+
         private static fun printUsage() {
             "am-git — a small git client written in AmLang".println()
             "".println()
@@ -145,6 +162,7 @@ namespace AmGit
             "  hash-object [-w] <file>    Compute (and optionally write) a blob's SHA-1".println()
             "  whoami                     Print author/committer as a commit would record".println()
             "  head                       Print resolved HEAD (branch / commit / detached)".println()
+            "  write-tree                 Build trees/blobs from cwd, print root tree SHA".println()
             "  version                    Print version information".println()
             "  help                       Show this help".println()
         }
