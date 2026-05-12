@@ -1,0 +1,210 @@
+namespace Am.Git
+{
+    // Collects every object reachable from `newSha` that isn't
+    // already reachable from `haveSha`. This is the set we send
+    // in a push.
+    //
+    // Algorithm:
+    //
+    //   if haveSha != zeros:
+    //       walk commits/trees/blobs from haveSha, mark in `seen`.
+    //       (these are objects the remote already has — boundary)
+    //
+    //   walk commits/trees/blobs from newSha, adding anything not
+    //   in `seen` to `toSend`. Stops at any object already in seen
+    //   (so a `newSha` commit that itself is reachable from haveSha
+    //   contributes nothing, which is correct).
+    //
+    // Output: list of SHAs to pack. Order matters slightly — git
+    // recommends commits first, then trees, then blobs, but receive-
+    // pack accepts any order so we just emit insertion order.
+    //
+    // What this walker DOES NOT do:
+    //   * Tags (`type=4`) — they'd be reachable as ref targets, not
+    //     from commits. We don't push tags yet.
+    //   * Submodules (`mode 160000` in a tree) — the entry stores a
+    //     gitlink SHA but the referenced commit isn't in our object
+    //     store. Skip silently.
+    class ObjectWalker(private var store: ObjectStore)
+    {
+        import Am.Lang
+        import Am.Collections
+
+        // 40-zeros — git's "no such object" sentinel used by
+        // receive-pack to mean "create this ref" (when on the old
+        // side) or "delete this ref" (when on the new side).
+        private static var zeroSha: String = "0000000000000000000000000000000000000000"
+
+        fun collect(newSha: String, haveSha: String): List<String> {
+            var seen = new HashMap<String, Bool>()
+            var toSend = List<String>.newList<String>()
+
+            // Seed `seen` from haveSha if it's a real commit. For an
+            // initial push (haveSha all zeros) we skip — every
+            // object will be new to the remote.
+            if (haveSha != null && haveSha != ObjectWalker.zeroSha) {
+                this.walk(haveSha, seen, null)
+            }
+
+            // The real walk: collect everything reachable from newSha
+            // that wasn't seen during the seeding pass.
+            this.walk(newSha, seen, toSend)
+
+            return toSend
+        }
+
+        // Walks the commit DAG starting at `startSha`. Every visited
+        // object's SHA is added to `seen`, and (when `toSend != null`)
+        // to `toSend` as well.
+        //
+        // Uses an explicit work-list to keep stack depth bounded —
+        // recursion bombs on deep history (every commit a frame).
+        private fun walk(startSha: String, seen: HashMap<String, Bool>, toSend: List<String>) {
+            var queue = List<String>.newList<String>()
+            queue.add(startSha)
+
+            loop {
+                if (queue.getSize() == 0) {
+                    break
+                }
+                var current = queue.removeLast()
+                if (seen.containsKey(current)) {
+                    continue
+                }
+                seen.set(current, true)
+
+                // Tolerate objects we don't have locally — that
+                // happens during the seeding pass if haveSha walks
+                // back to commits that pre-date our clone's depth
+                // (shallow clones aren't a thing yet, but defensive).
+                if (!this.store.has(current)) {
+                    continue
+                }
+                var commit = this.store.read(current)
+                if (commit.typeCode != 1) {
+                    // The queue should only ever contain commit SHAs,
+                    // but if we somehow got pointed at a tree/blob,
+                    // ignore.
+                    continue
+                }
+
+                if (toSend != null) {
+                    toSend.add(current)
+                }
+                // The commit's root tree (and recursively everything
+                // under it) is reachable through this commit.
+                var treeSha = WorkTree.extractRootTreeSha(commit.content)
+                this.walkTree(treeSha, seen, toSend)
+
+                // Queue parents — multi-parent commits (merges) get
+                // every parent enqueued; the `seen` map dedups.
+                var parents = ObjectWalker.parseParentShas(commit.content)
+                var pi = 0
+                while (pi < parents.getSize()) {
+                    queue.add(parents.get(pi))
+                    pi = pi + 1
+                }
+            }
+        }
+
+        // Recursive tree walk. Iterative to keep stack bounded; deep
+        // trees aren't common but a deep AmigaOS source tree could
+        // hit a few hundred levels.
+        private fun walkTree(rootSha: String, seen: HashMap<String, Bool>, toSend: List<String>) {
+            var queue = List<String>.newList<String>()
+            queue.add(rootSha)
+            loop {
+                if (queue.getSize() == 0) {
+                    break
+                }
+                var sha = queue.removeLast()
+                if (seen.containsKey(sha)) {
+                    continue
+                }
+                seen.set(sha, true)
+
+                if (!this.store.has(sha)) {
+                    continue
+                }
+                var tree = this.store.read(sha)
+                if (tree.typeCode != 2) {
+                    continue
+                }
+                if (toSend != null) {
+                    toSend.add(sha)
+                }
+
+                var entries = WorkTree.parseTree(tree.content)
+                var i = 0
+                while (i < entries.getSize()) {
+                    var entry = entries.get(i)
+                    if (entry.isTree()) {
+                        queue.add(entry.sha)
+                    } else if (entry.isSubmodule()) {
+                        // gitlink — points at a commit in another
+                        // repo. Not part of our object store, skip.
+                    } else {
+                        // Blob (file, executable file, or symlink-as-
+                        // blob). No children; just mark + collect.
+                        if (!seen.containsKey(entry.sha)) {
+                            seen.set(entry.sha, true)
+                            if (toSend != null) {
+                                toSend.add(entry.sha)
+                            }
+                        }
+                    }
+                    i = i + 1
+                }
+            }
+        }
+
+        // Parse `parent <40-hex>\n` lines from a commit's body. Stops
+        // at the first empty line (start of the commit message).
+        // Returns 0..N SHAs (0 for the root commit, 1 for normal,
+        // 2+ for merges).
+        private static fun parseParentShas(commitBytes: UByte[]): List<String> {
+            var parents = List<String>.newList<String>()
+            var pos = 0
+            var total = commitBytes.length().toInt()
+            loop {
+                if (pos >= total) {
+                    break
+                }
+                // Find the end of the current line (LF).
+                var lineEnd = pos
+                while (lineEnd < total && commitBytes[lineEnd.toUInt()].toInt() != 10) {
+                    lineEnd = lineEnd + 1
+                }
+                var lineLen = lineEnd - pos
+                if (lineLen == 0) {
+                    // Empty line — header section ended, message follows.
+                    break
+                }
+                // "parent " is 7 chars + 40 hex = 47 bytes minimum.
+                if (lineLen >= 47 && ObjectWalker.lineHasPrefix(commitBytes, pos, "parent ")) {
+                    var shaBytes = new UByte[40UI]
+                    var k = 0
+                    while (k < 40) {
+                        shaBytes[k.toUInt()] = commitBytes[(pos + 7 + k).toUInt()]
+                        k = k + 1
+                    }
+                    parents.add(String.fromBytes(shaBytes, "UTF-8"))
+                }
+                pos = lineEnd + 1
+            }
+            return parents
+        }
+
+        private static fun lineHasPrefix(buf: UByte[], offset: Int, prefix: String): Bool {
+            var prefixBytes = prefix.toBytes("UTF-8")
+            var i = 0
+            while (i < prefixBytes.length().toInt()) {
+                if (buf[(offset + i).toUInt()] != prefixBytes[i.toUInt()]) {
+                    return false
+                }
+                i = i + 1
+            }
+            return true
+        }
+    }
+}

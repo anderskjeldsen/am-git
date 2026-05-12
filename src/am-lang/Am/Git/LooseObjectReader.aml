@@ -33,32 +33,18 @@ namespace Am.Git
                 throw new Exception("loose object not found: " + path)
             }
 
-            // Read the whole compressed blob into memory. Git loose
-            // objects are typically tiny (a commit is ~200 bytes; a
-            // tree is a few hundred to a few KB; blobs can be larger
-            // but in practice we're working with source code).
+            // Read the whole compressed blob into memory and ask
+            // am-z for a streaming inflate. We can't pre-size the
+            // output buffer — the inflated size lives in the
+            // object's own header (`"tree 1234\0..."`) which is
+            // *inside* the stream we're trying to inflate. The
+            // unsized variant grows its output buffer on demand.
             var stream = new FileStream(file, FileAccess.readOnly)
             var compressed = stream.readAll()
-
-            // We don't know the inflated size up front. Real git
-            // stores it in the object header inside the inflated
-            // stream itself — chicken/egg. For a starter we grow a
-            // ceiling by repeated calls; in practice the actual size
-            // is always less than 16x the compressed size for git
-            // objects (text trees, commits) so one allocation
-            // suffices. Cap at 256 MB; larger gets a clearer error
-            // than a runaway allocation.
-            var ceiling = compressed.length().toInt() * 16
-            if (ceiling < 4096) {
-                ceiling = 4096
-            }
-            if (ceiling > 268435456) {
-                throw new Exception("loose object " + sha + " unreasonably large")
-            }
             var consumed = new Int[1]
-            var inflated = Zlib.inflate(compressed, 0,
-                                         compressed.length().toInt(),
-                                         ceiling, consumed)
+            var inflated = Zlib.inflateUnsized(compressed, 0,
+                                                compressed.length().toInt(),
+                                                consumed)
 
             // Parse the wrapper: "<typename> <decimal-size>\0<content>".
             // Walk to the space, then to the NUL.

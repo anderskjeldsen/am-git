@@ -36,6 +36,8 @@ namespace AmGit
                 Program.runCommit(args)
             } else if (command == "cat-file") {
                 Program.runCatFile(args)
+            } else if (command == "rev-list-objects") {
+                Program.runRevListObjects(args)
             } else if (command == "help" || command == "--help" || command == "-h") {
                 Program.printUsage()
             } else if (command == "version" || command == "--version") {
@@ -354,6 +356,40 @@ namespace AmGit
                 }
             } catch (ex: Exception) {
                 ("cat-file: " + ex.message).println()
+            }
+        }
+
+        // Diagnostic for ObjectWalker. Mirrors a subset of
+        // `git rev-list --objects <new> ^<have>` — prints every SHA
+        // reachable from <new> that isn't reachable from <have>.
+        // Useful for cross-checking the walk against real git
+        // before we feed the result into PackWriter.
+        //
+        //   am-git rev-list-objects <new-sha> [<have-sha>]
+        //
+        // If <have-sha> is omitted, treats it as 40 zeros (every
+        // reachable object).
+        private static fun runRevListObjects(args: String[]) {
+            try {
+                if (args.length() < 2UI) {
+                    "usage: am-git rev-list-objects <new-sha> [<have-sha>]".println()
+                    return
+                }
+                var newSha = args[1UI]
+                var haveSha: String = "0000000000000000000000000000000000000000"
+                if (args.length() >= 3UI) {
+                    haveSha = args[2UI]
+                }
+                var store = new ObjectStore(".git")
+                var walker = new ObjectWalker(store)
+                var shas = walker.collect(newSha, haveSha)
+                var i = 0
+                while (i < shas.getSize()) {
+                    shas.get(i).println()
+                    i = i + 1
+                }
+            } catch (ex: Exception) {
+                ("rev-list-objects: " + ex.message).println()
             }
         }
 

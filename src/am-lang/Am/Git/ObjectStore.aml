@@ -1,0 +1,101 @@
+namespace Am.Git
+{
+    // Unified object lookup across both the loose store
+    // (`.git/objects/<xx>/<rest>` — our own commits, originally
+    // written by `am-git commit`) and any packfile in
+    // `.git/objects/pack/*.pack` (originally written by `clone`).
+    //
+    // We don't have a `.idx` to do O(1) pack lookups yet, so the
+    // pack is loaded into memory once and queried by SHA from a
+    // HashMap. For typical-sized repos the pack is small enough
+    // that the cost is negligible; for huge histories a real index
+    // would be needed.
+    //
+    // The store is read-only — writes happen through
+    // `LooseObjectWriter` and the pack-on-clone-disk path. Adding
+    // an object via `LooseObjectWriter` while an `ObjectStore` is
+    // already initialised will pick up the new loose object on the
+    // next `read`/`has` call (we re-stat on each lookup).
+    class ObjectStore(private var gitDir: String)
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        private var looseReader: LooseObjectReader = new LooseObjectReader(this.gitDir)
+
+        // Pack contents are loaded on the first call that needs them
+        // — clone repos won't pay parse cost until something does a
+        // lookup.
+        private var packLoaded: Bool = false
+        private var packObjects: HashMap<String, PackObject> = new HashMap<String, PackObject>()
+
+        // True if the object exists in either store.
+        fun has(sha: String): Bool {
+            this.ensurePackLoaded()
+            if (this.packObjects.containsKey(sha)) {
+                return true
+            }
+            var loosePath = this.looseReader.pathFor(sha)
+            var f = new File(loosePath)
+            return f.exists()
+        }
+
+        // Read the object, regardless of which store it's in. Throws
+        // if not found anywhere.
+        fun read(sha: String): PackObject {
+            this.ensurePackLoaded()
+            if (this.packObjects.containsKey(sha)) {
+                return this.packObjects.get(sha)
+            }
+            return this.looseReader.read(sha)
+        }
+
+        // Lazy load + delta-resolve any pack under `.git/objects/pack/`.
+        // We only look for `*.pack` extensions; corresponding `.idx`
+        // files are ignored (we don't read them).
+        private fun ensurePackLoaded() {
+            if (this.packLoaded) {
+                return
+            }
+            this.packLoaded = true
+
+            var packDir = new File(this.gitDir + "/objects/pack")
+            if (!packDir.exists()) {
+                return
+            }
+            var entries = packDir.listFiles()
+            var i = 0
+            while (i < entries.length().toInt()) {
+                var f = entries[i.toUInt()]
+                if (f.getName().endsWith(".pack")) {
+                    this.loadPackFile(f.toString())
+                }
+                i = i + 1
+            }
+        }
+
+        private fun loadPackFile(path: String) {
+            var f = new File(path)
+            var stream = new FileStream(f, FileAccess.readOnly)
+            var bytes = stream.readAll()
+
+            var parser = new PackParser(bytes)
+            var parsed = parser.parseAll()
+            if (parsed.deltas.getSize() > 0) {
+                new DeltaResolver(parsed).resolveAll()
+            }
+
+            // Merge into our combined map. Multiple packs would just
+            // accumulate; same-SHA collisions are no-ops since git
+            // objects are content-addressed.
+            var keys = parsed.objects.buildKeys()
+            var i = 0
+            while (i < keys.getSize()) {
+                var sha = keys.get(i)
+                this.packObjects.set(sha, parsed.objects.get(sha))
+                i = i + 1
+            }
+        }
+    }
+}
