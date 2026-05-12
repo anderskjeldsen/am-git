@@ -32,6 +32,59 @@ namespace Am.Git
             return Identity.loadFrom("GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")
         }
 
+        // Pinned-timestamp env overrides — mirror what real git checks.
+        // Format is the same as the commit-line tail:
+        // `<unix-seconds> <±HHMM>` (e.g. `"1715520000 +0200"`).
+        // Returns null when the env var isn't set; caller falls back
+        // to `new DateTime()` (i.e. "now"). The other date formats
+        // git accepts (`2026-05-12T15:30`, "now", relative times) are
+        // not parsed yet — the unix form is the one that round-trips
+        // losslessly through commit objects anyway.
+        static fun loadAuthorDate(): DateTime {
+            return Identity.parseDate(Environment.get("GIT_AUTHOR_DATE"))
+        }
+
+        static fun loadCommitterDate(): DateTime {
+            return Identity.parseDate(Environment.get("GIT_COMMITTER_DATE"))
+        }
+
+        private static fun parseDate(value: String): DateTime {
+            if (value == null) {
+                return null
+            }
+            var trimmed = value.trim()
+            var space = trimmed.indexOf(" ")
+            if (space <= 0) {
+                throw new Exception("date override must be '<unix-seconds> <±HHMM>': " + value)
+            }
+            var secStr = trimmed.substring(0UI, space.toUInt())
+            var tzStr = trimmed.substringToEnd((space + 1).toUInt())
+
+            var seconds = Int.parse(secStr)
+            var tzMinutes = Identity.parseTzOffset(tzStr)
+            var dt = new DateTime()
+            dt.setEpochMillis(seconds.toULong() * 1000UL)
+            dt.setTimezoneOffset(tzMinutes)
+            return dt
+        }
+
+        // Inverse of `formatTimezone` — turns `+HHMM` / `-HHMM` back
+        // into signed minutes.
+        private static fun parseTzOffset(tz: String): Int {
+            if (tz.length() < 5) {
+                throw new Exception("bad tz: " + tz)
+            }
+            var sign = 1
+            if (tz.startsWith("-")) {
+                sign = -1
+            } else if (!tz.startsWith("+")) {
+                throw new Exception("tz must start with + or -: " + tz)
+            }
+            var hh = Int.parse(tz.substring(1UI, 2UI))
+            var mm = Int.parse(tz.substring(3UI, 2UI))
+            return sign * (hh * 60 + mm)
+        }
+
         private static fun loadFrom(nameVar: String, emailVar: String): Identity {
             var name = Environment.get(nameVar)
             if (name == null) {

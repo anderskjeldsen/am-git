@@ -1,0 +1,54 @@
+namespace Am.Git
+{
+    // Serialises a commit object and writes it as a loose object.
+    //
+    // Wire format (text, UTF-8 throughout):
+    //
+    //     tree <root-tree-sha>\n
+    //     parent <parent-commit-sha>\n          (omitted on initial commit)
+    //     author <name> <email> <unix-sec> <±HHMM>\n
+    //     committer <name> <email> <unix-sec> <±HHMM>\n
+    //     \n
+    //     <commit message, terminated by \n>
+    //
+    // Author and committer timestamps are passed in separately so the
+    // CLI can either let them both be "now" (the typical case) or
+    // pin them via `GIT_AUTHOR_DATE` / `GIT_COMMITTER_DATE` for
+    // reproducible commits (useful for tests + for re-creating commits
+    // with their original metadata).
+    //
+    // Multi-parent commits (merge commits) need multiple `parent`
+    // lines. Not exposed yet — `parentSha` is either a single SHA
+    // or null. Adding a `parents: String[]` overload later is trivial.
+    class CommitWriter(private var writer: LooseObjectWriter)
+    {
+        import Am.Lang
+
+        fun write(rootTreeSha: String,
+                  parentSha: String,
+                  author: Identity,
+                  authorTime: DateTime,
+                  committer: Identity,
+                  committerTime: DateTime,
+                  message: String): String {
+            var sb = new StringBuilder()
+            sb.add("tree ").add(rootTreeSha).add("\n")
+            if (parentSha != null) {
+                sb.add("parent ").add(parentSha).add("\n")
+            }
+            sb.add("author ").add(author.formatLine(authorTime)).add("\n")
+            sb.add("committer ").add(committer.formatLine(committerTime)).add("\n")
+            sb.add("\n")
+            sb.add(message)
+            // Real git's CLI appends a trailing newline if the message
+            // doesn't already end with one. Match that so our commits
+            // round-trip with `git log` cleanly.
+            if (!message.endsWith("\n")) {
+                sb.add("\n")
+            }
+
+            var bytes = sb.toString().toBytes("UTF-8")
+            return this.writer.write("commit", bytes)
+        }
+    }
+}

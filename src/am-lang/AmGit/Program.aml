@@ -30,6 +30,12 @@ namespace AmGit
                 Program.runHead(args)
             } else if (command == "write-tree") {
                 Program.runWriteTree(args)
+            } else if (command == "commit-tree") {
+                Program.runCommitTree(args)
+            } else if (command == "commit") {
+                Program.runCommit(args)
+            } else if (command == "cat-file") {
+                Program.runCatFile(args)
             } else if (command == "help" || command == "--help" || command == "-h") {
                 Program.printUsage()
             } else if (command == "version" || command == "--version") {
@@ -154,6 +160,203 @@ namespace AmGit
             }
         }
 
+        // Mirrors `git commit-tree <tree> [-p <parent>] -m <message>`.
+        // Reads identity from env (see Identity.loadAuthor /
+        // loadCommitter) and optionally pinned timestamps via
+        // GIT_AUTHOR_DATE / GIT_COMMITTER_DATE — same names real git
+        // uses, same `<unix-seconds> <±HHMM>` format. Writes the
+        // commit as a loose object under ./.git/ and prints its SHA.
+        private static fun runCommitTree(args: String[]) {
+            try {
+                if (args.length() < 2UI) {
+                    "usage: am-git commit-tree <tree-sha> [-p <parent-sha>] -m <message>".println()
+                    return
+                }
+                var treeSha = args[1UI]
+                var parentSha: String = null
+                var message: String = null
+                var i = 2UI
+                while (i < args.length()) {
+                    var a = args[i]
+                    if (a == "-p" && i + 1UI < args.length()) {
+                        parentSha = args[i + 1UI]
+                        i = i + 2UI
+                    } else if (a == "-m" && i + 1UI < args.length()) {
+                        message = args[i + 1UI]
+                        i = i + 2UI
+                    } else {
+                        ("commit-tree: unrecognised arg '" + a + "'").println()
+                        return
+                    }
+                }
+                if (message == null) {
+                    "commit-tree: -m <message> is required".println()
+                    return
+                }
+
+                var author = Identity.loadAuthor()
+                var committer = Identity.loadCommitter()
+                if (author == null || committer == null) {
+                    "commit-tree: identity not configured (set AM_GIT_USER_NAME and AM_GIT_USER_EMAIL)".println()
+                    return
+                }
+                var authorTime = Identity.loadAuthorDate()
+                if (authorTime == null) {
+                    authorTime = new DateTime()
+                }
+                var committerTime = Identity.loadCommitterDate()
+                if (committerTime == null) {
+                    committerTime = new DateTime()
+                }
+
+                var writer = new LooseObjectWriter(".git")
+                var commitWriter = new CommitWriter(writer)
+                commitWriter.write(treeSha, parentSha,
+                                    author, authorTime,
+                                    committer, committerTime,
+                                    message).println()
+            } catch (ex: Exception) {
+                ("commit-tree: " + ex.message).println()
+            }
+        }
+
+        // The user-facing commit. Wraps the four primitives we built
+        // in steps 1-5:
+        //
+        //   1. HeadReader.read       → current branch + parent SHA
+        //   2. TreeBuilder.build     → root tree SHA from cwd
+        //   3. CommitWriter.write    → new commit SHA
+        //   4. write ref/HEAD        → atomic move-forward of the
+        //                              branch (or detached HEAD)
+        //
+        // v1 differences from real `git commit`:
+        //
+        //   * No staging — always commits the live working tree state
+        //     against HEAD's parent. No `git add` step required.
+        //   * No "nothing to commit" detection — we don't compare the
+        //     new tree's SHA against HEAD's tree. If the working tree
+        //     is unchanged you'll just get an empty-delta commit
+        //     (legal git object, semantically equivalent to passing
+        //     `--allow-empty` to real git). Catching this needs a
+        //     loose-object reader, which isn't wired yet.
+        //   * No commit hooks, no editor invocation, no GPG signing.
+        //
+        // Output format mirrors `git commit`'s one-liner:
+        //   `[branch <shortsha>] <first line>`
+        //   `[branch (root-commit) <shortsha>] <first line>`  (initial)
+        //   `[detached HEAD <shortsha>] <first line>`         (detached)
+        private static fun runCommit(args: String[]) {
+            try {
+                var message: String = null
+                var i = 1UI
+                while (i < args.length()) {
+                    var a = args[i]
+                    if (a == "-m" && i + 1UI < args.length()) {
+                        message = args[i + 1UI]
+                        i = i + 2UI
+                    } else {
+                        ("commit: unrecognised arg '" + a + "'").println()
+                        return
+                    }
+                }
+                if (message == null) {
+                    "usage: am-git commit -m <message>".println()
+                    return
+                }
+
+                var head = HeadReader.read(".git")
+
+                var author = Identity.loadAuthor()
+                var committer = Identity.loadCommitter()
+                if (author == null || committer == null) {
+                    "commit: identity not configured (set AM_GIT_USER_NAME and AM_GIT_USER_EMAIL)".println()
+                    return
+                }
+                var authorTime = Identity.loadAuthorDate()
+                if (authorTime == null) {
+                    authorTime = new DateTime()
+                }
+                var committerTime = Identity.loadCommitterDate()
+                if (committerTime == null) {
+                    committerTime = new DateTime()
+                }
+
+                var writer = new LooseObjectWriter(".git")
+                var treeSha = new TreeBuilder(".", writer).build()
+                var commitSha = new CommitWriter(writer).write(
+                    treeSha, head.commitSha,
+                    author, authorTime,
+                    committer, committerTime,
+                    message)
+
+                // Move the ref forward. For a normal branch we
+                // overwrite `.git/refs/heads/<branch>` (creating it
+                // on the unborn-branch path); for detached HEAD we
+                // overwrite `.git/HEAD` itself.
+                if (head.detached) {
+                    (commitSha + "\n").writeToFile(".git/HEAD")
+                } else {
+                    var refPath = ".git/refs/heads/" + head.branch
+                    Repository.ensureParentDir(refPath)
+                    (commitSha + "\n").writeToFile(refPath)
+                }
+
+                // Summary line. `firstLine` is the message up to the
+                // first `\n` (matches `git commit`'s output convention).
+                var shortSha = commitSha.substring(0UI, 7UI)
+                var firstLine = message
+                var nl = message.indexOf("\n")
+                if (nl >= 0) {
+                    firstLine = message.substring(0UI, nl.toUInt())
+                }
+                var rootMarker = ""
+                if (head.isInitial()) {
+                    rootMarker = " (root-commit)"
+                }
+                var branchLabel = "detached HEAD"
+                if (!head.detached) {
+                    branchLabel = head.branch
+                }
+                ("[" + branchLabel + rootMarker + " " + shortSha + "] " + firstLine).println()
+            } catch (ex: Exception) {
+                ("commit: " + ex.message).println()
+            }
+        }
+
+        // Mirrors `git cat-file -p <sha>` (pretty-print object content)
+        // and `git cat-file -t <sha>` (type). Reads from `./.git/objects/`
+        // via LooseObjectReader. Useful for confirming our writes/reads
+        // round-trip with what real git would emit.
+        private static fun runCatFile(args: String[]) {
+            try {
+                if (args.length() < 3UI) {
+                    "usage: am-git cat-file (-p|-t) <sha>".println()
+                    return
+                }
+                var flag = args[1UI]
+                var sha = args[2UI]
+                var reader = new LooseObjectReader(".git")
+                var obj = reader.read(sha)
+                if (flag == "-t") {
+                    obj.typeName().println()
+                } else if (flag == "-p") {
+                    // Most objects are text — `String.fromBytes(...,
+                    // "UTF-8").print()` works fine for commits and
+                    // trees-as-debug-output. Trees actually contain
+                    // raw 20-byte SHAs after each name's NUL, so the
+                    // bytes-to-UTF8 round-trip would mangle them.
+                    // For now we print as if UTF-8; trees will look
+                    // garbled but commits / blobs will be readable —
+                    // good enough for round-trip diagnostics.
+                    String.fromBytes(obj.content, "UTF-8").print()
+                } else {
+                    ("cat-file: unknown flag '" + flag + "'").println()
+                }
+            } catch (ex: Exception) {
+                ("cat-file: " + ex.message).println()
+            }
+        }
+
         private static fun printUsage() {
             "am-git — a small git client written in AmLang".println()
             "".println()
@@ -163,6 +366,10 @@ namespace AmGit
             "  whoami                     Print author/committer as a commit would record".println()
             "  head                       Print resolved HEAD (branch / commit / detached)".println()
             "  write-tree                 Build trees/blobs from cwd, print root tree SHA".println()
+            "  commit-tree <tree>         Write a commit object pointing at the given tree".println()
+            "    [-p <parent>] -m <msg>".println()
+            "  commit -m <message>        Commit the cwd working tree against HEAD".println()
+            "  cat-file (-p|-t) <sha>     Print a loose object's content (-p) or type (-t)".println()
             "  version                    Print version information".println()
             "  help                       Show this help".println()
         }

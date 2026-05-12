@@ -1,0 +1,135 @@
+namespace Am.Git
+{
+    // Reads loose objects back from disk — the inverse of
+    // `LooseObjectWriter`. Given a hex SHA, opens
+    // `.git/objects/<first-2>/<rest-38>`, zlib-inflates it, parses
+    // git's `"<type> <decimal-size>\0<raw bytes>"` wrapper, and
+    // hands back a fully-populated `PackObject`.
+    //
+    // The packfile we get from clone is held in memory by the parser
+    // and never goes through this reader. This is purely for objects
+    // we wrote ourselves via `am-git commit` (and later, anything
+    // exploded out of packs into loose form). The reader doesn't
+    // know about `objects/pack/*.pack` lookups — packs and loose
+    // objects are separate stores for our purposes.
+    class LooseObjectReader(private var gitDir: String)
+    {
+        import Am.Lang
+        import Am.IO
+        import Am.Z
+
+        // Open + inflate + unwrap. Throws if the object is missing
+        // or its wrapper doesn't parse. Returns a PackObject whose
+        // `sha`, `typeCode`, and `content` fields are populated; the
+        // delta-only fields (`baseOffset`, `baseSha`) stay at their
+        // defaults since loose objects can't be deltas.
+        fun read(sha: String): PackObject {
+            if (sha.length() != 40) {
+                throw new Exception("LooseObjectReader: expected 40-char hex SHA, got: " + sha)
+            }
+            var path = this.pathFor(sha)
+            var file = new File(path)
+            if (!file.exists()) {
+                throw new Exception("loose object not found: " + path)
+            }
+
+            // Read the whole compressed blob into memory. Git loose
+            // objects are typically tiny (a commit is ~200 bytes; a
+            // tree is a few hundred to a few KB; blobs can be larger
+            // but in practice we're working with source code).
+            var stream = new FileStream(file, FileAccess.readOnly)
+            var compressed = stream.readAll()
+
+            // We don't know the inflated size up front. Real git
+            // stores it in the object header inside the inflated
+            // stream itself — chicken/egg. For a starter we grow a
+            // ceiling by repeated calls; in practice the actual size
+            // is always less than 16x the compressed size for git
+            // objects (text trees, commits) so one allocation
+            // suffices. Cap at 256 MB; larger gets a clearer error
+            // than a runaway allocation.
+            var ceiling = compressed.length().toInt() * 16
+            if (ceiling < 4096) {
+                ceiling = 4096
+            }
+            if (ceiling > 268435456) {
+                throw new Exception("loose object " + sha + " unreasonably large")
+            }
+            var consumed = new Int[1]
+            var inflated = Zlib.inflate(compressed, 0,
+                                         compressed.length().toInt(),
+                                         ceiling, consumed)
+
+            // Parse the wrapper: "<typename> <decimal-size>\0<content>".
+            // Walk to the space, then to the NUL.
+            var spaceIdx = -1
+            var nulIdx = -1
+            var i = 0
+            var total = inflated.length().toInt()
+            while (i < total) {
+                var b = inflated[i.toUInt()].toInt()
+                if (spaceIdx < 0 && b == 32) {
+                    spaceIdx = i
+                } else if (b == 0) {
+                    nulIdx = i
+                    i = total
+                }
+                i = i + 1
+            }
+            if (spaceIdx < 0 || nulIdx < 0 || nulIdx <= spaceIdx) {
+                throw new Exception("loose object " + sha + " has malformed wrapper")
+            }
+
+            var typeName = String.fromBytes(
+                LooseObjectReader.slice(inflated, 0, spaceIdx),
+                "UTF-8")
+            var typeCode = LooseObjectReader.typeCodeOf(typeName)
+            var content = LooseObjectReader.slice(inflated, nulIdx + 1,
+                                                   total - (nulIdx + 1))
+
+            var obj = new PackObject(typeCode, content)
+            obj.sha = sha
+            return obj
+        }
+
+        // Same path math as the writer — kept consistent for symmetry.
+        fun pathFor(sha: String): String {
+            var dir = sha.substring(0UI, 2UI)
+            var rest = sha.substringToEnd(2UI)
+            return this.gitDir + "/objects/" + dir + "/" + rest
+        }
+
+        // Reverse of `PackObject.typeName`. Throws on unknown type so
+        // a corrupt object surfaces immediately instead of silently
+        // being treated as e.g. an OFS_DELTA.
+        private static fun typeCodeOf(typeName: String): Int {
+            if (typeName == "commit") {
+                return 1
+            }
+            if (typeName == "tree") {
+                return 2
+            }
+            if (typeName == "blob") {
+                return 3
+            }
+            if (typeName == "tag") {
+                return 4
+            }
+            throw new Exception("loose object: unknown type '" + typeName + "'")
+        }
+
+        // Copy a slice of an inflated buffer. `Array.subArray` would
+        // do but it lives on Array<T> not UByte[] specifically, and
+        // a tiny dedicated helper sidesteps any generic-binding
+        // friction.
+        private static fun slice(src: UByte[], start: Int, length: Int): UByte[] {
+            var out = new UByte[length.toUInt()]
+            var i = 0
+            while (i < length) {
+                out[i.toUInt()] = src[(start + i).toUInt()]
+                i = i + 1
+            }
+            return out
+        }
+    }
+}
