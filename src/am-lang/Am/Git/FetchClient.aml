@@ -1,0 +1,189 @@
+namespace Am.Git
+{
+    // `git fetch` over smart-HTTP:
+    //
+    //   1. GET <remote>/info/refs?service=git-upload-pack
+    //   2. For each advertised refs/heads/* and refs/tags/* whose SHA
+    //      we don't already have locally — that's a `want`.
+    //   3. Collect `have` SHAs from our existing branch tips and
+    //      remote-tracking refs so the server can omit shared history.
+    //   4. POST <remote>/git-upload-pack and read back the pack.
+    //   5. Parse + delta-resolve the pack, then write every object as
+    //      a loose file under `.git/objects/<xx>/<rest>`.
+    //   6. Update `refs/remotes/<remote-name>/<branch>` for each
+    //      advertised branch, and `refs/tags/<tag>` for each tag.
+    //
+    // Differences vs. real `git fetch`:
+    //   * Tags are pulled unconditionally — no `--no-tags` / refspec
+    //     filtering.
+    //   * Single negotiation round — we send `want…done` once and
+    //     accept whatever the server replies with (typically a NAK
+    //     plus the pack covering the gap).
+    //   * Objects are written loose, not as a pack. Real git stores
+    //     fetched objects in a new pack; loose works the same for
+    //     readers but is bulkier on disk.
+    //   * We don't update HEAD or fast-forward any local branch —
+    //     same semantics as `git fetch` without a refspec.
+    class FetchClient
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        // Convenience for the common case. `remoteName` is typically
+        // "origin" — used to namespace the remote-tracking refs under
+        // `refs/remotes/<remoteName>/`.
+        static fun fetch(gitDir: String, remoteUrl: String, remoteName: String): Int {
+            var url = GitUrl.parse(remoteUrl)
+            ("Fetching from " + url.toString()).println()
+
+            var ad = UploadPackTransport.fetchAdvertisement(url)
+            ("Remote advertised " + ad.refs.length().toString() + " refs").println()
+
+            var store = new ObjectStore(gitDir)
+            var wants = FetchClient.computeWants(ad, store)
+            if (wants.getSize() == 0) {
+                "Already up-to-date.".println()
+                return 0
+            }
+            ("Need " + wants.getSize().toString() + " new ref tip(s)").println()
+
+            var haves = FetchClient.collectHaves(gitDir, remoteName)
+            ("Sending " + haves.getSize().toString() + " have(s) for negotiation").println()
+
+            var pack = UploadPackTransport.requestPack(
+                url, wants, haves, UploadPackTransport.defaultCapabilities)
+            ("Received packfile: " + pack.length().toString() + " bytes").println()
+
+            // Parse + resolve deltas. PackParser indexes by SHA; the
+            // resolver folds delta entries back into the same map.
+            var parser = new PackParser(pack)
+            var parsed = parser.parseAll()
+            if (parsed.deltas.getSize() > 0) {
+                new DeltaResolver(parsed).resolveAll()
+            }
+            ("Pack contained " + parsed.objects.getSize().toString() + " objects").println()
+
+            var writer = new LooseObjectWriter(gitDir)
+            var keys = parsed.objects.buildKeys()
+            var written = 0
+            var i = 0
+            while (i < keys.getSize()) {
+                var sha = keys.get(i)
+                var obj = parsed.objects.get(sha)
+                writer.write(obj.typeName(), obj.content)
+                written = written + 1
+                i = i + 1
+            }
+            ("Wrote " + written.toString() + " loose objects").println()
+
+            var updated = FetchClient.updateRemoteTrackingRefs(gitDir, remoteName, ad)
+            ("Updated " + updated.toString() + " remote-tracking ref(s)").println()
+            return updated
+        }
+
+        // Wants = every advertised refs/heads/* and refs/tags/* SHA
+        // that isn't already present locally. Deduped by SHA — multiple
+        // branches often share commits.
+        private static fun computeWants(ad: RefAdvertisement, store: ObjectStore): List<String> {
+            var wants = List<String>.newList<String>()
+            var seen = new HashMap<String, Bool>()
+
+            var i = 0
+            while (i < ad.refs.length().toInt()) {
+                var r = ad.refs[i.toUInt()]
+                if (r.name.startsWith("refs/heads/") || r.name.startsWith("refs/tags/")) {
+                    if (!seen.containsKey(r.sha) && !store.has(r.sha)) {
+                        seen.set(r.sha, true)
+                        wants.add(r.sha)
+                    }
+                }
+                i = i + 1
+            }
+            return wants
+        }
+
+        // Haves = SHAs of every loose ref under refs/heads/ and
+        // refs/remotes/<remoteName>/. The server uses these to find
+        // common ancestors and skip sending objects we already have.
+        // We're not picky: even if a ref is on a totally unrelated
+        // branch, the server's ancestry walk will dismiss it cheaply.
+        private static fun collectHaves(gitDir: String, remoteName: String): List<String> {
+            var haves = List<String>.newList<String>()
+            var seen = new HashMap<String, Bool>()
+            FetchClient.collectRefShas(gitDir + "/refs/heads", haves, seen)
+            FetchClient.collectRefShas(gitDir + "/refs/remotes/" + remoteName, haves, seen)
+            return haves
+        }
+
+        private static fun collectRefShas(dir: String, out: List<String>, seen: HashMap<String, Bool>) {
+            var d = new File(dir)
+            if (!d.exists()) {
+                return
+            }
+            FetchClient.walkRefDir(d, out, seen)
+        }
+
+        // Recursive walk — branches like `feature/foo/bar` live in
+        // nested subdirectories.
+        private static fun walkRefDir(dir: File, out: List<String>, seen: HashMap<String, Bool>) {
+            var entries = dir.listFiles()
+            var i = 0
+            while (i < entries.length().toInt()) {
+                var f = entries[i.toUInt()]
+                if (f.isDirectory()) {
+                    FetchClient.walkRefDir(f, out, seen)
+                } else {
+                    var sha = String.readFromFile(f.toString()).trim()
+                    if (sha.length() == 40 && !seen.containsKey(sha)) {
+                        seen.set(sha, true)
+                        out.add(sha)
+                    }
+                }
+                i = i + 1
+            }
+        }
+
+        // Mirror every advertised refs/heads/<x> into
+        // refs/remotes/<remoteName>/<x>, and every refs/tags/* under
+        // its original name. Returns the count of refs whose SHA
+        // actually changed on disk.
+        private static fun updateRemoteTrackingRefs(gitDir: String, remoteName: String, ad: RefAdvertisement): Int {
+            var changed = 0
+            var i = 0
+            while (i < ad.refs.length().toInt()) {
+                var r = ad.refs[i.toUInt()]
+                var refPath: String = null
+                if (r.name.startsWith("refs/heads/")) {
+                    var branch = r.name.substringToEnd(11UI)
+                    refPath = gitDir + "/refs/remotes/" + remoteName + "/" + branch
+                } else if (r.name.startsWith("refs/tags/")) {
+                    refPath = gitDir + "/" + r.name
+                }
+                if (refPath != null) {
+                    if (FetchClient.writeRefIfChanged(refPath, r.sha)) {
+                        changed = changed + 1
+                    }
+                }
+                i = i + 1
+            }
+            return changed
+        }
+
+        // Returns true when the on-disk SHA actually changed — lets us
+        // print a sensible "updated N refs" summary.
+        private static fun writeRefIfChanged(refPath: String, sha: String): Bool {
+            var existing: String = null
+            var f = new File(refPath)
+            if (f.exists()) {
+                existing = String.readFromFile(refPath).trim()
+            }
+            if (existing == sha) {
+                return false
+            }
+            Repository.ensureParentDir(refPath)
+            (sha + "\n").writeToFile(refPath)
+            return true
+        }
+    }
+}

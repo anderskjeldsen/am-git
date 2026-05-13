@@ -37,6 +37,8 @@ build-macos-arm:
 
 build-force-deps:
 	$(CMD) build . -fld -bt $(HOST_BT) -ll5
+deps:
+	$(CMD) deps . -bt $(HOST_BT) -ll 5
 
 run:
 	$(CMD) run . -bt $(HOST_BT) -ll $(LOGLEVEL)

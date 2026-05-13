@@ -6,50 +6,50 @@ dependencies:
     realm: github
     type: git-repo
     tag: latest
-    branch: master
+#    branch: master
     url: https://github.com/anderskjeldsen/am-lang-core.git
     features: ["floatingPoint"]
   - id: am-net
     realm: github
     type: git-repo
     tag: latest
-    branch: master
+#    branch: master
     url: https://github.com/anderskjeldsen/am-net.git
   - id: am-ssl
     realm: github
     type: git-repo
     tag: latest
-    branch: master
+    branch: main
     url: https://github.com/anderskjeldsen/am-ssl.git
   - id: am-z
     realm: github
     type: git-repo
     tag: latest
-    branch: master
-    url: https://github.com/anderskjeldsen/am-z.git    
+    branch: main
+    url: https://github.com/anderskjeldsen/am-z.git
   - id: am-crypto
     realm: github
     type: git-repo
     tag: latest
-    branch: master
+    branch: main
     url: https://github.com/anderskjeldsen/am-crypto.git
   - id: am-json
     realm: github
     type: git-repo
     tag: latest
-    branch: master
+    branch: main
     url: https://github.com/anderskjeldsen/am-json.git
   - id: am-yaml
     realm: github
     type: git-repo
     tag: latest
-    branch: master
+    branch: main
     url: https://github.com/anderskjeldsen/am-yaml.git
   - id: am-web-client
     realm: github
     type: git-repo
     tag: latest
-    branch: master
+    branch: main
     url: https://github.com/anderskjeldsen/am-web-client.git
 
 platforms:

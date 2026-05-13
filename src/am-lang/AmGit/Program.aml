@@ -47,6 +47,8 @@ namespace AmGit
                 Program.runAuthHeader(args)
             } else if (command == "push") {
                 Program.runPush(args)
+            } else if (command == "fetch") {
+                Program.runFetch(args)
             } else if (command == "help" || command == "--help" || command == "-h") {
                 Program.printUsage()
             } else if (command == "version" || command == "--version") {
@@ -511,6 +513,32 @@ namespace AmGit
             }
         }
 
+        // Pull new objects + refs from the remote into our `.git`
+        // directory. Updates `refs/remotes/<remote>/<branch>` and
+        // `refs/tags/*`; doesn't touch the working tree or local
+        // branches.
+        //
+        //   am-git fetch <remote-url> [<remote-name>]
+        //
+        // <remote-name> defaults to "origin" — it's the prefix used
+        // for the remote-tracking refs on disk.
+        private static fun runFetch(args: String[]) {
+            try {
+                if (args.length() < 2UI) {
+                    "usage: am-git fetch <remote-url> [<remote-name>]".println()
+                    return
+                }
+                var remoteUrl = args[1UI]
+                var remoteName = "origin"
+                if (args.length() >= 3UI) {
+                    remoteName = args[2UI]
+                }
+                FetchClient.fetch(".git", remoteUrl, remoteName)
+            } catch (ex: Exception) {
+                ("fetch: " + ex.message).println()
+            }
+        }
+
         // Push the current branch (or an explicitly named one) to the
         // given remote URL. Usage:
         //
@@ -555,6 +583,7 @@ namespace AmGit
             "".println()
             "Commands:".println()
             "  clone <url> [target-dir]            Clone a remote repository over smart-HTTP".println()
+            "  fetch <remote-url> [<remote-name>]  Fetch new objects + refs (default remote: origin)".println()
             "  push <remote-url> [<branch>]        Push HEAD (or named branch) to the remote".println()
             "  commit -m <message>                 Commit the cwd working tree against HEAD".println()
             "  commit-tree <tree>                  Write a commit object pointing at the given tree".println()
