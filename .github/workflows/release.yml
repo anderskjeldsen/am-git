@@ -1,0 +1,87 @@
+name: Build on tag
+
+# Fires on semver tags pushed to this repo (e.g. v0.1.0, v1.2.3).
+# Downloads a pinned native release of the AmLang compiler, builds
+# am-git for linux-x64, and attaches the resulting binary to a GitHub
+# release for the tag.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+# The pinned compiler release we build against. Bump these two when
+# upgrading to a newer amlc — keeping them on adjacent lines makes the
+# diff obvious.
+env:
+  AMLC_VERSION: "0.10.0"
+  AMLC_URL: "https://github.com/anderskjeldsen/am-lang-compiler-code/releases/download/v0.10.0/amlc-linux-x64-0.10.0.tar.gz"
+
+permissions:
+  contents: write  # needed for `gh release create` / upload
+
+jobs:
+  build-linux-x64:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve tag version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      # am-git's linux-x64 build calls out to gcc and links against
+      # openssl + zlib. The ubuntu-latest image already has gcc/make,
+      # so we only need the -dev headers for the C compile step.
+      - name: Install C build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libssl-dev zlib1g-dev
+
+      - name: Download AmLang compiler
+        run: |
+          curl -fsSL -o amlc.tar.gz "${AMLC_URL}"
+          tar -xzf amlc.tar.gz
+          chmod +x amlc-linux
+          ./amlc-linux --version || true
+
+      - name: Build am-git (linux-x64)
+        run: |
+          ./amlc-linux build . -bt linux-x64 -fld -maxOneError
+          test -x builds/bin/linux-x64/app
+
+      - name: Package binary
+        id: package
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          STAGE="am-git-linux-x64-${VERSION}"
+          mkdir -p "dist/${STAGE}"
+          cp builds/bin/linux-x64/app "dist/${STAGE}/am-git"
+          cp README.md "dist/${STAGE}/README.md"
+          (cd dist && tar -czf "${STAGE}.tar.gz" "${STAGE}")
+          echo "ARCHIVE=dist/${STAGE}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      # Always upload as a build artifact — handy for inspecting the
+      # binary even if release creation is skipped.
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: am-git-linux-x64-${{ steps.version.outputs.VERSION }}
+          path: ${{ steps.package.outputs.ARCHIVE }}
+          retention-days: 30
+
+      - name: Create / update GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — uploading asset"
+          else
+            gh release create "$TAG" \
+              --title "am-git $TAG" \
+              --notes "Built with AmLang compiler v${AMLC_VERSION}."
+          fi
+          gh release upload "$TAG" "${{ steps.package.outputs.ARCHIVE }}" --clobber
