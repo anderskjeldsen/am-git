@@ -1,0 +1,142 @@
+namespace Am.Git
+{
+    // One ref update line in a git-receive-pack request:
+    //
+    //     <old-sha> SP <new-sha> SP <refname>
+    //
+    // The two SHA fields are git's standard "is this a create / update /
+    // delete" tristate:
+    //
+    //     create   old = 40 zeros, new = real sha
+    //     update   old = real sha, new = real sha
+    //     delete   old = real sha, new = 40 zeros
+    //
+    // We don't enforce the tristate here — receive-pack does that, and
+    // its error messages are clearer than anything we'd invent.
+    class RefUpdate(var oldSha: String, var newSha: String, var refName: String)
+    {
+        import Am.Lang
+
+        // Convenience for the most common case: pushing a new branch
+        // or pushing the next commit on top of an existing one.
+        static fun update(oldSha: String, newSha: String, refName: String): RefUpdate {
+            return new RefUpdate(oldSha, newSha, refName)
+        }
+
+        static fun create(newSha: String, refName: String): RefUpdate {
+            return new RefUpdate(ReceivePackRequest.zeroSha, newSha, refName)
+        }
+
+        static fun delete(oldSha: String, refName: String): RefUpdate {
+            return new RefUpdate(oldSha, ReceivePackRequest.zeroSha, refName)
+        }
+    }
+
+    // Composes the body of an HTTP POST to `<repo>/git-receive-pack`.
+    // Layout (Documentation/technical/pack-protocol.txt §"Reference Update Request"):
+    //
+    //     pkt-line: <old> SP <new> SP <refname>\0<capabilities>\n   (first)
+    //     pkt-line: <old> SP <new> SP <refname>\n                   (rest)
+    //     0000                                                       (flush)
+    //     <pack bytes>
+    //
+    // The capabilities go on the first command line only, after a NUL.
+    // We always ask for `report-status` so we can tell whether the push
+    // landed; without it the server hangs up silently on success and
+    // there's no per-ref result.
+    class ReceivePackRequest
+    {
+        import Am.Lang
+        import Am.Collections
+
+        static var zeroSha: String = "0000000000000000000000000000000000000000"
+
+        // Minimal capability set:
+        //   report-status — required to get per-ref ok/ng status back
+        //   agent=...     — informational
+        // Side-band-64k can be added later if we want to surface
+        // server-side progress messages.
+        static var capabilities: String = "report-status agent=am-git/0.1.0"
+
+        // Build the full request body. `updates` must be non-empty.
+        // `packBytes` is the v2 packfile from PackWriter; for a pure
+        // deletion (no objects to send) pass `new UByte[0UI]`.
+        static fun build(updates: List<RefUpdate>, packBytes: UByte[]): UByte[] {
+            if (updates.getSize() == 0) {
+                throw new Exception("ReceivePackRequest: at least one ref update required")
+            }
+
+            var buf = List<UByte>.newList<UByte>()
+
+            var i = 0
+            while (i < updates.getSize()) {
+                var u = updates.get(i)
+                // First command carries the capability list after an
+                // embedded NUL byte. We build the payload bytewise so
+                // the NUL survives — a String round-trip through UTF-8
+                // truncates at the first NUL on some platforms.
+                var withCaps = (i == 0)
+                var payload = ReceivePackRequest.encodeCommandLine(u, withCaps)
+                var pkt = PktLine.encodeBytes(payload)
+                ReceivePackRequest.appendBytes(buf, pkt)
+                i = i + 1
+            }
+
+            // Flush pkt terminates the command list.
+            ReceivePackRequest.appendBytes(buf, PktLine.flushPacket())
+
+            // Pack bytes follow the flush, unframed — receive-pack
+            // distinguishes by the flush boundary.
+            ReceivePackRequest.appendBytes(buf, packBytes)
+
+            return buf.toArray()
+        }
+
+        private static fun appendBytes(buf: List<UByte>, src: UByte[]) {
+            var i = 0UI
+            while (i < src.length()) {
+                buf.add(src[i])
+                i++
+            }
+        }
+
+        // "<old> <new> <refname>[\x00<caps>]\n" as raw bytes.
+        // The NUL separator between refname and caps is required by the
+        // protocol and is what String.toBytes can't reliably preserve.
+        private static fun encodeCommandLine(u: RefUpdate, withCaps: Bool): UByte[] {
+            var head = u.oldSha + " " + u.newSha + " " + u.refName
+            var headBytes = head.toBytes("UTF-8")
+
+            var tailBytes: UByte[] = null
+            if (withCaps) {
+                var capStr = ReceivePackRequest.capabilities
+                var capBytes = capStr.toBytes("UTF-8")
+                // 1 NUL + capabilities + 1 LF
+                tailBytes = new UByte[capBytes.length() + 2UI]
+                tailBytes[0UI] = 0UB
+                var t = 0UI
+                while (t < capBytes.length()) {
+                    tailBytes[1UI + t] = capBytes[t]
+                    t++
+                }
+                tailBytes[1UI + capBytes.length()] = 10UB
+            } else {
+                tailBytes = new UByte[1UI]
+                tailBytes[0UI] = 10UB
+            }
+
+            var out = new UByte[headBytes.length() + tailBytes.length()]
+            var h = 0UI
+            while (h < headBytes.length()) {
+                out[h] = headBytes[h]
+                h++
+            }
+            var x = 0UI
+            while (x < tailBytes.length()) {
+                out[headBytes.length() + x] = tailBytes[x]
+                x++
+            }
+            return out
+        }
+    }
+}

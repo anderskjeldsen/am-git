@@ -1,0 +1,211 @@
+namespace Am.Git
+{
+    // Drives `git push` over smart-HTTP:
+    //
+    //   1. GET <remote>/info/refs?service=git-receive-pack
+    //   2. Parse ref advertisement → find the remote's current SHA
+    //      for the branch we want to push (or zeros if it's new).
+    //   3. Walk objects reachable from local HEAD but not from the
+    //      remote's old SHA. (For a new ref, that's everything.)
+    //   4. Serialize objects with PackWriter into a v2 packfile.
+    //   5. Compose a receive-pack body (ref-update lines + pack).
+    //   6. POST <remote>/git-receive-pack with the body.
+    //   7. Read the report-status reply: per-ref `ok` / `ng <reason>`.
+    //
+    // What we don't do yet:
+    //   * Force pushes — receive-pack rejects non-fast-forwards by
+    //     default, and we don't try to override.
+    //   * Pushing tags as standalone refs (handled implicitly only
+    //     when they happen to be reachable from the pushed commit).
+    //   * Side-band-64k progress on the response — not requested,
+    //     so the report comes back raw.
+    class PushClient
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+        import Am.Web.Client
+
+        // `gitDir` is typically ".git" for a non-bare repo. `remoteUrl`
+        // is the remote's HTTPS URL — the same one git would put in
+        // `[remote "origin"]`. `branch` is just the leaf name
+        // (e.g. "main"), without the `refs/heads/` prefix.
+        //
+        // Returns true on success (server reported `ok` for our ref),
+        // false otherwise. Either way, status lines are printed.
+        static fun push(gitDir: String, remoteUrl: String, branch: String): Bool {
+            var url = GitUrl.parse(remoteUrl)
+            ("Pushing to " + url.toString()).println()
+
+            // Resolve local commit for the branch.
+            var localSha = PushClient.readLocalBranch(gitDir, branch)
+            if (localSha == null) {
+                throw new Exception("Local ref refs/heads/" + branch + " not found in " + gitDir)
+            }
+            ("Local refs/heads/" + branch + " = " + localSha).println()
+
+            // Ask the server what it currently has.
+            var ad = PushClient.fetchReceivePackAdvertisement(url)
+            ("Remote advertised " + ad.refs.length().toString() + " refs").println()
+
+            var remoteRefName = "refs/heads/" + branch
+            var existing = ad.findRef(remoteRefName)
+            var oldSha: String = ReceivePackRequest.zeroSha
+            if (existing != null) {
+                oldSha = existing.sha
+            }
+
+            if (oldSha == localSha) {
+                ("Already up-to-date: " + remoteRefName + " = " + localSha).println()
+                return true
+            }
+
+            // Walk objects: everything reachable from localSha but not
+            // from oldSha. For a brand-new ref (zeros) that's the full
+            // history.
+            var store = new ObjectStore(gitDir)
+            var walker = new ObjectWalker(store)
+            var shas = walker.collect(localSha, oldSha)
+            ("Sending " + shas.getSize().toString() + " objects").println()
+
+            var objects = List<PackObject>.newList<PackObject>()
+            var i = 0
+            while (i < shas.getSize()) {
+                var sha = shas.get(i)
+                if (!store.has(sha)) {
+                    throw new Exception("Local object missing: " + sha)
+                }
+                objects.add(store.read(sha))
+                i = i + 1
+            }
+
+            var pack = PackWriter.writePack(objects)
+            ("Pack: " + pack.length().toString() + " bytes").println()
+
+            var updates = List<RefUpdate>.newList<RefUpdate>()
+            updates.add(new RefUpdate(oldSha, localSha, remoteRefName))
+            var body = ReceivePackRequest.build(updates, pack)
+
+            // POST to receive-pack and parse the report-status reply.
+            return PushClient.deliver(url, body, remoteRefName)
+        }
+
+        // GET /info/refs?service=git-receive-pack and parse the
+        // advertisement. The capabilities reported here are the
+        // server's — we don't currently negotiate any (we only ask
+        // for `report-status` in the POST body).
+        private static fun fetchReceivePackAdvertisement(url: GitUrl): RefAdvertisement {
+            var client = new WebClient()
+            var headers = new HashMap<String, String>()
+            headers.set("Accept", "application/x-git-receive-pack-advertisement")
+            headers.set("Git-Protocol", "version=1")
+            PushClient.addAuthHeader(headers)
+
+            var response = client.getBytesWithHeaders(
+                url.toString() + "/info/refs?service=git-receive-pack", headers)
+            if (response.getStatusCode() == 401) {
+                throw new Exception("Remote rejected credentials (HTTP 401). " +
+                                     "Check AM_GIT_USERNAME / AM_GIT_PASSWORD.")
+            }
+            if (!response.isSuccess()) {
+                throw new Exception("info/refs (receive-pack) returned HTTP " +
+                                     response.getStatusCode().toString() + " " +
+                                     response.getStatusMessage())
+            }
+            var ct = response.getHeader("content-type")
+            if (ct == null || ct.indexOf("application/x-git-receive-pack-advertisement") < 0) {
+                throw new Exception("Server is not smart-HTTP capable (Content-Type: " + ct + ")")
+            }
+            return RefAdvertisement.parse(response.getBodyAsBytes())
+        }
+
+        // POST the precomposed body and parse the per-ref status. The
+        // response body is a stream of pkt-lines:
+        //
+        //   "unpack ok\n"                or  "unpack <error-msg>\n"
+        //   "ok <refname>\n"             or  "ng <refname> <reason>\n"
+        //   ...
+        //   flush
+        //
+        // We only push one ref so we look for one `ok/ng` line.
+        private static fun deliver(url: GitUrl, body: UByte[], refName: String): Bool {
+            var client = new WebClient()
+            var headers = new HashMap<String, String>()
+            headers.set("Accept", "application/x-git-receive-pack-result")
+            headers.set("Content-Type", "application/x-git-receive-pack-request")
+            headers.set("Git-Protocol", "version=1")
+            PushClient.addAuthHeader(headers)
+
+            var response = client.postBytesWithHeaders(
+                url.toString() + "/git-receive-pack", body, headers)
+            if (response.getStatusCode() == 401) {
+                throw new Exception("Remote rejected credentials on POST (HTTP 401)")
+            }
+            if (!response.isSuccess()) {
+                throw new Exception("git-receive-pack returned HTTP " +
+                                     response.getStatusCode().toString() + " " +
+                                     response.getStatusMessage())
+            }
+            return PushClient.parseReport(response.getBodyAsBytes(), refName)
+        }
+
+        private static fun parseReport(body: UByte[], refName: String): Bool {
+            var reader = new PktLineReader(body)
+            var unpackOk = false
+            var refOk = false
+            loop {
+                var frame = reader.next()
+                if (frame == null) {
+                    break
+                }
+                if (frame.isFlush()) {
+                    continue
+                }
+                if (frame.length < 4) {
+                    continue
+                }
+                var line = frame.textPayload()
+                if (line.startsWith("unpack ")) {
+                    var status = line.substringToEnd(7UI)
+                    if (status == "ok") {
+                        unpackOk = true
+                        "unpack: ok".println()
+                    } else {
+                        ("unpack: " + status).println()
+                    }
+                } else if (line.startsWith("ok ")) {
+                    var name = line.substringToEnd(3UI)
+                    ("ok " + name).println()
+                    if (name == refName) {
+                        refOk = true
+                    }
+                } else if (line.startsWith("ng ")) {
+                    var rest = line.substringToEnd(3UI)
+                    ("ng " + rest).println()
+                } else {
+                    // Treat anything else (server messages on band 2/3,
+                    // textual progress) as informational.
+                    line.println()
+                }
+            }
+            return unpackOk && refOk
+        }
+
+        // Read refs/heads/<branch>'s SHA from the on-disk ref file.
+        private static fun readLocalBranch(gitDir: String, branch: String): String {
+            var path = gitDir + "/refs/heads/" + branch
+            var file = new File(path)
+            if (!file.exists()) {
+                return null
+            }
+            return String.readFromFile(path).trim()
+        }
+
+        private static fun addAuthHeader(headers: HashMap<String, String>) {
+            var auth = BasicAuth.fromEnv()
+            if (auth != null) {
+                headers.set("Authorization", auth)
+            }
+        }
+    }
+}

@@ -23,6 +23,7 @@ namespace Am.Git
         import Am.Lang
         import Am.Collections
         import Am.IO
+        import Am.Web.Client
 
         // Conservative capability set:
         //   side-band-64k — server multiplexes pack + progress on bands 1/2/3
@@ -93,9 +94,14 @@ namespace Am.Git
 
         // Step 1+2.
         private static fun fetchRefAdvertisement(url: GitUrl): RefAdvertisement {
-            var response = HttpClient.getInfoRefs(url, "git-upload-pack")
+            var client = new WebClient()
+            var headers = new HashMap<String, String>()
+            headers.set("Accept", "application/x-git-upload-pack-advertisement")
+            headers.set("Git-Protocol", "version=1")
+            CloneClient.addAuthHeader(headers)
+            var response = client.getBytesWithHeaders(url.toString() + "/info/refs?service=git-upload-pack", headers)
             if (!response.isSuccess()) {
-                throw new Exception("info/refs returned HTTP " + response.statusCode.toString() + " " + response.statusText)
+                throw new Exception("info/refs returned HTTP " + response.getStatusCode().toString() + " " + response.getStatusMessage())
             }
             // Smart server should set this Content-Type. Dumb HTTP
             // servers (no `?service=` handler) won't, and we bail —
@@ -104,136 +110,44 @@ namespace Am.Git
             if (contentType == null || contentType.indexOf("application/x-git-upload-pack-advertisement") < 0) {
                 throw new Exception("Server is not smart-HTTP capable (Content-Type: " + contentType + ")")
             }
-            return CloneClient.parseRefAdvertisement(response.body)
+            return CloneClient.parseRefAdvertisement(response.getBodyAsBytes())
         }
 
-        // The advertisement format is documented in
-        // Documentation/technical/http-protocol.txt — a "# service=..."
-        // pkt-line, a flush, then refs (first carrying capabilities
-        // after a NUL), and a final flush.
+        // Conditional auth — populated from AM_GIT_USERNAME and
+        // AM_GIT_PASSWORD when both are set. Skipped silently otherwise
+        // so cloning public repos still works without credentials.
+        private static fun addAuthHeader(headers: HashMap<String, String>) {
+            var auth = BasicAuth.fromEnv()
+            if (auth != null) {
+                headers.set("Authorization", auth)
+            }
+        }
+
+        // Wrapper around RefAdvertisement.parse — kept so we can call
+        // it as `CloneClient.parseRefAdvertisement(body)` from the
+        // existing call site without churn.
         private static fun parseRefAdvertisement(body: UByte[]): RefAdvertisement {
-            var reader = new PktLineReader(body)
-
-            var first = reader.next()
-            if (first == null) {
-                throw new Exception("Empty ref advertisement")
-            }
-            var firstText = first.textPayload()
-            if (!firstText.startsWith("# service=")) {
-                throw new Exception("Expected service header, got: " + firstText)
-            }
-
-            // Expect a flush after the service line.
-            var flush = reader.next()
-            if (flush == null || !flush.isFlush()) {
-                throw new Exception("Expected flush packet after service header")
-            }
-
-            var refs = List<RefEntry>.newList<RefEntry>()
-            var capabilities: String[] = new String[0UI]
-            var first_real = true
-
-            loop {
-                var frame = reader.next()
-                if (frame == null) {
-                    break
-                }
-                if (frame.isFlush()) {
-                    break
-                }
-                if (frame.length < 4) {
-                    continue
-                }
-                var line = frame.textPayload()
-                if (first_real) {
-                    first_real = false
-                    // First ref line: "<sha> <name>\0<cap1> <cap2> ..."
-                    var nul = CloneClient.indexOfChar(line, 0US)
-                    if (nul >= 0) {
-                        var refPart = line.substring(0UI, nul.toUInt())
-                        var capPart = line.substringToEnd((nul + 1).toUInt())
-                        capabilities = capPart.split(32US)
-                        var entry = CloneClient.parseRefLine(refPart)
-                        if (entry != null) {
-                            refs.add(entry)
-                        }
-                    } else {
-                        var entry = CloneClient.parseRefLine(line)
-                        if (entry != null) {
-                            refs.add(entry)
-                        }
-                    }
-                } else {
-                    var entry = CloneClient.parseRefLine(line)
-                    if (entry != null) {
-                        // Detect a peeled tag entry — ref name ends with ^{}.
-                        if (entry.name.endsWith("^{}")) {
-                            var realName = entry.name.substring(0UI, (entry.name.length() - 3).toUInt())
-                            var prev = CloneClient.findLast(refs, realName)
-                            if (prev != null) {
-                                prev.peeledSha = entry.sha
-                            }
-                        } else {
-                            refs.add(entry)
-                        }
-                    }
-                }
-            }
-
-            return new RefAdvertisement(capabilities, refs.toArray())
-        }
-
-        private static fun parseRefLine(line: String): RefEntry {
-            var sp = line.indexOf(" ")
-            if (sp < 0) {
-                return null
-            }
-            var sha = line.substring(0UI, sp.toUInt())
-            var name = line.substringToEnd((sp + 1).toUInt())
-            if (sha.length() != 40) {
-                return null
-            }
-            return new RefEntry(sha, name)
-        }
-
-        private static fun findLast(list: List<RefEntry>, name: String): RefEntry {
-            var i = list.getSize() - 1
-            while (i >= 0) {
-                var e = list.get(i)
-                if (e.name == name) {
-                    return e
-                }
-                i--
-            }
-            return null
-        }
-
-        // String doesn't ship an indexOf(UShort) — character-level
-        // search for a NUL needs to walk the code units ourselves.
-        private static fun indexOfChar(s: String, c: UShort): Int {
-            var i = 0UI
-            var len = s.length().toUInt()
-            while (i < len) {
-                if (s.characterAt(i) == c) {
-                    return i.toInt()
-                }
-                i++
-            }
-            return -1
+            return RefAdvertisement.parse(body)
         }
 
         // Step 3+4.
         private static fun fetchPack(url: GitUrl, ad: RefAdvertisement): UByte[] {
             var requestBody = CloneClient.buildUploadPackRequest(ad)
-            var response = HttpClient.postUploadPack(url, requestBody)
+            var client = new WebClient()
+            var headers = new HashMap<String, String>()
+            headers.set("Accept", "application/x-git-upload-pack-result")
+            headers.set("Content-Type", "application/x-git-upload-pack-request")
+            headers.set("Git-Protocol", "version=1")
+            CloneClient.addAuthHeader(headers)
+            var response = client.postBytesWithHeaders(url.toString() + "/git-upload-pack", requestBody, headers)
             if (!response.isSuccess()) {
-                throw new Exception("git-upload-pack returned HTTP " + response.statusCode.toString() + " " + response.statusText)
+                throw new Exception("git-upload-pack returned HTTP " + response.getStatusCode().toString() + " " + response.getStatusMessage())
             }
             var contentType = response.getHeader("content-type")
             if (contentType == null || contentType.indexOf("application/x-git-upload-pack-result") < 0) {
                 throw new Exception("Unexpected upload-pack Content-Type: " + contentType)
             }
-            return CloneClient.extractPack(response.body)
+            return CloneClient.extractPack(response.getBodyAsBytes())
         }
 
         // Build the wants/done body. The first `want` line carries our

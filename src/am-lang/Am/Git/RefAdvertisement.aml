@@ -14,6 +14,119 @@ namespace Am.Git
     class RefAdvertisement(var capabilities: String[], var refs: RefEntry[])
     {
         import Am.Lang
+        import Am.Collections
+
+        // Parse a smart-HTTP info/refs body — same format for both
+        // upload-pack (clone/fetch) and receive-pack (push), only the
+        // service name in the leading "# service=..." line differs.
+        // Layout: Documentation/technical/http-protocol.txt.
+        static fun parse(body: UByte[]): RefAdvertisement {
+            var reader = new PktLineReader(body)
+
+            var first = reader.next()
+            if (first == null) {
+                throw new Exception("Empty ref advertisement")
+            }
+            var firstText = first.textPayload()
+            if (!firstText.startsWith("# service=")) {
+                throw new Exception("Expected service header, got: " + firstText)
+            }
+
+            // Expect a flush after the service line.
+            var flush = reader.next()
+            if (flush == null || !flush.isFlush()) {
+                throw new Exception("Expected flush packet after service header")
+            }
+
+            var refs = List<RefEntry>.newList<RefEntry>()
+            var capabilities: String[] = new String[0UI]
+            var firstReal = true
+
+            loop {
+                var frame = reader.next()
+                if (frame == null) {
+                    break
+                }
+                if (frame.isFlush()) {
+                    break
+                }
+                if (frame.length < 4) {
+                    continue
+                }
+                var line = frame.textPayload()
+                if (firstReal) {
+                    firstReal = false
+                    // First ref line: "<sha> <name>\0<cap1> <cap2> ..."
+                    // A fresh / empty repo has no refs at all — receive-
+                    // pack still emits a placeholder line with the all-
+                    // zeros sha and the magic name "capabilities^{}".
+                    var nul = RefAdvertisement.indexOfChar(line, 0US)
+                    if (nul >= 0) {
+                        var refPart = line.substring(0UI, nul.toUInt())
+                        var capPart = line.substringToEnd((nul + 1).toUInt())
+                        capabilities = capPart.split(32US)
+                        var entry = RefAdvertisement.parseRefLine(refPart)
+                        if (entry != null && entry.name != "capabilities^{}") {
+                            refs.add(entry)
+                        }
+                    } else {
+                        var entry = RefAdvertisement.parseRefLine(line)
+                        if (entry != null) {
+                            refs.add(entry)
+                        }
+                    }
+                } else {
+                    var entry = RefAdvertisement.parseRefLine(line)
+                    if (entry != null) {
+                        if (entry.name.endsWith("^{}")) {
+                            var realName = entry.name.substring(0UI, (entry.name.length() - 3).toUInt())
+                            var prev = RefAdvertisement.findLast(refs, realName)
+                            if (prev != null) {
+                                prev.peeledSha = entry.sha
+                            }
+                        } else {
+                            refs.add(entry)
+                        }
+                    }
+                }
+            }
+
+            return new RefAdvertisement(capabilities, refs.toArray())
+        }
+
+        private static fun parseRefLine(line: String): RefEntry {
+            var sp = line.indexOf(" ")
+            if (sp < 0) {
+                return null
+            }
+            var sha = line.substring(0UI, sp.toUInt())
+            var name = line.substringToEnd((sp + 1).toUInt())
+            return new RefEntry(sha, name)
+        }
+
+        private static fun findLast(list: List<RefEntry>, name: String): RefEntry {
+            var i = list.getSize() - 1
+            while (i >= 0) {
+                var r = list.get(i)
+                if (r.name == name) {
+                    return r
+                }
+                i = i - 1
+            }
+            return null
+        }
+
+        private static fun indexOfChar(s: String, c: UShort): Int {
+            var i = 0UI
+            var len = s.length().toUInt()
+            while (i < len) {
+                if (s.characterAt(i) == c) {
+                    return i.toInt()
+                }
+                i++
+            }
+            return -1
+        }
 
         // Find the SHA pointed at by `HEAD`. Servers always advertise
         // HEAD as the first ref; we still scan the list to be safe.

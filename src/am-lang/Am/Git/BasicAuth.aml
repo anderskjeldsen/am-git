@@ -1,0 +1,54 @@
+namespace Am.Git
+{
+    // HTTP Basic auth helper for the smart-HTTP transport.
+    //
+    // GitHub (and every other modern git host) accepts a personal
+    // access token in place of the password — that's the supported
+    // way to push over HTTPS now that password auth was retired.
+    //
+    // The auth header is built from two env vars:
+    //   AM_GIT_USERNAME — the user (often just the GitHub login, or
+    //                     "x-access-token" / "git" when the token
+    //                     carries the identity)
+    //   AM_GIT_PASSWORD — the password or personal-access-token value
+    //
+    // If either is unset `fromEnv` returns null and the caller is
+    // expected to send the request unauthenticated. Many ref-listing
+    // endpoints work without auth even on private repos returning a
+    // 401, which lets the caller surface a clear "set AM_GIT_*"
+    // error message.
+    class BasicAuth
+    {
+        import Am.Lang
+        import Am.Util
+
+        // Returns `"Basic " + base64(user + ":" + pass)`, or null when
+        // either env var is missing.
+        static fun fromEnv(): String {
+            var user = Environment.get("AM_GIT_USERNAME")
+            var pass = Environment.get("AM_GIT_PASSWORD")
+            if (user == null || pass == null) {
+                return null
+            }
+            return BasicAuth.headerValue(user, pass)
+        }
+
+        // Build the header value for arbitrary credentials. Exposed so
+        // tests and the CLI can exercise the encoder without messing
+        // with environment variables.
+        static fun headerValue(user: String, pass: String): String {
+            var combined = user + ":" + pass
+            var asUBytes = combined.toBytes("UTF-8")
+            // Base64.encode takes `Byte[]` (signed) — credentials are
+            // ASCII in practice so the cast is lossless.
+            var asBytes = new Byte[asUBytes.length()]
+            var i = 0UI
+            while (i < asUBytes.length()) {
+                asBytes[i] = asUBytes[i].toByte()
+                i++
+            }
+            var encoded = Base64.encode(asBytes, asUBytes.length())
+            return "Basic " + encoded
+        }
+    }
+}

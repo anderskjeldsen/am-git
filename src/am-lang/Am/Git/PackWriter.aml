@@ -1,0 +1,129 @@
+namespace Am.Git
+{
+    // Serializes a list of full objects (commits, trees, blobs, tags)
+    // into a v2 packfile suitable for shipping to `git receive-pack`.
+    //
+    // Layout produced (Documentation/technical/pack-format.txt):
+    //
+    //     "PACK"                 (4 bytes, magic)
+    //     0x00 0x00 0x00 0x02    (4 bytes, big-endian version 2)
+    //     <object count>         (4 bytes, big-endian)
+    //     for each object:
+    //         <type+size varint>
+    //         <zlib-deflated content>
+    //     <SHA-1 of all bytes above>   (20 bytes)
+    //
+    // We emit full objects only — no OFS_DELTA / REF_DELTA. Real git
+    // will happily index a delta-free pack, just at a higher on-the-
+    // wire cost. Worth optimising later, once basic push works.
+    //
+    // The size varint encodes the *inflated* size:
+    //   byte 0: bit7 = continuation, bits 4-6 = 3-bit type, bits 0-3 = size&0x0F
+    //   byte N: bit7 = continuation, bits 0-6 = next 7 bits of size
+    //
+    // Receive-pack rejects packs without the trailing SHA-1, so the
+    // hash is computed over every byte we've buffered and appended
+    // verbatim.
+    class PackWriter
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.Crypto
+        import Am.Z
+
+        static fun writePack(objects: List<PackObject>): UByte[] {
+            var buf = List<UByte>.newList<UByte>()
+
+            // --- Header --------------------------------------------------
+            // 'P' 'A' 'C' 'K'
+            buf.add(80UB)
+            buf.add(65UB)
+            buf.add(67UB)
+            buf.add(75UB)
+            PackWriter.appendBE32(buf, 2UI)
+            PackWriter.appendBE32(buf, objects.getSize().toUInt())
+
+            // --- Entries -------------------------------------------------
+            var i = 0
+            while (i < objects.getSize()) {
+                var obj = objects.get(i)
+                if (obj.typeCode < 1 || obj.typeCode > 4) {
+                    throw new Exception("PackWriter: refusing to emit non-full object (type " +
+                                         obj.typeCode.toString() + ", sha " + obj.sha + ")")
+                }
+                PackWriter.appendEntry(buf, obj)
+                i = i + 1
+            }
+
+            // --- Trailing SHA-1 -----------------------------------------
+            // Materialise the body once, hash it, then append the digest
+            // to produce the final pack bytes.
+            var body = buf.toArray()
+            var digest = Sha1.digest(body)
+            var out = new UByte[body.length() + 20UI]
+            var k = 0UI
+            while (k < body.length()) {
+                out[k] = body[k]
+                k++
+            }
+            var j = 0UI
+            while (j < 20UI) {
+                out[body.length() + j] = digest[j]
+                j++
+            }
+            return out
+        }
+
+        // One pack entry = type+size header followed by a zlib stream
+        // of the inflated content (Z_DEFAULT_COMPRESSION = 6, framed
+        // with the standard 0x78 header + adler32 trailer, which is
+        // what `Zlib.deflate` produces).
+        private static fun appendEntry(buf: List<UByte>, obj: PackObject) {
+            var size = obj.content.length().toLong()
+            PackWriter.appendTypeSizeVarint(buf, obj.typeCode, size)
+
+            var compressed = Zlib.deflate(obj.content)
+            var i = 0UI
+            while (i < compressed.length()) {
+                buf.add(compressed[i])
+                i++
+            }
+        }
+
+        // Encode the (type, inflated-size) header. Pulling 4 bits of
+        // size into byte 0 (alongside the 3-bit type and continuation
+        // bit), then 7 bits per continuation byte, low-bits-first.
+        //
+        // Example — type=blob(3), size=42 (0x2A):
+        //   byte 0 = 0x3A     (cont=0, type=3, size_lo=0x0A → wait, 42 & 0x0F = 0x0A, type<<4 = 0x30 → 0x3A)
+        //   size remaining 42>>4 = 2 → 0, so single-byte form, no continuation.
+        //
+        // Example — type=commit(1), size=300 (0x12C):
+        //   byte 0 = 0x9C     (cont=1, type=1, size_lo=0x0C)
+        //   size remaining 300>>4 = 18 (0x12) → 0x12 fits in 7 bits, no continuation
+        //   byte 1 = 0x12
+        private static fun appendTypeSizeVarint(buf: List<UByte>, typeCode: Int, size: Long) {
+            var first = ((typeCode & 7) * 16) + (size & 15L).toInt()
+            var remaining = size / 16L
+            if (remaining > 0L) {
+                first = first | 128
+            }
+            buf.add(first.toUByte())
+            while (remaining > 0L) {
+                var chunk = (remaining & 127L).toInt()
+                remaining = remaining / 128L
+                if (remaining > 0L) {
+                    chunk = chunk | 128
+                }
+                buf.add(chunk.toUByte())
+            }
+        }
+
+        private static fun appendBE32(buf: List<UByte>, value: UInt) {
+            buf.add(((value / 16777216UI) & 255UI).toUByte())
+            buf.add(((value / 65536UI) & 255UI).toUByte())
+            buf.add(((value / 256UI) & 255UI).toUByte())
+            buf.add((value & 255UI).toUByte())
+        }
+    }
+}

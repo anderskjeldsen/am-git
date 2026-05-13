@@ -13,6 +13,7 @@ namespace AmGit
         import Am.Lang
         import Am.IO
         import Am.Git
+        import Am.Collections
 
         static fun main(args: String[]) {
             if (args.length() == 0UI) {
@@ -38,6 +39,14 @@ namespace AmGit
                 Program.runCatFile(args)
             } else if (command == "rev-list-objects") {
                 Program.runRevListObjects(args)
+            } else if (command == "pack-objects") {
+                Program.runPackObjects(args)
+            } else if (command == "build-push-body") {
+                Program.runBuildPushBody(args)
+            } else if (command == "auth-header") {
+                Program.runAuthHeader(args)
+            } else if (command == "push") {
+                Program.runPush(args)
             } else if (command == "help" || command == "--help" || command == "-h") {
                 Program.printUsage()
             } else if (command == "version" || command == "--version") {
@@ -393,21 +402,181 @@ namespace AmGit
             }
         }
 
+        // Build a v2 packfile containing every object reachable from
+        // <new-sha> that isn't reachable from <have-sha>. Writes the
+        // pack bytes to <output-pack> — pipe through `git index-pack
+        // --stdin --keep` to verify the pack is well-formed and the
+        // contained objects match git's view of those SHAs.
+        private static fun runPackObjects(args: String[]) {
+            try {
+                if (args.length() < 3UI) {
+                    "usage: am-git pack-objects <output-pack> <new-sha> [<have-sha>]".println()
+                    return
+                }
+                var outPath = args[1UI]
+                var newSha = args[2UI]
+                var haveSha: String = "0000000000000000000000000000000000000000"
+                if (args.length() >= 4UI) {
+                    haveSha = args[3UI]
+                }
+                var store = new ObjectStore(".git")
+                var walker = new ObjectWalker(store)
+                var shas = walker.collect(newSha, haveSha)
+                ("Walking " + shas.getSize().toString() + " objects").println()
+
+                var objects = List<PackObject>.newList<PackObject>()
+                var i = 0
+                while (i < shas.getSize()) {
+                    var sha = shas.get(i)
+                    if (!store.has(sha)) {
+                        throw new Exception("missing object: " + sha)
+                    }
+                    objects.add(store.read(sha))
+                    i = i + 1
+                }
+
+                var pack = PackWriter.writePack(objects)
+                Repository.writeBytes(outPath, pack)
+                ("Wrote " + pack.length().toString() + " bytes to " + outPath).println()
+            } catch (ex: Exception) {
+                ("pack-objects: " + ex.message).println()
+            }
+        }
+
+        // Build a receive-pack request body for a single ref update
+        // and write it to <output>. Pipe through `git receive-pack
+        // <bare-repo>` to confirm the server accepts our framing +
+        // packfile end-to-end.
+        //
+        //     am-git build-push-body <output> <old-sha> <new-sha> <ref>
+        //
+        // Uses <ref>'s walk: every object reachable from <new-sha> but
+        // not from <old-sha>. Pass 40 zeros for old-sha on a fresh ref.
+        private static fun runBuildPushBody(args: String[]) {
+            try {
+                if (args.length() < 5UI) {
+                    "usage: am-git build-push-body <output> <old-sha> <new-sha> <refname>".println()
+                    return
+                }
+                var outPath = args[1UI]
+                var oldSha = args[2UI]
+                var newSha = args[3UI]
+                var refName = args[4UI]
+
+                var store = new ObjectStore(".git")
+                var walker = new ObjectWalker(store)
+                var shas = walker.collect(newSha, oldSha)
+                ("Walking " + shas.getSize().toString() + " objects").println()
+
+                var objects = List<PackObject>.newList<PackObject>()
+                var i = 0
+                while (i < shas.getSize()) {
+                    var sha = shas.get(i)
+                    objects.add(store.read(sha))
+                    i = i + 1
+                }
+
+                var pack = PackWriter.writePack(objects)
+                var updates = List<RefUpdate>.newList<RefUpdate>()
+                updates.add(new RefUpdate(oldSha, newSha, refName))
+
+                var body = ReceivePackRequest.build(updates, pack)
+                Repository.writeBytes(outPath, body)
+                ("Wrote " + body.length().toString() + " bytes to " + outPath).println()
+            } catch (ex: Exception) {
+                ("build-push-body: " + ex.message).println()
+            }
+        }
+
+        // Print the Authorization header that would be sent for the
+        // current AM_GIT_USERNAME / AM_GIT_PASSWORD env vars. Mostly
+        // a debugging aid — verify the encoding against `echo -n
+        // "$AM_GIT_USERNAME:$AM_GIT_PASSWORD" | base64`. Pass an
+        // explicit `<user> <pass>` pair to avoid relying on env.
+        private static fun runAuthHeader(args: String[]) {
+            try {
+                var value: String = null
+                if (args.length() >= 3UI) {
+                    value = BasicAuth.headerValue(args[1UI], args[2UI])
+                } else {
+                    value = BasicAuth.fromEnv()
+                }
+                if (value == null) {
+                    "auth-header: AM_GIT_USERNAME and AM_GIT_PASSWORD must both be set".println()
+                    return
+                }
+                value.println()
+            } catch (ex: Exception) {
+                ("auth-header: " + ex.message).println()
+            }
+        }
+
+        // Push the current branch (or an explicitly named one) to the
+        // given remote URL. Usage:
+        //
+        //   am-git push <remote-url> [<branch>]
+        //
+        // If <branch> is omitted, reads `.git/HEAD` and uses whatever
+        // refs/heads/<x> it points at. Credentials come from
+        // AM_GIT_USERNAME / AM_GIT_PASSWORD; for GitHub these are the
+        // login + a personal-access-token.
+        private static fun runPush(args: String[]) {
+            try {
+                if (args.length() < 2UI) {
+                    "usage: am-git push <remote-url> [<branch>]".println()
+                    return
+                }
+                var remoteUrl = args[1UI]
+                var branch: String = null
+                if (args.length() >= 3UI) {
+                    branch = args[2UI]
+                } else {
+                    var head = HeadReader.read(".git")
+                    if (head.detached) {
+                        "push: HEAD is detached — pass <branch> explicitly".println()
+                        return
+                    }
+                    branch = head.branch
+                }
+
+                var ok = PushClient.push(".git", remoteUrl, branch)
+                if (ok) {
+                    "Push complete.".println()
+                } else {
+                    "Push reported failures — see lines above.".println()
+                }
+            } catch (ex: Exception) {
+                ("push: " + ex.message).println()
+            }
+        }
+
         private static fun printUsage() {
             "am-git — a small git client written in AmLang".println()
             "".println()
             "Commands:".println()
-            "  clone <url> [target-dir]   Clone a remote repository over smart-HTTP".println()
-            "  hash-object [-w] <file>    Compute (and optionally write) a blob's SHA-1".println()
-            "  whoami                     Print author/committer as a commit would record".println()
-            "  head                       Print resolved HEAD (branch / commit / detached)".println()
-            "  write-tree                 Build trees/blobs from cwd, print root tree SHA".println()
-            "  commit-tree <tree>         Write a commit object pointing at the given tree".println()
+            "  clone <url> [target-dir]            Clone a remote repository over smart-HTTP".println()
+            "  push <remote-url> [<branch>]        Push HEAD (or named branch) to the remote".println()
+            "  commit -m <message>                 Commit the cwd working tree against HEAD".println()
+            "  commit-tree <tree>                  Write a commit object pointing at the given tree".println()
             "    [-p <parent>] -m <msg>".println()
-            "  commit -m <message>        Commit the cwd working tree against HEAD".println()
-            "  cat-file (-p|-t) <sha>     Print a loose object's content (-p) or type (-t)".println()
-            "  version                    Print version information".println()
-            "  help                       Show this help".println()
+            "  hash-object [-w] <file>             Compute (and optionally write) a blob's SHA-1".println()
+            "  write-tree                          Build trees/blobs from cwd, print root tree SHA".println()
+            "  head                                Print resolved HEAD (branch / commit / detached)".println()
+            "  whoami                              Print author/committer as a commit would record".println()
+            "  cat-file (-p|-t) <sha>              Print a loose object's content (-p) or type (-t)".println()
+            "  rev-list-objects <new> [<have>]     List reachable SHAs from <new> minus those from <have>".println()
+            "  pack-objects <out> <new> [<have>]   Pack reachable objects into a v2 packfile".println()
+            "  build-push-body <out> <old> <new> <ref>".println()
+            "                                      Build a raw receive-pack request body".println()
+            "  auth-header [<user> <pass>]         Print the Authorization header that would be sent".println()
+            "  version                             Print version information".println()
+            "  help                                Show this help".println()
+            "".println()
+            "Environment:".println()
+            "  AM_GIT_USER_NAME, AM_GIT_USER_EMAIL  Identity used for commit author/committer".println()
+            "    (GIT_AUTHOR_NAME / GIT_COMMITTER_NAME etc. also accepted)".println()
+            "  AM_GIT_USERNAME, AM_GIT_PASSWORD     HTTP Basic auth credentials for push and".println()
+            "                                       cloning private repos (use a PAT for GitHub)".println()
         }
     }
 }
