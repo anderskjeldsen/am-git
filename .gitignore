@@ -1,8 +1,9 @@
-builds/*
+builds*/*
+dependencies/*
 *.generated.c
 *.o
 .DS_Store
-c-libs/AmiSSL*
-c-libs/openssl
-amlc.jar
-examples/*/builds
+examples/**/builds/*
+examples/**/dependencies/*
+src/native-c/aros-x86-64/*
+src/native-c/linux-arm64v8/*
