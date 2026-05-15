@@ -49,6 +49,16 @@ namespace AmGit
                 Program.runPush(args)
             } else if (command == "fetch") {
                 Program.runFetch(args)
+            } else if (command == "log") {
+                Program.runLog(args)
+            } else if (command == "branch") {
+                Program.runBranch(args)
+            } else if (command == "checkout") {
+                Program.runCheckout(args)
+            } else if (command == "status") {
+                Program.runStatus(args)
+            } else if (command == "pull") {
+                Program.runPull(args)
             } else if (command == "help" || command == "--help" || command == "-h") {
                 Program.printUsage()
             } else if (command == "version" || command == "--version") {
@@ -513,25 +523,280 @@ namespace AmGit
             }
         }
 
+        // Fast-forward-only pull. Either form works:
+        //
+        //   am-git pull                     (URL from .git/config, branch from HEAD)
+        //   am-git pull <url>               (branch from HEAD)
+        //   am-git pull <url> <branch>      (both explicit)
+        //
+        // Bails on non-fast-forward — no merge / rebase machinery yet.
+        private static fun runPull(args: String[]) {
+            try {
+                var remoteUrl: String = null
+                var branch: String = null
+                if (args.length() >= 2UI) {
+                    remoteUrl = args[1UI]
+                }
+                if (args.length() >= 3UI) {
+                    branch = args[2UI]
+                }
+                PullClient.pull(".git", ".", remoteUrl, branch, "origin")
+            } catch (ex: Exception) {
+                ("pull: " + ex.message).println()
+            }
+        }
+
+        // Compare the working tree to HEAD's tree and print changed
+        // paths in `git status --short` style.
+        private static fun runStatus(args: String[]) {
+            try {
+                StatusReport.run(".git", ".")
+            } catch (ex: Exception) {
+                ("status: " + ex.message).println()
+            }
+        }
+
+        // `am-git checkout <branch>` — repoint HEAD at refs/heads/<branch>
+        // and bring the working tree in line with that branch's tip.
+        // Refuses if the branch doesn't exist locally; doesn't detect
+        // dirty files (clobbers them).
+        private static fun runCheckout(args: String[]) {
+            try {
+                if (args.length() != 2UI) {
+                    "usage: am-git checkout <branch>".println()
+                    return
+                }
+                CheckoutClient.checkout(".git", ".", args[1UI])
+            } catch (ex: Exception) {
+                ("checkout: " + ex.message).println()
+            }
+        }
+
+        // `am-git branch`              — list local branches with a
+        //                                 `*` next to the current one.
+        // `am-git branch <name>`       — create a new branch at HEAD.
+        // `am-git branch -d <name>`    — delete a branch (refuses to
+        //                                 delete the current one).
+        private static fun runBranch(args: String[]) {
+            try {
+                if (args.length() == 1UI) {
+                    Program.listBranches()
+                    return
+                }
+                if (args.length() == 3UI && args[1UI] == "-d") {
+                    Program.deleteBranch(args[2UI])
+                    return
+                }
+                if (args.length() == 2UI) {
+                    Program.createBranch(args[1UI])
+                    return
+                }
+                "usage: am-git branch [<name> | -d <name>]".println()
+            } catch (ex: Exception) {
+                ("branch: " + ex.message).println()
+            }
+        }
+
+        private static fun listBranches() {
+            var head = HeadReader.read(".git")
+            var currentBranch: String = null
+            if (!head.detached) {
+                currentBranch = head.branch
+            }
+            var names = Program.collectBranchNames(".git/refs/heads", "")
+            // Sort by simple linear search swap — small N, code stays
+            // self-contained.
+            var i = 0
+            while (i < names.getSize() - 1) {
+                var j = i + 1
+                while (j < names.getSize()) {
+                    if (names.get(j) < names.get(i)) {
+                        var tmp = names.get(i)
+                        names.set(i, names.get(j))
+                        names.set(j, tmp)
+                    }
+                    j = j + 1
+                }
+                i = i + 1
+            }
+            var k = 0
+            while (k < names.getSize()) {
+                var n = names.get(k)
+                var marker = "  "
+                if (n == currentBranch) {
+                    marker = "* "
+                }
+                (marker + n).println()
+                k = k + 1
+            }
+        }
+
+        // Recurse into refs/heads — branch names can contain slashes
+        // (`feature/foo`) which become nested directories on disk.
+        private static fun collectBranchNames(dir: String, prefix: String): List<String> {
+            var out = List<String>.newList<String>()
+            var d = new File(dir)
+            if (!d.exists()) {
+                return out
+            }
+            var entries = d.listFiles()
+            var i = 0
+            while (i < entries.length().toInt()) {
+                var f = entries[i.toUInt()]
+                var name = f.getName()
+                if (f.isDirectory()) {
+                    var nested = Program.collectBranchNames(f.toString(), prefix + name + "/")
+                    var n = 0
+                    while (n < nested.getSize()) {
+                        out.add(nested.get(n))
+                        n = n + 1
+                    }
+                } else {
+                    out.add(prefix + name)
+                }
+                i = i + 1
+            }
+            return out
+        }
+
+        private static fun createBranch(name: String) {
+            var head = HeadReader.read(".git")
+            if (head.commitSha == null) {
+                "branch: HEAD has no commit yet — create one first".println()
+                return
+            }
+            var path = ".git/refs/heads/" + name
+            var existing = new File(path)
+            if (existing.exists()) {
+                ("branch: refs/heads/" + name + " already exists").println()
+                return
+            }
+            Repository.ensureParentDir(path)
+            (head.commitSha + "\n").writeToFile(path)
+            ("Created refs/heads/" + name + " at " + head.commitSha).println()
+        }
+
+        private static fun deleteBranch(name: String) {
+            var head = HeadReader.read(".git")
+            if (!head.detached && head.branch == name) {
+                ("branch: refusing to delete current branch '" + name + "'").println()
+                return
+            }
+            var path = ".git/refs/heads/" + name
+            var f = new File(path)
+            if (!f.exists()) {
+                ("branch: refs/heads/" + name + " does not exist").println()
+                return
+            }
+            File.delete(path)
+            ("Deleted refs/heads/" + name).println()
+        }
+
+        // Walk commit ancestry from HEAD, printing each commit's sha,
+        // author, and message. Follows the first parent only — same
+        // behaviour as `git log --first-parent` — which keeps merges
+        // from exploding the output. `-n N` caps the count.
+        private static fun runLog(args: String[]) {
+            try {
+                var limit = -1
+                var i = 1
+                while (i < args.length().toInt()) {
+                    var a = args[i.toUInt()]
+                    if (a == "-n" && i + 1 < args.length().toInt()) {
+                        limit = Int.parse(args[(i + 1).toUInt()])
+                        i = i + 2
+                    } else {
+                        ("log: unrecognised arg '" + a + "'").println()
+                        return
+                    }
+                }
+
+                var head = HeadReader.read(".git")
+                if (head.commitSha == null) {
+                    "log: no commits yet".println()
+                    return
+                }
+                var store = new ObjectStore(".git")
+                var current = head.commitSha
+                var shown = 0
+                loop {
+                    if (current == null) {
+                        break
+                    }
+                    if (limit >= 0 && shown >= limit) {
+                        break
+                    }
+                    if (!store.has(current)) {
+                        ("log: missing object " + current).println()
+                        break
+                    }
+                    var obj = store.read(current)
+                    if (obj.typeCode != 1) {
+                        ("log: " + current + " is not a commit").println()
+                        break
+                    }
+                    var c = Commit.parse(current, obj.content)
+                    ("commit " + c.sha).println()
+                    if (c.author != null) {
+                        ("Author: " + c.author).println()
+                    }
+                    "".println()
+                    // Indent the message body four spaces, like git's
+                    // default `medium` format.
+                    var lines = c.message.split(10US)
+                    var li = 0
+                    while (li < lines.length().toInt()) {
+                        var line = lines[li.toUInt()]
+                        if (li == lines.length().toInt() - 1 && line.length() == 0) {
+                            break
+                        }
+                        ("    " + line).println()
+                        li = li + 1
+                    }
+                    "".println()
+                    shown = shown + 1
+                    if (c.parents.getSize() == 0) {
+                        break
+                    }
+                    current = c.parents.get(0)
+                }
+            } catch (ex: Exception) {
+                ("log: " + ex.message).println()
+            }
+        }
+
         // Pull new objects + refs from the remote into our `.git`
         // directory. Updates `refs/remotes/<remote>/<branch>` and
         // `refs/tags/*`; doesn't touch the working tree or local
         // branches.
         //
+        //   am-git fetch                     (URL + name from .git/config)
+        //   am-git fetch <remote-name>       (URL from config, override name)
         //   am-git fetch <remote-url> [<remote-name>]
         //
         // <remote-name> defaults to "origin" — it's the prefix used
         // for the remote-tracking refs on disk.
         private static fun runFetch(args: String[]) {
             try {
-                if (args.length() < 2UI) {
-                    "usage: am-git fetch <remote-url> [<remote-name>]".println()
-                    return
-                }
-                var remoteUrl = args[1UI]
+                var remoteUrl: String = null
                 var remoteName = "origin"
-                if (args.length() >= 3UI) {
-                    remoteName = args[2UI]
+                if (args.length() >= 2UI) {
+                    var arg = args[1UI]
+                    if (Program.looksLikeUrl(arg)) {
+                        remoteUrl = arg
+                        if (args.length() >= 3UI) {
+                            remoteName = args[2UI]
+                        }
+                    } else {
+                        remoteName = arg
+                    }
+                }
+                if (remoteUrl == null) {
+                    remoteUrl = Program.urlFromConfig(remoteName)
+                    if (remoteUrl == null) {
+                        ("fetch: no URL passed and remote '" + remoteName + "' not in .git/config").println()
+                        return
+                    }
                 }
                 FetchClient.fetch(".git", remoteUrl, remoteName)
             } catch (ex: Exception) {
@@ -539,26 +804,49 @@ namespace AmGit
             }
         }
 
+        // Heuristic — pull's first arg might be a URL or a remote
+        // name. A URL contains "://"; a remote name doesn't.
+        private static fun looksLikeUrl(s: String): Bool {
+            return s.indexOf("://") > 0
+        }
+
+        private static fun urlFromConfig(remoteName: String): String {
+            var cfg = GitConfig.read(".git")
+            return cfg.getRemoteUrl(remoteName)
+        }
+
         // Push the current branch (or an explicitly named one) to the
-        // given remote URL. Usage:
+        // remote. Usage:
         //
+        //   am-git push                              (URL from .git/config, branch from HEAD)
+        //   am-git push <branch>                     (URL from config, named branch)
         //   am-git push <remote-url> [<branch>]
         //
-        // If <branch> is omitted, reads `.git/HEAD` and uses whatever
-        // refs/heads/<x> it points at. Credentials come from
-        // AM_GIT_USERNAME / AM_GIT_PASSWORD; for GitHub these are the
-        // login + a personal-access-token.
+        // Credentials come from AM_GIT_USERNAME / AM_GIT_PASSWORD; for
+        // GitHub these are the login + a personal-access-token.
         private static fun runPush(args: String[]) {
             try {
-                if (args.length() < 2UI) {
-                    "usage: am-git push <remote-url> [<branch>]".println()
-                    return
-                }
-                var remoteUrl = args[1UI]
+                var remoteUrl: String = null
                 var branch: String = null
-                if (args.length() >= 3UI) {
-                    branch = args[2UI]
-                } else {
+                if (args.length() >= 2UI) {
+                    var arg = args[1UI]
+                    if (Program.looksLikeUrl(arg)) {
+                        remoteUrl = arg
+                        if (args.length() >= 3UI) {
+                            branch = args[2UI]
+                        }
+                    } else {
+                        branch = arg
+                    }
+                }
+                if (remoteUrl == null) {
+                    remoteUrl = Program.urlFromConfig("origin")
+                    if (remoteUrl == null) {
+                        "push: no URL passed and remote 'origin' not in .git/config".println()
+                        return
+                    }
+                }
+                if (branch == null) {
                     var head = HeadReader.read(".git")
                     if (head.detached) {
                         "push: HEAD is detached — pass <branch> explicitly".println()
@@ -583,8 +871,13 @@ namespace AmGit
             "".println()
             "Commands:".println()
             "  clone <url> [target-dir]            Clone a remote repository over smart-HTTP".println()
-            "  fetch <remote-url> [<remote-name>]  Fetch new objects + refs (default remote: origin)".println()
-            "  push <remote-url> [<branch>]        Push HEAD (or named branch) to the remote".println()
+            "  fetch [<url>|<remote-name>]         Fetch refs + objects (defaults from .git/config)".println()
+            "  pull [<url>] [<branch>]             Fast-forward-only pull (fetch + advance HEAD)".println()
+            "  push [<url>] [<branch>]             Push HEAD or named branch (defaults from .git/config)".println()
+            "  status                              Show modified / deleted / untracked paths vs HEAD".println()
+            "  log [-n N]                          Walk commit ancestry from HEAD".println()
+            "  branch [<name> | -d <name>]         List / create / delete local branches".println()
+            "  checkout <branch>                   Switch HEAD and the working tree to a branch".println()
             "  commit -m <message>                 Commit the cwd working tree against HEAD".println()
             "  commit-tree <tree>                  Write a commit object pointing at the given tree".println()
             "    [-p <parent>] -m <msg>".println()

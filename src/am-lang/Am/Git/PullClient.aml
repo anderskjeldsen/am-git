@@ -1,0 +1,149 @@
+namespace Am.Git
+{
+    // `git pull --ff-only` — fetch + advance the current branch to
+    // the remote's tip, provided it's a strict descendant of where we
+    // are. No merge, no rebase, no overwrite of divergent history.
+    //
+    // Flow:
+    //   1. Resolve the remote URL (CLI arg, or `remote.<name>.url`
+    //      from `.git/config`) and the branch to pull (CLI arg, or
+    //      whatever HEAD currently points at).
+    //   2. Run FetchClient.fetch — that brings objects in and updates
+    //      `refs/remotes/<remote>/<branch>`.
+    //   3. Compare the remote-tracking SHA with the local branch SHA.
+    //      If equal: already up-to-date.
+    //   4. Walk parents of the remote SHA; if we reach the local SHA
+    //      it's a fast-forward and we can advance.
+    //   5. Write the new SHA into `refs/heads/<branch>` and re-run
+    //      checkout to refresh the working tree.
+    //
+    // Limitations on purpose:
+    //   * Non-fast-forward → bail loud. No 3-way merge yet.
+    //   * Dirty working tree → clobbered by the checkout step. Run
+    //     `am-git status` first if you care.
+    //   * Only updates the branch you're on / passed explicitly —
+    //     other branches' remote-tracking refs do get updated by the
+    //     fetch step, just not their local counterparts.
+    class PullClient
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        // remoteUrl == null → look up `remote.<remoteName>.url` from
+        //                    .git/config.
+        // branch    == null → use HEAD's current branch.
+        // remoteName defaults to "origin" at the CLI layer.
+        static fun pull(gitDir: String, workTreePath: String,
+                        remoteUrl: String, branch: String, remoteName: String): Bool {
+            // Resolve branch from HEAD if not passed.
+            var head = HeadReader.read(gitDir)
+            if (branch == null) {
+                if (head.detached) {
+                    "pull: HEAD is detached — pass <branch> explicitly".println()
+                    return false
+                }
+                branch = head.branch
+            }
+
+            // Resolve remote URL from .git/config when omitted.
+            var url = remoteUrl
+            if (url == null) {
+                var cfg = GitConfig.read(gitDir)
+                url = cfg.getRemoteUrl(remoteName)
+                if (url == null) {
+                    ("pull: no URL set for remote '" + remoteName + "'").println()
+                    return false
+                }
+            }
+
+            ("Pulling " + branch + " from " + url).println()
+            FetchClient.fetch(gitDir, url, remoteName)
+
+            // Remote-tracking ref now reflects what the server has.
+            var remoteRefPath = gitDir + "/refs/remotes/" + remoteName + "/" + branch
+            var remoteRef = new File(remoteRefPath)
+            if (!remoteRef.exists()) {
+                ("pull: remote did not advertise refs/heads/" + branch).println()
+                return false
+            }
+            var remoteSha = String.readFromFile(remoteRefPath).trim()
+
+            // Local branch — may not exist yet if we just initialised
+            // this repo against the remote.
+            var localRefPath = gitDir + "/refs/heads/" + branch
+            var localRef = new File(localRefPath)
+            var localSha: String = null
+            if (localRef.exists()) {
+                localSha = String.readFromFile(localRefPath).trim()
+            }
+
+            if (localSha == remoteSha) {
+                ("Already up-to-date: " + branch + " = " + remoteSha).println()
+                return true
+            }
+
+            // Fast-forward check: walk back from the remote SHA, ask
+            // whether the local SHA shows up as an ancestor. Local
+            // SHA == null (unborn branch) is implicitly an ancestor of
+            // anything — we treat that as a fast-forward too.
+            var store = new ObjectStore(gitDir)
+            if (localSha != null) {
+                if (!PullClient.isAncestor(store, localSha, remoteSha)) {
+                    ("pull: refusing non-fast-forward (local " + localSha +
+                     " is not an ancestor of remote " + remoteSha + ")").println()
+                    "Use a real git client to merge / rebase.".println()
+                    return false
+                }
+            }
+
+            // Fast-forward: advance the branch ref, then refresh the
+            // working tree. Checkout handles HEAD too.
+            Repository.ensureParentDir(localRefPath)
+            (remoteSha + "\n").writeToFile(localRefPath)
+            CheckoutClient.checkout(gitDir, workTreePath, branch)
+            ("Fast-forwarded " + branch + " → " + remoteSha).println()
+            return true
+        }
+
+        // Walk parents from `descendantSha` looking for `ancestorSha`.
+        // Iterative work-list keeps the stack flat on deep histories.
+        // Returns true iff `ancestorSha` is reachable from
+        // `descendantSha` via parent links.
+        private static fun isAncestor(store: ObjectStore, ancestorSha: String, descendantSha: String): Bool {
+            if (ancestorSha == descendantSha) {
+                return true
+            }
+            var seen = new HashMap<String, Bool>()
+            var queue = List<String>.newList<String>()
+            queue.add(descendantSha)
+            loop {
+                if (queue.getSize() == 0) {
+                    break
+                }
+                var current = queue.removeLast()
+                if (seen.containsKey(current)) {
+                    continue
+                }
+                seen.set(current, true)
+                if (current == ancestorSha) {
+                    return true
+                }
+                if (!store.has(current)) {
+                    continue
+                }
+                var obj = store.read(current)
+                if (obj.typeCode != 1) {
+                    continue
+                }
+                var c = Commit.parse(current, obj.content)
+                var i = 0
+                while (i < c.parents.getSize()) {
+                    queue.add(c.parents.get(i))
+                    i = i + 1
+                }
+            }
+            return false
+        }
+    }
+}

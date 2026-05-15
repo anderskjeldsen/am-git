@@ -1,0 +1,123 @@
+namespace Am.Git
+{
+    // Tiny `.git/config` reader.
+    //
+    // Format (INI-ish — same as `man git-config`):
+    //
+    //     [section]
+    //         key = value
+    //     [section "subname"]
+    //         key = value
+    //         key2 = value
+    //
+    // We flatten everything into "section[.subname].key" → value so a
+    // call like `getValue("remote.origin.url")` finds the right entry
+    // without callers having to know whether the section is
+    // subsectioned.
+    //
+    // What this doesn't do: include directives, conditional sections,
+    // continuation lines, `[core]` quote-escapes inside values. Plenty
+    // for our needs — we only ever read `remote.<name>.url`.
+    class GitConfig(private var entries: HashMap<String, String>)
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        static fun read(gitDir: String): GitConfig {
+            var entries = new HashMap<String, String>()
+            var path = gitDir + "/config"
+            var f = new File(path)
+            if (!f.exists()) {
+                return new GitConfig(entries)
+            }
+            var raw = String.readFromFile(path)
+            var lines = raw.split(10US)
+            var currentPrefix = ""
+            var i = 0
+            while (i < lines.length().toInt()) {
+                var line = lines[i.toUInt()]
+                if (line.endsWith("\r")) {
+                    line = line.substring(0UI, (line.length() - 1).toUInt())
+                }
+                var trimmed = line.trim()
+                if (trimmed.length() == 0) {
+                    i = i + 1
+                    continue
+                }
+                if (trimmed.startsWith("#") || trimmed.startsWith(";")) {
+                    i = i + 1
+                    continue
+                }
+                if (trimmed.startsWith("[")) {
+                    currentPrefix = GitConfig.parseSection(trimmed)
+                    i = i + 1
+                    continue
+                }
+                // key = value (anything else inside a section)
+                if (currentPrefix.length() == 0) {
+                    i = i + 1
+                    continue
+                }
+                var eq = trimmed.indexOf("=")
+                if (eq < 0) {
+                    i = i + 1
+                    continue
+                }
+                var key = trimmed.substring(0UI, eq.toUInt()).trim()
+                var value = trimmed.substringToEnd((eq + 1).toUInt()).trim()
+                // git allows quoted values to preserve trailing
+                // whitespace — strip just the wrapping quotes.
+                if (value.startsWith("\"") && value.endsWith("\"") && value.length() >= 2) {
+                    value = value.substring(1UI, (value.length() - 2).toUInt())
+                }
+                entries.set(currentPrefix + "." + key, value)
+                i = i + 1
+            }
+            return new GitConfig(entries)
+        }
+
+        // Parse a section header line: `[name]` → "name",
+        // `[name "subname"]` → "name.subname".
+        private static fun parseSection(line: String): String {
+            // Strip the surrounding brackets first; ignore anything
+            // after a trailing `#` / `;`.
+            var stripped = line
+            if (stripped.startsWith("[")) {
+                stripped = stripped.substringToEnd(1UI)
+            }
+            var close = stripped.indexOf("]")
+            if (close >= 0) {
+                stripped = stripped.substring(0UI, close.toUInt())
+            }
+            stripped = stripped.trim()
+
+            // Subsection in quotes?
+            var quote = stripped.indexOf("\"")
+            if (quote < 0) {
+                return stripped
+            }
+            var section = stripped.substring(0UI, quote.toUInt()).trim()
+            var rest = stripped.substringToEnd((quote + 1).toUInt())
+            var closeQuote = rest.lastIndexOf("\"")
+            var sub = rest
+            if (closeQuote >= 0) {
+                sub = rest.substring(0UI, closeQuote.toUInt())
+            }
+            return section + "." + sub
+        }
+
+        fun getValue(key: String): String {
+            if (!this.entries.containsKey(key)) {
+                return null
+            }
+            return this.entries.get(key)
+        }
+
+        // Convenience: look up the URL for a remote by name (defaults
+        // to "origin"). Returns null when the remote isn't configured.
+        fun getRemoteUrl(remoteName: String): String {
+            return this.getValue("remote." + remoteName + ".url")
+        }
+    }
+}

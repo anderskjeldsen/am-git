@@ -16,46 +16,59 @@ Built on top of:
 
 ## Status
 
-End-to-end **clone, commit, and push** all work against real HTTPS git
-remotes (validated against GitHub and a local `git http-backend` server,
-byte-for-byte against reference `git` output).
+End-to-end **clone, commit, push, fetch, and (ff-only) pull** all work
+against real HTTPS git remotes (validated against GitHub and a local
+`git http-backend` server, byte-for-byte against reference `git`
+output). Local-only operations cover the everyday navigation set —
+`log`, `status`, `branch`, `checkout`.
 
 ### Clone
 
-From an `https://...` URL, am-git:
-
-1. Negotiates the smart-HTTP `git-upload-pack` v1 protocol (with
-   `side-band-64k`, `ofs-delta`).
-2. Downloads the packfile.
-3. Walks every entry: full objects are SHA-1'd and indexed; delta
-   entries (OFS_DELTA / REF_DELTA) are inflated, applied to their
-   bases via the delta resolver, and added to the same index.
-4. Materialises the HEAD commit's tree into the target directory —
-   one file per blob, recursing into subdirectories.
+From an `https://...` URL, am-git negotiates `git-upload-pack` v1 (with
+`side-band-64k`, `ofs-delta`), downloads the packfile, parses + delta-
+resolves every entry, materialises HEAD's tree into the target dir,
+and writes a real `.git` layout — HEAD, config (with the remote URL),
+refs under `refs/heads/` + `refs/remotes/origin/` + `refs/tags/`, and
+the raw pack at `objects/pack/`.
 
 ### Commit
 
-`am-git commit -m "..."` walks the working tree, writes the blobs and
-trees as loose objects under `.git/objects/xx/...`, builds a commit
-object pointing at HEAD's current commit, and advances the current
-branch's ref to it. Output is byte-identical to what `git commit`
-would have produced — you can keep using `git` against the same repo.
+`am-git commit -m "..."` walks the working tree, writes blobs + trees
+as loose objects under `.git/objects/xx/...`, builds a commit object
+pointing at HEAD's current commit, and advances the current branch's
+ref. Output is byte-identical to `git commit` — interoperable with
+real `git` against the same repo.
+
+### Fetch
+
+`am-git fetch [<url>|<name>]` does a smart-HTTP `git-upload-pack`
+exchange, sending `have` lines for refs we already hold so the server
+omits shared history. New objects land as loose files, and
+`refs/remotes/<remote>/<branch>` + `refs/tags/*` advance to whatever
+the server advertises.
 
 ### Push
 
-`am-git push <url> [<branch>]` resolves the remote's current SHA via
-`info/refs?service=git-receive-pack`, walks the objects reachable from
-the local commit but not from the remote's, writes them into a v2
-packfile, and POSTs the receive-pack body. It handles:
+`am-git push [<url>] [<branch>]` resolves the remote's current SHA via
+`info/refs?service=git-receive-pack`, walks objects reachable from the
+local commit but not from the remote, writes them into a v2 packfile,
+and POSTs the receive-pack body. Handles initial push, incremental
+push, and the already-up-to-date short-circuit; parses `unpack ok` and
+`ok <ref>` / `ng <ref> <reason>` from the reply.
 
-- **First push of a new ref** — old-sha is 40 zeros; the full reachable
-  graph is sent.
-- **Incremental push** — only the new objects on top of what the remote
-  already has.
-- **Up-to-date** — short-circuits without contacting receive-pack.
+### Pull (fast-forward only)
 
-Server's `unpack ok` and `ok <ref>` / `ng <ref> <reason>` lines are
-parsed and printed.
+`am-git pull [<url>] [<branch>]` runs a fetch, then advances the local
+branch ref to the remote tip **only if** the local commit is an
+ancestor of the remote commit. Refuses non-fast-forwards loudly — no
+merge / rebase machinery yet, but the common "your branch is behind"
+case works.
+
+### Local ops
+
+`log`, `status`, `branch`, `checkout` work entirely against the local
+`.git` directory — no network, no extra config needed. See the command
+reference below.
 
 ## Configure
 
@@ -79,17 +92,25 @@ in real git will work here.
 ## Workflow
 
 ```sh
-# 1. Clone
+# 1. Clone (also writes the remote URL into .git/config)
 am-git clone https://github.com/youruser/myrepo.git
 cd myrepo
 
-# 2. Edit something
-echo "hello from am-git" > NOTES.md
+# 2. See what's there / pick a branch
+am-git log -n 5
+am-git branch
+am-git status
 
-# 3. Commit
+# 3. Pull any upstream changes (fast-forward only)
+am-git pull
+
+# 4. Edit + commit
+echo "hello from am-git" > NOTES.md
+am-git status                       # shows ?? NOTES.md
 am-git commit -m "Add NOTES.md via am-git"
 
-# 4. Push
+# 5. Push (URL inferred from .git/config; explicit form also works)
+am-git push
 am-git push https://github.com/youruser/myrepo.git main
 ```
 
@@ -101,8 +122,14 @@ main ones:
 | Command | What it does |
 | ------- | ------------ |
 | `clone <url> [dir]` | Clone over smart-HTTP, check out HEAD. |
+| `fetch [<url>\|<name>]` | Fetch objects + refs (URL default from `.git/config`). |
+| `pull [<url>] [<branch>]` | Fast-forward-only fetch + advance HEAD. |
+| `push [<url>] [<branch>]` | Push HEAD or named branch (URL default from config). |
+| `status` | Show modified / deleted / untracked paths vs HEAD. |
+| `log [-n N]` | Walk commit ancestry from HEAD. |
+| `branch [<name>\| -d <name>]` | List / create / delete local branches. |
+| `checkout <branch>` | Switch HEAD and the working tree to a branch. |
 | `commit -m <msg>` | Commit the working tree on top of HEAD's commit. |
-| `push <url> [branch]` | Push branch (default HEAD's) to the remote. |
 | `head` | Print resolved HEAD (branch / commit / detached). |
 | `whoami` | Print the author/committer line a commit would carry. |
 | `cat-file -p \| -t <sha>` | Show object content (`-p`) or type (`-t`). |
@@ -123,6 +150,10 @@ Plumbing useful for debugging the push pipeline:
 
 Things that don't work yet (or don't work the way real git does):
 
+- **Pull is fast-forward only** — diverged branches need real git for
+  merge / rebase. The non-FF case bails with a clear error message.
+- **No index file** — `commit` and `status` always walk the working
+  tree. There's no staging area; `commit` records every change found.
 - **Pack delta compression on push** — am-git emits full objects only.
   Real git negotiates and ships delta-encoded entries; receive-pack
   accepts both, so this just means pushes are larger on the wire.

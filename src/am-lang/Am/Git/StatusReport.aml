@@ -1,0 +1,195 @@
+namespace Am.Git
+{
+    // `git status` (short form) — compare the working tree to HEAD's
+    // tree and report files that have changed.
+    //
+    // We classify each path into one of:
+    //
+    //   M  modified  — present in both, content differs
+    //   D  deleted   — present in HEAD, absent on disk
+    //   ??  untracked — present on disk, absent in HEAD
+    //
+    // Real `git status` distinguishes between staged and unstaged
+    // changes (it consults the index file). am-git doesn't maintain
+    // an index — every commit walks the working tree fresh — so all
+    // changes here are reported as if unstaged. The output prefix
+    // matches `git status --short` for the cases we cover.
+    class StatusReport
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+        import Am.Crypto
+
+        // Driver: print the report and return the count of changed
+        // paths (so callers like push hooks can branch on a clean
+        // tree in the future).
+        static fun run(gitDir: String, workTreePath: String): Int {
+            var head = HeadReader.read(gitDir)
+            if (head.detached) {
+                ("HEAD detached at " + head.commitSha).println()
+            } else if (head.commitSha == null) {
+                ("On branch " + head.branch + " — no commits yet").println()
+            } else {
+                ("On branch " + head.branch).println()
+            }
+
+            // headPaths: relative path → blob SHA, for the HEAD tree.
+            var headPaths = new HashMap<String, String>()
+            if (head.commitSha != null) {
+                var store = new ObjectStore(gitDir)
+                if (!store.has(head.commitSha)) {
+                    ("status: HEAD commit " + head.commitSha + " not in object store").println()
+                    return 0
+                }
+                var commitObj = store.read(head.commitSha)
+                var rootTreeSha = WorkTree.extractRootTreeSha(commitObj.content)
+                StatusReport.collectTreePaths(rootTreeSha, "", headPaths, store)
+            }
+
+            // diskPaths: relative path → blob SHA, computed from disk.
+            // Same hashing as `am-git hash-object` so the comparison
+            // is apples-to-apples with what a `commit` would produce.
+            var diskPaths = new HashMap<String, String>()
+            StatusReport.collectDiskPaths(workTreePath, "", diskPaths)
+
+            var modified = List<String>.newList<String>()
+            var deleted = List<String>.newList<String>()
+            var untracked = List<String>.newList<String>()
+
+            var headKeys = headPaths.buildKeys()
+            var i = 0
+            while (i < headKeys.getSize()) {
+                var path = headKeys.get(i)
+                if (!diskPaths.containsKey(path)) {
+                    deleted.add(path)
+                } else if (diskPaths.get(path) != headPaths.get(path)) {
+                    modified.add(path)
+                }
+                i = i + 1
+            }
+            var diskKeys = diskPaths.buildKeys()
+            var j = 0
+            while (j < diskKeys.getSize()) {
+                var path = diskKeys.get(j)
+                if (!headPaths.containsKey(path)) {
+                    untracked.add(path)
+                }
+                j = j + 1
+            }
+
+            var changed = modified.getSize() + deleted.getSize() + untracked.getSize()
+            if (changed == 0) {
+                "nothing to commit, working tree clean".println()
+                return 0
+            }
+            StatusReport.printGroup(" M ", modified)
+            StatusReport.printGroup(" D ", deleted)
+            StatusReport.printGroup("?? ", untracked)
+            return changed
+        }
+
+        private static fun printGroup(prefix: String, paths: List<String>) {
+            // Sort for stable output — small lists, simple bubble sort
+            // keeps the code self-contained.
+            var i = 0
+            while (i < paths.getSize() - 1) {
+                var k = i + 1
+                while (k < paths.getSize()) {
+                    if (paths.get(k) < paths.get(i)) {
+                        var tmp = paths.get(i)
+                        paths.set(i, paths.get(k))
+                        paths.set(k, tmp)
+                    }
+                    k = k + 1
+                }
+                i = i + 1
+            }
+            var n = 0
+            while (n < paths.getSize()) {
+                (prefix + paths.get(n)).println()
+                n = n + 1
+            }
+        }
+
+        // Recursively walk HEAD's tree, building a map of relative
+        // path → blob SHA for every file (skipping submodules).
+        private static fun collectTreePaths(treeSha: String,
+                                             prefix: String,
+                                             out: HashMap<String, String>,
+                                             store: ObjectStore) {
+            if (!store.has(treeSha)) {
+                return
+            }
+            var tree = store.read(treeSha)
+            if (tree.typeCode != 2) {
+                return
+            }
+            var entries = WorkTree.parseTree(tree.content)
+            var i = 0
+            while (i < entries.getSize()) {
+                var entry = entries.get(i)
+                var path: String
+                if (prefix.length() == 0) {
+                    path = entry.name
+                } else {
+                    path = prefix + "/" + entry.name
+                }
+                if (entry.isTree()) {
+                    StatusReport.collectTreePaths(entry.sha, path, out, store)
+                } else if (entry.isFile() || entry.isSymlink()) {
+                    out.set(path, entry.sha)
+                }
+                // Submodules — skipped, mirrors WorkTree/CheckoutClient.
+                i = i + 1
+            }
+        }
+
+        // Walk the working tree (excluding `.git`), hashing each file
+        // as a blob so we can compare SHAs against the HEAD tree.
+        private static fun collectDiskPaths(workTreePath: String,
+                                             relPrefix: String,
+                                             out: HashMap<String, String>) {
+            var dirPath: String
+            if (relPrefix.length() == 0) {
+                dirPath = workTreePath
+            } else {
+                dirPath = workTreePath + "/" + relPrefix
+            }
+            var dir = new File(dirPath)
+            if (!dir.exists()) {
+                return
+            }
+            var entries = dir.listFiles()
+            var i = 0
+            while (i < entries.length().toInt()) {
+                var f = entries[i.toUInt()]
+                var name = f.getName()
+                if (name == ".git") {
+                    i = i + 1
+                    continue
+                }
+                var relPath: String
+                if (relPrefix.length() == 0) {
+                    relPath = name
+                } else {
+                    relPath = relPrefix + "/" + name
+                }
+                if (f.isDirectory()) {
+                    StatusReport.collectDiskPaths(workTreePath, relPath, out)
+                } else {
+                    var bytes = StatusReport.readFileBytes(f.toString())
+                    var sha = PackObject.computeSha("blob", bytes)
+                    out.set(relPath, sha)
+                }
+                i = i + 1
+            }
+        }
+
+        private static fun readFileBytes(path: String): UByte[] {
+            var f = new File(path)
+            var stream = new FileStream(f, FileAccess.readOnly)
+            return stream.readAll()
+        }
+    }
+}

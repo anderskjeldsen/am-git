@@ -1,0 +1,159 @@
+namespace Am.Git
+{
+    // `git checkout <branch>` — switch HEAD to a local branch and
+    // bring the working tree in line with that branch's tip.
+    //
+    // Algorithm:
+    //   1. Resolve `refs/heads/<branch>` to a commit SHA.
+    //   2. Load every object reachable from that commit into memory
+    //      so the existing WorkTree code can materialise the tree.
+    //   3. Build the set of file paths the new tree expects.
+    //   4. Walk the working tree and delete any file (or empty subdir)
+    //      that the new tree doesn't include. This is what makes the
+    //      checkout coherent — without it, files that existed on the
+    //      old branch but not the new one would linger.
+    //   5. Write the new tree's blobs over the working tree.
+    //   6. Repoint `HEAD` at `refs/heads/<branch>`.
+    //
+    // What it doesn't do yet:
+    //   * Detect "dirty" working-tree files and refuse to overwrite —
+    //     we always clobber. Run `am-git status` first if you care.
+    //   * Checkout by raw commit SHA (detached HEAD) — branch only.
+    //   * Restore executable mode / symlinks (same gap as `clone`).
+    class CheckoutClient
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        // workTreePath is typically "." (current working dir).
+        // gitDir is typically ".git".
+        static fun checkout(gitDir: String, workTreePath: String, branch: String) {
+            var refPath = gitDir + "/refs/heads/" + branch
+            var refFile = new File(refPath)
+            if (!refFile.exists()) {
+                throw new Exception("checkout: refs/heads/" + branch + " does not exist")
+            }
+            var commitSha = String.readFromFile(refPath).trim()
+            if (commitSha.length() != 40) {
+                throw new Exception("checkout: ref content not a SHA: " + commitSha)
+            }
+
+            // Load reachable objects. For typical repo sizes this fits
+            // comfortably in RAM; larger histories would want lazy
+            // lookup against ObjectStore directly.
+            var store = new ObjectStore(gitDir)
+            var walker = new ObjectWalker(store)
+            var shas = walker.collect(commitSha, "0000000000000000000000000000000000000000")
+            var objects = new HashMap<String, PackObject>()
+            var i = 0
+            while (i < shas.getSize()) {
+                var sha = shas.get(i)
+                if (store.has(sha)) {
+                    objects.set(sha, store.read(sha))
+                }
+                i = i + 1
+            }
+            if (!objects.containsKey(commitSha)) {
+                throw new Exception("checkout: commit " + commitSha + " not present in object store")
+            }
+
+            // Expected set of file paths under workTreePath, relative.
+            var expected = new HashMap<String, Bool>()
+            var commit = objects.get(commitSha)
+            var rootTreeSha = WorkTree.extractRootTreeSha(commit.content)
+            CheckoutClient.collectExpectedPaths(rootTreeSha, "", expected, objects)
+
+            // Wipe orphans before writing the new tree, so a file that
+            // moved between directories doesn't end up duplicated.
+            CheckoutClient.removeOrphans(workTreePath, "", expected)
+
+            // Re-use the existing checkout writer.
+            var wt = new WorkTree(workTreePath, objects)
+            wt.checkout(commitSha)
+
+            // Update HEAD to track the branch symbolically.
+            ("ref: refs/heads/" + branch + "\n").writeToFile(gitDir + "/HEAD")
+            ("Switched to branch " + branch + " at " + commitSha).println()
+        }
+
+        // Walk the new commit's tree and record every blob's path
+        // relative to the work tree root. Tree paths aren't added —
+        // empty directories aren't part of git's model.
+        private static fun collectExpectedPaths(treeSha: String,
+                                                 prefix: String,
+                                                 out: HashMap<String, Bool>,
+                                                 objects: HashMap<String, PackObject>) {
+            if (!objects.containsKey(treeSha)) {
+                return
+            }
+            var tree = objects.get(treeSha)
+            if (tree.typeCode != 2) {
+                return
+            }
+            var entries = WorkTree.parseTree(tree.content)
+            var i = 0
+            while (i < entries.getSize()) {
+                var entry = entries.get(i)
+                var path: String
+                if (prefix.length() == 0) {
+                    path = entry.name
+                } else {
+                    path = prefix + "/" + entry.name
+                }
+                if (entry.isTree()) {
+                    CheckoutClient.collectExpectedPaths(entry.sha, path, out, objects)
+                } else if (entry.isFile() || entry.isSymlink()) {
+                    out.set(path, true)
+                }
+                // Submodules and other modes — ignored (matches WorkTree).
+                i = i + 1
+            }
+        }
+
+        // Walk the working tree, removing any file whose relative
+        // path isn't in `expected`. Skips `.git` so we don't nuke
+        // our own metadata. Removes empty directories on the way up.
+        private static fun removeOrphans(workTreePath: String,
+                                          relPrefix: String,
+                                          expected: HashMap<String, Bool>) {
+            var dirPath: String
+            if (relPrefix.length() == 0) {
+                dirPath = workTreePath
+            } else {
+                dirPath = workTreePath + "/" + relPrefix
+            }
+            var dir = new File(dirPath)
+            if (!dir.exists()) {
+                return
+            }
+            var entries = dir.listFiles()
+            var i = 0
+            while (i < entries.length().toInt()) {
+                var f = entries[i.toUInt()]
+                var name = f.getName()
+                if (name == ".git") {
+                    i = i + 1
+                    continue
+                }
+                var relPath: String
+                if (relPrefix.length() == 0) {
+                    relPath = name
+                } else {
+                    relPath = relPrefix + "/" + name
+                }
+                if (f.isDirectory()) {
+                    CheckoutClient.removeOrphans(workTreePath, relPath, expected)
+                    // Leaving empty directories around is harmless;
+                    // we could rmdir them here but listFiles returning
+                    // empty is good enough for a sanity check.
+                } else {
+                    if (!expected.containsKey(relPath)) {
+                        File.delete(f.toString())
+                    }
+                }
+                i = i + 1
+            }
+        }
+    }
+}

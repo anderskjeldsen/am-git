@@ -1,0 +1,88 @@
+namespace Am.Git
+{
+    // A parsed git commit object.
+    //
+    // Wire format (Documentation/technical/object-format.txt — "commit"):
+    //
+    //     tree <40-hex>\n
+    //     parent <40-hex>\n      (zero or more)
+    //     author <name> <email> <unix-seconds> <±HHMM>\n
+    //     committer <name> <email> <unix-seconds> <±HHMM>\n
+    //     [<arbitrary extra headers>]
+    //     \n
+    //     <message>
+    //
+    // We keep the raw author/committer lines (everything after the
+    // leading "author " / "committer ") rather than splitting them
+    // further — callers that want the timestamp parse it themselves;
+    // callers that just want to print the line don't have to.
+    class Commit(var sha: String,
+                 var treeSha: String,
+                 var parents: List<String>,
+                 var author: String,
+                 var committer: String,
+                 var message: String)
+    {
+        import Am.Lang
+        import Am.Collections
+
+        // Parse the raw bytes of a commit object (the inflated content
+        // — no SHA wrapper, no zlib framing). `sha` is the caller-known
+        // SHA-1 hex of the same bytes; we trust it rather than recomputing.
+        static fun parse(sha: String, bytes: UByte[]): Commit {
+            var treeSha: String = null
+            var parents = List<String>.newList<String>()
+            var author: String = null
+            var committer: String = null
+
+            var total = bytes.length().toInt()
+            var pos = 0
+            // Walk header lines until the first blank line — that's
+            // where git switches from key/value headers to free-form
+            // commit message.
+            loop {
+                if (pos >= total) {
+                    break
+                }
+                var lineEnd = pos
+                while (lineEnd < total && bytes[lineEnd.toUInt()].toInt() != 10) {
+                    lineEnd = lineEnd + 1
+                }
+                var lineLen = lineEnd - pos
+                if (lineLen == 0) {
+                    pos = lineEnd + 1
+                    break
+                }
+                var line = Commit.bytesToString(bytes, pos, lineLen)
+                if (line.startsWith("tree ")) {
+                    treeSha = line.substringToEnd(5UI)
+                } else if (line.startsWith("parent ")) {
+                    parents.add(line.substringToEnd(7UI))
+                } else if (line.startsWith("author ")) {
+                    author = line.substringToEnd(7UI)
+                } else if (line.startsWith("committer ")) {
+                    committer = line.substringToEnd(10UI)
+                }
+                // Other headers (`encoding`, `gpgsig`, mergetag…) we
+                // intentionally drop on the floor — am-git doesn't
+                // expose them anywhere yet.
+                pos = lineEnd + 1
+            }
+            var message = ""
+            if (pos < total) {
+                message = Commit.bytesToString(bytes, pos, total - pos)
+            }
+            return new Commit(sha, treeSha, parents, author, committer, message)
+        }
+
+        private static fun bytesToString(bytes: UByte[], offset: Int, length: Int): String {
+            var slice = new UByte[length.toUInt()]
+            var i = 0
+            while (i < length) {
+                slice[i.toUInt()] = bytes[(offset + i).toUInt()]
+                i = i + 1
+            }
+            return String.fromBytes(slice, "UTF-8")
+        }
+    }
+}
