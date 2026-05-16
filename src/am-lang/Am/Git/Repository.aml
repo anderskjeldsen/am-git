@@ -82,6 +82,7 @@ namespace Am.Git
             var file = new File(path)
             var stream = new FileStream(file, FileAccess.writeOnly)
             stream.write(bytes, 0L, bytes.length())
+            stream.close()
         }
 
         // mkdir -p — create every missing component along the way.

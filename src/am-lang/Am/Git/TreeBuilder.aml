@@ -113,7 +113,11 @@ namespace Am.Git
         // shorter side is `/` (0x2F) when that entry is a tree and 0
         // when it's a file. See ROADMAP / the discussion around
         // `app.c` vs `app/` for why this matters.
-        private static fun compareEntries(a: TreeEntry, b: TreeEntry): Int {
+        //
+        // Public so IndexTreeBuilder can sort the entries it derives
+        // from the index — same byte-wise rules apply for index-based
+        // trees.
+        static fun compareEntries(a: TreeEntry, b: TreeEntry): Int {
             var aName = a.name
             var bName = b.name
             var aLen = aName.length()
@@ -153,7 +157,8 @@ namespace Am.Git
 
         // In-place insertion sort using compareEntries. Directories
         // rarely have more than a few dozen entries, so n² is fine.
-        private static fun sortEntries(entries: List<TreeEntry>) {
+        // Public — same reasoning as compareEntries.
+        static fun sortEntries(entries: List<TreeEntry>) {
             var n = entries.getSize()
             var i = 1
             while (i < n) {
@@ -176,7 +181,9 @@ namespace Am.Git
         // packed end-to-end with no separator. No outer length —
         // the entry stream is exactly as long as the tree object's
         // size field promises.
-        private static fun serialize(entries: List<TreeEntry>): UByte[] {
+        // Public so IndexTreeBuilder can serialise tree objects it
+        // builds from the index.
+        static fun serialize(entries: List<TreeEntry>): UByte[] {
             var buf = List<UByte>.newList<UByte>()
             var i = 0
             while (i < entries.getSize()) {

@@ -1,0 +1,169 @@
+namespace Am.Git
+{
+    // `am-git add <path>...` — stage paths into `.git/index`.
+    //
+    // For each path:
+    //   * If it's a regular file: hash its bytes as a blob, write the
+    //     loose object, upsert an entry in the index.
+    //   * If it's a directory: recurse, adding every file inside
+    //     (excluding `.git`).
+    //
+    // What we don't do yet:
+    //   * `.gitignore` parsing — `am-git add .` adds everything that
+    //     isn't `.git/`.
+    //   * Pathspec patterns — paths are interpreted literally.
+    //   * `--update` / `-A` etc. — explicit paths only.
+    //   * Recording exec / symlink modes accurately. We always tag
+    //     entries as `0100644` (regular file). Real git would inspect
+    //     the inode mode bits — we don't have those wired up from
+    //     AmLang yet.
+    class AddCommand
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        // Stage one or more paths. `gitDir` is `.git`, `workTreePath`
+        // is the work-tree root (typically the cwd). Paths are
+        // resolved relative to the work tree.
+        static fun run(gitDir: String, workTreePath: String, paths: List<String>): Int {
+            // Normalise "." / "" to an absolute cwd so the file walk
+            // works reliably on AmigaOS (see StatusReport for the same
+            // workaround).
+            if (workTreePath == null || workTreePath.length() == 0 || workTreePath == ".") {
+                workTreePath = File.getCurrentDirectory()
+            }
+
+            var idx = GitIndex.read(gitDir)
+            var writer = new LooseObjectWriter(gitDir)
+            var added = 0
+
+            var i = 0
+            while (i < paths.getSize()) {
+                added = added + AddCommand.addOne(gitDir, workTreePath, paths.get(i),
+                                                    idx, writer)
+                i = i + 1
+            }
+
+            idx.write(gitDir)
+            return added
+        }
+
+        // Recurse if dir, hash + index if file. Returns the count of
+        // files actually staged (so a no-op `add` still tells the
+        // user what happened).
+        private static fun addOne(gitDir: String, workTreePath: String, rawPath: String,
+                                   idx: GitIndex, writer: LooseObjectWriter): Int {
+            // "." → the work tree itself.
+            if (rawPath == "." || rawPath == "./") {
+                return AddCommand.addDir(gitDir, workTreePath, "", idx, writer)
+            }
+            // Strip a leading "./" so the relative key matches the
+            // format used elsewhere (HEAD tree paths, status output).
+            var rel = rawPath
+            if (rel.startsWith("./")) {
+                rel = rel.substringToEnd(2UI)
+            }
+            // Trim any trailing slash.
+            while (rel.length() > 1 && rel.endsWith("/")) {
+                rel = rel.substring(0UI, (rel.length() - 1).toUInt())
+            }
+            var full = workTreePath + "/" + rel
+            var f = new File(full)
+            if (!f.exists()) {
+                ("add: '" + rawPath + "' does not exist").println()
+                return 0
+            }
+            if (f.isDirectory()) {
+                return AddCommand.addDir(gitDir, workTreePath, rel, idx, writer)
+            }
+            AddCommand.stageFile(gitDir, workTreePath, rel, idx, writer)
+            return 1
+        }
+
+        // Walk a directory, staging every non-`.git` file underneath.
+        private static fun addDir(gitDir: String, workTreePath: String, relPrefix: String,
+                                   idx: GitIndex, writer: LooseObjectWriter): Int {
+            var dirPath: String
+            if (relPrefix.length() == 0) {
+                dirPath = workTreePath
+            } else {
+                dirPath = workTreePath + "/" + relPrefix
+            }
+            var dir = new File(dirPath)
+            if (!dir.exists()) {
+                return 0
+            }
+            var entries = dir.listFiles()
+            var count = 0
+            var i = 0
+            while (i < entries.length().toInt()) {
+                var f = entries[i.toUInt()]
+                var name = f.getName()
+                if (name == ".git") {
+                    i = i + 1
+                    continue
+                }
+                var relPath: String
+                if (relPrefix.length() == 0) {
+                    relPath = name
+                } else {
+                    relPath = relPrefix + "/" + name
+                }
+                if (f.isDirectory()) {
+                    count = count + AddCommand.addDir(gitDir, workTreePath, relPath, idx, writer)
+                } else {
+                    AddCommand.stageFile(gitDir, workTreePath, relPath, idx, writer)
+                    count = count + 1
+                }
+                i = i + 1
+            }
+            return count
+        }
+
+        // Hash a single file as a blob, write the loose object, and
+        // upsert the index entry. mtime/size come from the on-disk
+        // stat; the other stat-cache fields are zeroed (real git will
+        // re-hash to detect change rather than trust them, which is
+        // robust enough for now).
+        private static fun stageFile(gitDir: String, workTreePath: String, relPath: String,
+                                      idx: GitIndex, writer: LooseObjectWriter) {
+            var fullPath = workTreePath + "/" + relPath
+            var bytes = AddCommand.readFileBytes(fullPath)
+            var sha = writer.write("blob", bytes)
+
+            var f = new File(fullPath)
+            var sizeLong = f.getSize()
+            var size: UInt = 0UI
+            if (sizeLong > 0L) {
+                size = sizeLong.toUInt()
+            }
+            // getLastModified() returns ms since epoch — DIRC stores
+            // seconds + nanoseconds separately. We don't have ns
+            // resolution from AmLang's File API; nanos = 0 is fine.
+            var mtimeMs = f.getLastModified()
+            var mtimeSec: UInt = 0UI
+            if (mtimeMs > 0L) {
+                mtimeSec = (mtimeMs / 1000L).toUInt()
+            }
+
+            // 0100644 = regular file. We don't tag exec / symlink
+            // modes yet — see class comment.
+            var mode: UInt = 33188UI  // 0100644 octal
+            var entry = new IndexEntry(
+                relPath, sha, mode, size,
+                mtimeSec, 0UI,           // mtime
+                mtimeSec, 0UI,           // ctime (same as mtime — no separate ctime from AmLang)
+                0UI, 0UI,                 // dev, ino
+                0UI, 0UI,                 // uid, gid
+                0US)                      // flags — namelen is set on write
+            idx.upsert(entry)
+        }
+
+        private static fun readFileBytes(path: String): UByte[] {
+            var f = new File(path)
+            var stream = new FileStream(f, FileAccess.readOnly)
+            return stream.readAll()
+        }
+    }
+}

@@ -85,6 +85,25 @@ namespace Am.Git
             var workTree = new WorkTree(targetDir, parsed.objects)
             var fileCount = workTree.checkout(headSha)
             ("Wrote " + fileCount.toString() + " files into " + targetDir).println()
+
+            // Seed `.git/index` from HEAD's tree so the new repo
+            // reports clean in `am-git status` straight after clone.
+            // Without this seed, every file would later show as
+            // "staged deleted" the moment the user `am-git add`s
+            // anything (because an empty index would then claim "no
+            // files tracked"). We use the in-memory object map we
+            // already have from PackParser rather than re-reading the
+            // freshly-written pack from disk — that disk round-trip
+            // silently failed on AmigaOS and left the seed empty.
+            var gitDir = targetDir + "/.git"
+            var rootTreeSha = WorkTree.extractRootTreeSha(parsed.objects.get(headSha).content)
+            var seededIdx = GitIndex.fromTreeMap(rootTreeSha, parsed.objects)
+            ("Seeded index with " + seededIdx.entries.getSize().toString() + " entries").println()
+            seededIdx.write(gitDir)
+            // Verify the file landed: round-trip through read() so we
+            // notice silent on-disk truncation (suspected on AmigaOS).
+            var verifyIdx = GitIndex.read(gitDir)
+            ("Index on disk now has " + verifyIdx.entries.getSize().toString() + " entries").println()
         }
 
         // Wants for a full clone: every advertised ref under refs/heads/

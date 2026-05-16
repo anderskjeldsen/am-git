@@ -29,6 +29,12 @@ namespace Am.Git
         // workTreePath is typically "." (current working dir).
         // gitDir is typically ".git".
         static fun checkout(gitDir: String, workTreePath: String, branch: String) {
+            // Resolve "."/"" to an absolute path — see StatusReport.run
+            // for the rationale (opendir(".") is unreliable on
+            // amiga-gcc without ixemul).
+            if (workTreePath == null || workTreePath.length() == 0 || workTreePath == ".") {
+                workTreePath = File.getCurrentDirectory()
+            }
             var refPath = gitDir + "/refs/heads/" + branch
             var refFile = new File(refPath)
             if (!refFile.exists()) {
@@ -74,6 +80,12 @@ namespace Am.Git
 
             // Update HEAD to track the branch symbolically.
             ("ref: refs/heads/" + branch + "\n").writeToFile(gitDir + "/HEAD")
+
+            // Refresh the index so it mirrors the new HEAD. Real git
+            // does this; without it `am-git status` would report
+            // every file as "staged" after a checkout.
+            GitIndex.fromTree(rootTreeSha, store).write(gitDir)
+
             ("Switched to branch " + branch + " at " + commitSha).println()
         }
 

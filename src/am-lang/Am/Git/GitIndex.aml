@@ -1,0 +1,463 @@
+namespace Am.Git
+{
+    // Reader / writer for `.git/index` in DIRC v2 format.
+    // (Documentation/technical/index-format.txt.)
+    //
+    // Layout:
+    //
+    //   header (12 bytes):
+    //     "DIRC"               (4 bytes)
+    //     version              (4 bytes BE, = 2)
+    //     entry count          (4 bytes BE)
+    //
+    //   for each entry (62 + name + padding to 8-byte boundary):
+    //     ctime_sec, ctime_ns  (4 + 4 bytes BE)
+    //     mtime_sec, mtime_ns  (4 + 4 bytes BE)
+    //     dev                  (4 bytes BE)
+    //     ino                  (4 bytes BE)
+    //     mode                 (4 bytes BE) — 0100644 etc.
+    //     uid, gid             (4 + 4 bytes BE)
+    //     size                 (4 bytes BE)
+    //     sha-1                (20 raw bytes)
+    //     flags                (2 bytes BE) — assume-valid|extended|stage(2)|namelen(12)
+    //     path                 (variable, NUL-terminated)
+    //     padding              (1..8 NUL bytes so entry total is %8 == 0)
+    //
+    //   (extensions — we don't emit any; v2 readers are required to
+    //    tolerate their absence)
+    //
+    //   trailer: 20-byte SHA-1 over every preceding byte.
+    //
+    // Entries are kept sorted by path (byte-wise) so the on-disk
+    // layout matches what real git writes and reads.
+    class GitIndex
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+        import Am.Crypto
+
+        var entries: List<IndexEntry> = List<IndexEntry>.newList<IndexEntry>()
+
+        // Default constructor → empty index. Use `read()` to load from
+        // disk, or just start populating `entries` directly.
+        fun constructor() {
+        }
+
+        // Build a fresh index whose entries mirror every blob in a
+        // commit's tree. This is what `git clone` and `git checkout`
+        // do internally — they seed the index so it matches HEAD's
+        // tree before the user does anything else, which is what
+        // makes a clean checkout report "nothing to commit". Without
+        // this, our index/HEAD diff would treat every file as "staged
+        // deleted" the first time the user runs `am-git add`.
+        //
+        // mtime/ctime are left at 0. Real git would re-hash on first
+        // status to recover; ours doesn't care because we never trust
+        // the stat-cache.
+        static fun fromTree(treeSha: String, store: ObjectStore): GitIndex {
+            var idx = new GitIndex()
+            if (treeSha != null) {
+                GitIndex.populateFromStore(treeSha, "", store, idx)
+            }
+            return idx
+        }
+
+        // Like `fromTree`, but reads tree objects out of an in-memory
+        // HashMap instead of an on-disk ObjectStore. Used by clone's
+        // index-seeding step so we don't bounce back through the pack
+        // we just wrote — the round-trip via `ObjectStore` failed
+        // silently on AmigaOS (its pack-dir walk hit a wall there),
+        // leaving the seed empty and every later `add` looking like a
+        // mass delete + re-add.
+        static fun fromTreeMap(treeSha: String, objects: HashMap<String, PackObject>): GitIndex {
+            var idx = new GitIndex()
+            if (treeSha != null) {
+                GitIndex.populateFromMap(treeSha, "", objects, idx)
+            }
+            return idx
+        }
+
+        private static fun populateFromStore(treeSha: String, prefix: String,
+                                              store: ObjectStore, out: GitIndex) {
+            if (!store.has(treeSha)) {
+                return
+            }
+            var tree = store.read(treeSha)
+            if (tree.typeCode != 2) {
+                return
+            }
+            var entries = WorkTree.parseTree(tree.content)
+            var i = 0
+            while (i < entries.getSize()) {
+                var e = entries.get(i)
+                var path = GitIndex.joinPath(prefix, e.name)
+                if (e.isTree()) {
+                    GitIndex.populateFromStore(e.sha, path, store, out)
+                } else if (e.isFile() || e.isSymlink()) {
+                    out.entries.add(GitIndex.makeEntry(path, e))
+                }
+                i = i + 1
+            }
+        }
+
+        private static fun populateFromMap(treeSha: String, prefix: String,
+                                            objects: HashMap<String, PackObject>, out: GitIndex) {
+            if (!objects.containsKey(treeSha)) {
+                return
+            }
+            var tree = objects.get(treeSha)
+            if (tree.typeCode != 2) {
+                return
+            }
+            var entries = WorkTree.parseTree(tree.content)
+            var i = 0
+            while (i < entries.getSize()) {
+                var e = entries.get(i)
+                var path = GitIndex.joinPath(prefix, e.name)
+                if (e.isTree()) {
+                    GitIndex.populateFromMap(e.sha, path, objects, out)
+                } else if (e.isFile() || e.isSymlink()) {
+                    out.entries.add(GitIndex.makeEntry(path, e))
+                }
+                i = i + 1
+            }
+        }
+
+        private static fun joinPath(prefix: String, name: String): String {
+            if (prefix.length() == 0) {
+                return name
+            }
+            return prefix + "/" + name
+        }
+
+        // Build an IndexEntry from a tree entry. Mode mapping mirrors
+        // the on-disk values git stores in the index (octal numerics
+        // packed into a UInt):
+        //   100644 → 33188   regular file
+        //   100755 → 33261   executable
+        //   120000 → 40960   symlink
+        private static fun makeEntry(path: String, e: TreeEntry): IndexEntry {
+            var mode: UInt = 33188UI
+            if (e.mode == "100755") {
+                mode = 33261UI
+            } else if (e.mode == "120000") {
+                mode = 40960UI
+            }
+            return new IndexEntry(
+                path, e.sha, mode, 0UI,
+                0UI, 0UI,
+                0UI, 0UI,
+                0UI, 0UI,
+                0UI, 0UI,
+                0US)
+        }
+
+        // Load `.git/index` if it exists. Returns an empty index when
+        // the file is absent — that's the normal state for a freshly
+        // cloned (or am-git-cloned) repo.
+        static fun read(gitDir: String): GitIndex {
+            var idx = new GitIndex()
+            var path = gitDir + "/index"
+            var f = new File(path)
+            if (!f.exists()) {
+                return idx
+            }
+            var stream = new FileStream(f, FileAccess.readOnly)
+            var bytes = stream.readAll()
+            if (bytes.length() < 12UI) {
+                throw new Exception("index: file too short (" + bytes.length().toString() + " bytes)")
+            }
+            // Magic "DIRC".
+            if (bytes[0UI] != 68UB || bytes[1UI] != 73UB || bytes[2UI] != 82UB || bytes[3UI] != 67UB) {
+                throw new Exception("index: not a DIRC file")
+            }
+            var version = GitIndex.readBE32(bytes, 4)
+            if (version != 2UI) {
+                throw new Exception("index: unsupported version " + version.toString() +
+                                     " (am-git only handles v2)")
+            }
+            var count = GitIndex.readBE32(bytes, 8)
+            var pos = 12
+            var i = 0UI
+            while (i < count) {
+                var entryStart = pos
+                var ctimeSec = GitIndex.readBE32(bytes, pos)
+                var ctimeNs  = GitIndex.readBE32(bytes, pos + 4)
+                var mtimeSec = GitIndex.readBE32(bytes, pos + 8)
+                var mtimeNs  = GitIndex.readBE32(bytes, pos + 12)
+                var dev      = GitIndex.readBE32(bytes, pos + 16)
+                var ino      = GitIndex.readBE32(bytes, pos + 20)
+                var mode     = GitIndex.readBE32(bytes, pos + 24)
+                var uid      = GitIndex.readBE32(bytes, pos + 28)
+                var gid      = GitIndex.readBE32(bytes, pos + 32)
+                var size     = GitIndex.readBE32(bytes, pos + 36)
+
+                var shaBytes = new UByte[20UI]
+                var k = 0
+                while (k < 20) {
+                    shaBytes[k.toUInt()] = bytes[(pos + 40 + k).toUInt()]
+                    k = k + 1
+                }
+                var flags = GitIndex.readBE16(bytes, pos + 60)
+
+                // 12-bit name length. 0xFFF means "longer than 0xFFE";
+                // we then scan for the NUL ourselves. v2 doesn't have
+                // the extended flag, so we always trust the 12-bit
+                // length here.
+                var nameLen = (flags & 4095US).toInt()
+                var nameStart = pos + 62
+                if (nameLen == 4095) {
+                    nameLen = 0
+                    while (bytes[(nameStart + nameLen).toUInt()] != 0UB) {
+                        nameLen = nameLen + 1
+                    }
+                }
+                var entryPath = GitIndex.bytesToString(bytes, nameStart, nameLen)
+
+                var entry = new IndexEntry(
+                    entryPath,
+                    HexUtil.toHex(shaBytes),
+                    mode, size,
+                    mtimeSec, mtimeNs,
+                    ctimeSec, ctimeNs,
+                    dev, ino, uid, gid,
+                    flags)
+                idx.entries.add(entry)
+
+                // Advance past the path + padding. Total entry length
+                // (header + nameLen + 1 NUL) padded up to a multiple
+                // of 8 bytes.
+                var rawLen = 62 + nameLen + 1
+                var padded = rawLen
+                if ((padded % 8) != 0) {
+                    padded = padded + (8 - (padded % 8))
+                }
+                pos = entryStart + padded
+                i++
+            }
+            return idx
+        }
+
+        // Serialize to `.git/index`. Sorts entries by path first so
+        // the on-disk order is canonical. Writes the trailing SHA-1
+        // over everything written.
+        fun write(gitDir: String) {
+            this.sortByPath()
+
+            var buf = List<UByte>.newList<UByte>()
+            // Header: "DIRC" 0x00000002 <count>
+            buf.add(68UB)
+            buf.add(73UB)
+            buf.add(82UB)
+            buf.add(67UB)
+            GitIndex.appendBE32(buf, 2UI)
+            GitIndex.appendBE32(buf, this.entries.getSize().toUInt())
+
+            var i = 0
+            while (i < this.entries.getSize()) {
+                this.appendEntry(buf, this.entries.get(i))
+                i = i + 1
+            }
+
+            var body = buf.toArray()
+            var digest = Sha1.digest(body)
+            var out = new UByte[body.length() + 20UI]
+            var k = 0UI
+            while (k < body.length()) {
+                out[k] = body[k]
+                k++
+            }
+            var j = 0UI
+            while (j < 20UI) {
+                out[body.length() + j] = digest[j]
+                j++
+            }
+            Repository.writeBytes(gitDir + "/index", out)
+        }
+
+        // Upsert an entry, identifying by path. Sort happens lazily
+        // at write time.
+        fun upsert(entry: IndexEntry) {
+            var i = 0
+            while (i < this.entries.getSize()) {
+                if (this.entries.get(i).path == entry.path) {
+                    this.entries.set(i, entry)
+                    return
+                }
+                i = i + 1
+            }
+            this.entries.add(entry)
+        }
+
+        // Remove the entry for `path`. Returns true if anything was
+        // removed.
+        fun removeByPath(path: String): Bool {
+            var i = 0
+            while (i < this.entries.getSize()) {
+                if (this.entries.get(i).path == path) {
+                    this.entries.removeAt(i)
+                    return true
+                }
+                i = i + 1
+            }
+            return false
+        }
+
+        fun findByPath(path: String): IndexEntry {
+            var i = 0
+            while (i < this.entries.getSize()) {
+                if (this.entries.get(i).path == path) {
+                    return this.entries.get(i)
+                }
+                i = i + 1
+            }
+            return null
+        }
+
+        // Flatten to a path → sha map. Useful for diffs against HEAD
+        // or the working tree.
+        fun pathToSha(): HashMap<String, String> {
+            var m = new HashMap<String, String>()
+            var i = 0
+            while (i < this.entries.getSize()) {
+                var e = this.entries.get(i)
+                m.set(e.path, e.sha)
+                i = i + 1
+            }
+            return m
+        }
+
+        // ---- entry serialization ---------------------------------
+
+        private fun appendEntry(buf: List<UByte>, e: IndexEntry) {
+            GitIndex.appendBE32(buf, e.ctimeSeconds)
+            GitIndex.appendBE32(buf, e.ctimeNanos)
+            GitIndex.appendBE32(buf, e.mtimeSeconds)
+            GitIndex.appendBE32(buf, e.mtimeNanos)
+            GitIndex.appendBE32(buf, e.dev)
+            GitIndex.appendBE32(buf, e.ino)
+            GitIndex.appendBE32(buf, e.mode)
+            GitIndex.appendBE32(buf, e.uid)
+            GitIndex.appendBE32(buf, e.gid)
+            GitIndex.appendBE32(buf, e.size)
+
+            // 20-byte raw SHA-1.
+            var shaBytes = HexUtil.fromHex(e.sha)
+            var i = 0UI
+            while (i < 20UI) {
+                buf.add(shaBytes[i])
+                i++
+            }
+
+            // Flags: clamp the name length to 0xFFF, preserving the
+            // stage / assume-valid bits the caller set.
+            var pathBytes = e.path.toBytes("UTF-8")
+            var nameLen = pathBytes.length().toInt()
+            var clampedLen = nameLen
+            if (clampedLen > 4095) {
+                clampedLen = 4095
+            }
+            var flagsHi = (e.flags & 61440US).toInt()  // top 4 bits — assume-valid|extended|stage(2)
+            var flags = (flagsHi | clampedLen).toUShort()
+            GitIndex.appendBE16(buf, flags)
+
+            // Path bytes + NUL + padding.
+            var pi = 0UI
+            while (pi < pathBytes.length()) {
+                buf.add(pathBytes[pi])
+                pi++
+            }
+            buf.add(0UB)
+            // Total written so far for this entry — pad to 8-byte
+            // boundary. Header is 62 bytes + name + 1 NUL.
+            var raw = 62 + nameLen + 1
+            var pad = (8 - (raw % 8)) % 8
+            var p = 0
+            while (p < pad) {
+                buf.add(0UB)
+                p = p + 1
+            }
+        }
+
+        private fun sortByPath() {
+            // Bubble sort — entry counts are small (~hundreds typically),
+            // and this keeps the implementation self-contained.
+            var n = this.entries.getSize()
+            var i = 0
+            while (i < n - 1) {
+                var j = 0
+                while (j < n - 1 - i) {
+                    if (GitIndex.compareBytewise(this.entries.get(j).path, this.entries.get(j + 1).path) > 0) {
+                        var tmp = this.entries.get(j)
+                        this.entries.set(j, this.entries.get(j + 1))
+                        this.entries.set(j + 1, tmp)
+                    }
+                    j = j + 1
+                }
+                i = i + 1
+            }
+        }
+
+        // Byte-wise comparison that matches real git's strcmp-based
+        // index order. AmLang's `String >` doesn't lexicographically
+        // compare contents, so we walk the code units ourselves.
+        private static fun compareBytewise(a: String, b: String): Int {
+            var la: UInt = a.length().toUInt()
+            var lb: UInt = b.length().toUInt()
+            var min: UInt = la
+            if (lb < min) {
+                min = lb
+            }
+            var i: UInt = 0UI
+            while (i < min) {
+                var ca = a.characterAt(i).toInt()
+                var cb = b.characterAt(i).toInt()
+                if (ca != cb) {
+                    return ca - cb
+                }
+                i++
+            }
+            return la.toInt() - lb.toInt()
+        }
+
+        // ---- byte / int helpers ---------------------------------
+
+        private static fun readBE32(b: UByte[], offset: Int): UInt {
+            var b0 = b[offset.toUInt()].toUInt()
+            var b1 = b[(offset + 1).toUInt()].toUInt()
+            var b2 = b[(offset + 2).toUInt()].toUInt()
+            var b3 = b[(offset + 3).toUInt()].toUInt()
+            return ((b0 * 16777216UI) + (b1 * 65536UI) + (b2 * 256UI) + b3) as UInt
+        }
+
+        private static fun readBE16(b: UByte[], offset: Int): UShort {
+            var b0 = b[offset.toUInt()].toUInt()
+            var b1 = b[(offset + 1).toUInt()].toUInt()
+            return ((b0 * 256UI) + b1).toUShort()
+        }
+
+        private static fun appendBE32(buf: List<UByte>, v: UInt) {
+            buf.add(((v / 16777216UI) & 255UI).toUByte())
+            buf.add(((v / 65536UI)    & 255UI).toUByte())
+            buf.add(((v / 256UI)      & 255UI).toUByte())
+            buf.add((v & 255UI).toUByte())
+        }
+
+        private static fun appendBE16(buf: List<UByte>, v: UShort) {
+            var u = v.toUInt()
+            buf.add(((u / 256UI) & 255UI).toUByte())
+            buf.add((u & 255UI).toUByte())
+        }
+
+        private static fun bytesToString(bytes: UByte[], offset: Int, length: Int): String {
+            var slice = new UByte[length.toUInt()]
+            var i = 0
+            while (i < length) {
+                slice[i.toUInt()] = bytes[(offset + i).toUInt()]
+                i = i + 1
+            }
+            return String.fromBytes(slice, "UTF-8")
+        }
+    }
+}

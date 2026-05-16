@@ -1,0 +1,129 @@
+namespace Am.Git
+{
+    // Build commit tree objects from the contents of `.git/index`.
+    //
+    // This is the index-based counterpart to TreeBuilder, which walks
+    // the working tree directly. When the user runs `am-git add` we
+    // stage entries into the index; `am-git commit` then turns the
+    // index into the root tree by descending into nested directories
+    // (paths in the index use `/` as the separator) and writing one
+    // tree object per directory level.
+    //
+    // We re-use TreeBuilder's sort + serialize helpers — the on-disk
+    // format and the byte-wise comparator are the same for both
+    // builders.
+    class IndexTreeBuilder
+    {
+        import Am.Lang
+        import Am.Collections
+
+        // Returns the root tree's SHA. An empty index produces the
+        // well-known empty-tree SHA `4b825dc642cb6eb9a060e54bf8d69288fbee4904`
+        // (= SHA-1("tree 0\0")) — same convention as TreeBuilder.
+        static fun build(idx: GitIndex, writer: LooseObjectWriter): String {
+            var root = new IndexDirNode("")
+            var i = 0
+            while (i < idx.entries.getSize()) {
+                var e = idx.entries.get(i)
+                root.insert(e.path, e.sha, e.mode)
+                i = i + 1
+            }
+            return IndexTreeBuilder.writeNode(root, writer)
+        }
+
+        // Walk one node, write child trees recursively, emit our own
+        // tree object. Empty subdirs produce no tree object (TreeBuilder
+        // does the same) — the root is always emitted, even when empty.
+        private static fun writeNode(node: IndexDirNode, writer: LooseObjectWriter): String {
+            var entries = List<TreeEntry>.newList<TreeEntry>()
+
+            // Files.
+            var fi = 0
+            while (fi < node.files.getSize()) {
+                var f = node.files.get(fi)
+                var modeStr = IndexTreeBuilder.modeToString(f.mode)
+                entries.add(new TreeEntry(modeStr, f.name, f.sha))
+                fi = fi + 1
+            }
+
+            // Subdirs.
+            var dirNames = node.subdirNames()
+            var di = 0
+            while (di < dirNames.getSize()) {
+                var name = dirNames.get(di)
+                var child = node.subdirs.get(name)
+                var subSha = IndexTreeBuilder.writeNode(child, writer)
+                if (subSha != null) {
+                    entries.add(new TreeEntry("40000", name, subSha))
+                }
+                di = di + 1
+            }
+
+            if (entries.getSize() == 0 && node.name.length() > 0) {
+                // Non-root empty dir — git doesn't record it.
+                return null
+            }
+            TreeBuilder.sortEntries(entries)
+            var serialised = TreeBuilder.serialize(entries)
+            return writer.write("tree", serialised)
+        }
+
+        // Index stores mode as a UInt (e.g. 33188 = 0o100644). Tree
+        // objects need the ASCII-octal form ("100644"). We handle the
+        // three modes the index actually emits today; anything else
+        // falls back to "100644" for safety.
+        private static fun modeToString(mode: UInt): String {
+            if (mode == 33261UI) {
+                return "100755"
+            }
+            if (mode == 40960UI) {
+                return "120000"
+            }
+            if (mode == 57344UI) {
+                return "160000"
+            }
+            return "100644"
+        }
+    }
+
+    // Internal node in the in-memory directory tree we build from
+    // flat index paths. Each node holds its own files plus a map of
+    // subdir name → child node.
+    class IndexDirNode(var name: String)
+    {
+        import Am.Lang
+        import Am.Collections
+
+        var files: List<IndexFileEntry> = List<IndexFileEntry>.newList<IndexFileEntry>()
+        var subdirs: HashMap<String, IndexDirNode> = new HashMap<String, IndexDirNode>()
+
+        // Drill down to the right subdir, creating nodes as needed,
+        // then append the file entry at the leaf.
+        fun insert(path: String, sha: String, mode: UInt) {
+            var slash = path.indexOf("/")
+            if (slash < 0) {
+                this.files.add(new IndexFileEntry(path, sha, mode))
+                return
+            }
+            var head = path.substring(0UI, slash.toUInt())
+            var tail = path.substringToEnd((slash + 1).toUInt())
+            var child: IndexDirNode
+            if (this.subdirs.containsKey(head)) {
+                child = this.subdirs.get(head)
+            } else {
+                child = new IndexDirNode(head)
+                this.subdirs.set(head, child)
+            }
+            child.insert(tail, sha, mode)
+        }
+
+        fun subdirNames(): List<String> {
+            return this.subdirs.buildKeys()
+        }
+    }
+
+    class IndexFileEntry(var name: String, var sha: String, var mode: UInt)
+    {
+        import Am.Lang
+    }
+}

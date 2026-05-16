@@ -57,6 +57,10 @@ namespace AmGit
                 Program.runCheckout(args)
             } else if (command == "status") {
                 Program.runStatus(args)
+            } else if (command == "add") {
+                Program.runAdd(args)
+            } else if (command == "rm") {
+                Program.runRm(args)
             } else if (command == "pull") {
                 Program.runPull(args)
             } else if (command == "help" || command == "--help" || command == "-h") {
@@ -305,7 +309,23 @@ namespace AmGit
                 }
 
                 var writer = new LooseObjectWriter(".git")
-                var treeSha = new TreeBuilder(".", writer).build()
+                // Prefer the index when one exists — real git semantics.
+                // No index file → fall back to walking the working
+                // tree, preserving am-git's pre-index "commit
+                // everything" behaviour for repos that haven't run
+                // `am-git add` yet.
+                var treeSha: String = null
+                var indexFile = new File(".git/index")
+                if (indexFile.exists()) {
+                    var idx = GitIndex.read(".git")
+                    if (idx.entries.getSize() == 0) {
+                        "commit: nothing to commit (index is empty)".println()
+                        return
+                    }
+                    treeSha = IndexTreeBuilder.build(idx, writer)
+                } else {
+                    treeSha = new TreeBuilder(".", writer).build()
+                }
                 var commitSha = new CommitWriter(writer).write(
                     treeSha, head.commitSha,
                     author, authorTime,
@@ -323,6 +343,19 @@ namespace AmGit
                     Repository.ensureParentDir(refPath)
                     (commitSha + "\n").writeToFile(refPath)
                 }
+
+                // Re-seed the index from the new tree. After an
+                // index-based commit it's essentially a no-op (entries
+                // already match the committed SHAs), but after a
+                // worktree-based commit this populates the index for
+                // the first time so subsequent `add`s don't see a
+                // confusing "everything deleted" status.
+                //
+                // We read the tree from `writer.written` rather than a
+                // fresh `ObjectStore` — same-process write→read of a
+                // loose object isn't reliable on AmigaOS, and we
+                // already have every object we just wrote in memory.
+                GitIndex.fromTreeMap(treeSha, writer.written).write(".git")
 
                 // Summary line. `firstLine` is the message up to the
                 // first `\n` (matches `git commit`'s output convention).
@@ -342,7 +375,8 @@ namespace AmGit
                 }
                 ("[" + branchLabel + rootMarker + " " + shortSha + "] " + firstLine).println()
             } catch (ex: Exception) {
-                ("commit: " + ex.message).println()
+                "commit: failed".println()
+                ex.printWithStackTrace()
             }
         }
 
@@ -543,6 +577,76 @@ namespace AmGit
                 PullClient.pull(".git", ".", remoteUrl, branch, "origin")
             } catch (ex: Exception) {
                 ("pull: " + ex.message).println()
+            }
+        }
+
+        // Stage one or more paths into `.git/index`. Mirrors
+        // `git add <path>...` — accepts files and directories; `.`
+        // means "everything except .git/".
+        private static fun runAdd(args: String[]) {
+            try {
+                if (args.length() < 2UI) {
+                    "usage: am-git add <path>...".println()
+                    return
+                }
+                var paths = List<String>.newList<String>()
+                var i = 1
+                while (i < args.length().toInt()) {
+                    paths.add(args[i.toUInt()])
+                    i = i + 1
+                }
+                var n = AddCommand.run(".git", ".", paths)
+                ("Staged " + n.toString() + " file(s)").println()
+            } catch (ex: Exception) {
+                "add: failed".println()
+                ex.printWithStackTrace()
+            }
+        }
+
+        // Remove an entry from the index. `--cached` (default for
+        // anything we recognise here) leaves the working-tree file
+        // alone; the absence of the flag also deletes it from disk.
+        private static fun runRm(args: String[]) {
+            try {
+                if (args.length() < 2UI) {
+                    "usage: am-git rm [--cached] <path>...".println()
+                    return
+                }
+                var cached = false
+                var firstPath = 1
+                if (args[1UI] == "--cached") {
+                    cached = true
+                    firstPath = 2
+                }
+                if (args.length().toInt() <= firstPath) {
+                    "usage: am-git rm [--cached] <path>...".println()
+                    return
+                }
+                var idx = GitIndex.read(".git")
+                var removed = 0
+                var i = firstPath
+                while (i < args.length().toInt()) {
+                    var p = args[i.toUInt()]
+                    if (p.startsWith("./")) {
+                        p = p.substringToEnd(2UI)
+                    }
+                    if (idx.removeByPath(p)) {
+                        removed = removed + 1
+                        if (!cached) {
+                            var f = new File(p)
+                            if (f.exists()) {
+                                File.delete(p)
+                            }
+                        }
+                    } else {
+                        ("rm: '" + p + "' not in index").println()
+                    }
+                    i = i + 1
+                }
+                idx.write(".git")
+                ("Removed " + removed.toString() + " entry/entries from the index").println()
+            } catch (ex: Exception) {
+                ("rm: " + ex.message).println()
             }
         }
 
@@ -874,7 +978,9 @@ namespace AmGit
             "  fetch [<url>|<remote-name>]         Fetch refs + objects (defaults from .git/config)".println()
             "  pull [<url>] [<branch>]             Fast-forward-only pull (fetch + advance HEAD)".println()
             "  push [<url>] [<branch>]             Push HEAD or named branch (defaults from .git/config)".println()
-            "  status                              Show modified / deleted / untracked paths vs HEAD".println()
+            "  add <path>...                       Stage path(s) into .git/index (file or dir)".println()
+            "  rm [--cached] <path>...             Unstage; without --cached also delete from disk".println()
+            "  status                              Show staged / unstaged / untracked changes".println()
             "  log [-n N]                          Walk commit ancestry from HEAD".println()
             "  branch [<name> | -d <name>]         List / create / delete local branches".println()
             "  checkout <branch>                   Switch HEAD and the working tree to a branch".println()

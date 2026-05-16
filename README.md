@@ -64,6 +64,16 @@ ancestor of the remote commit. Refuses non-fast-forwards loudly — no
 merge / rebase machinery yet, but the common "your branch is behind"
 case works.
 
+### Staging (index)
+
+am-git reads + writes a real DIRC v2 `.git/index` file. `am-git clone`
+and `am-git checkout` seed the index from the new HEAD's tree, so a
+fresh repo reports clean. `am-git add <path>` stages files (or whole
+directories with `.`); `am-git rm <path>` unstages them. `am-git
+commit` snapshots the index — only what's staged ends up in the
+commit. Real `git ls-files`, `git status`, and `git commit` work
+against the same index without complaint.
+
 ### Local ops
 
 `log`, `status`, `branch`, `checkout` work entirely against the local
@@ -104,9 +114,11 @@ am-git status
 # 3. Pull any upstream changes (fast-forward only)
 am-git pull
 
-# 4. Edit + commit
+# 4. Edit + stage + commit
 echo "hello from am-git" > NOTES.md
 am-git status                       # shows ?? NOTES.md
+am-git add NOTES.md                 # stage it
+am-git status                       # now shows A  NOTES.md
 am-git commit -m "Add NOTES.md via am-git"
 
 # 5. Push (URL inferred from .git/config; explicit form also works)
@@ -121,11 +133,13 @@ main ones:
 
 | Command | What it does |
 | ------- | ------------ |
-| `clone <url> [dir]` | Clone over smart-HTTP, check out HEAD. |
+| `clone <url> [dir]` | Clone over smart-HTTP, check out HEAD, seed `.git/index`. |
 | `fetch [<url>\|<name>]` | Fetch objects + refs (URL default from `.git/config`). |
 | `pull [<url>] [<branch>]` | Fast-forward-only fetch + advance HEAD. |
 | `push [<url>] [<branch>]` | Push HEAD or named branch (URL default from config). |
-| `status` | Show modified / deleted / untracked paths vs HEAD. |
+| `add <path>...` | Stage paths into `.git/index` (files or dirs; `.` adds everything). |
+| `rm [--cached] <path>...` | Unstage; without `--cached` also deletes the working file. |
+| `status` | Three-bucket diff: staged (index vs HEAD), unstaged (worktree vs index), untracked. |
 | `log [-n N]` | Walk commit ancestry from HEAD. |
 | `branch [<name>\| -d <name>]` | List / create / delete local branches. |
 | `checkout <branch>` | Switch HEAD and the working tree to a branch. |
@@ -152,8 +166,9 @@ Things that don't work yet (or don't work the way real git does):
 
 - **Pull is fast-forward only** — diverged branches need real git for
   merge / rebase. The non-FF case bails with a clear error message.
-- **No index file** — `commit` and `status` always walk the working
-  tree. There's no staging area; `commit` records every change found.
+- **No exec / symlink modes** — staging always records `0100644`.
+  Real git inspects the inode mode bits; we don't have those wired up
+  from AmLang yet.
 - **Pack delta compression on push** — am-git emits full objects only.
   Real git negotiates and ships delta-encoded entries; receive-pack
   accepts both, so this just means pushes are larger on the wire.

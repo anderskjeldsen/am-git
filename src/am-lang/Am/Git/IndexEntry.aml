@@ -1,0 +1,30 @@
+namespace Am.Git
+{
+    // One entry in the git index file (DIRC). Mirrors the on-disk
+    // layout described in Documentation/technical/index-format.txt
+    // for the "Cache entry" section of index v2.
+    //
+    // The stat-cache fields (ctime/mtime/dev/ino/uid/gid) are stored
+    // so real git can skip re-hashing unchanged files. We don't have
+    // dev/ino/uid/gid from AmLang's File API today, so we fill those
+    // with 0 and let real git fall back to re-hashing if it cares.
+    // Path comparison + SHA are what drive am-git's own logic.
+    class IndexEntry(
+        var path: String,
+        var sha: String,             // 40-char lowercase hex SHA-1 of the blob
+        var mode: UInt,              // git mode bits — 0100644, 0100755, 0120000, 0160000
+        var size: UInt,              // file size in bytes (truncated to 32 bits)
+        var mtimeSeconds: UInt,
+        var mtimeNanos: UInt,
+        var ctimeSeconds: UInt,
+        var ctimeNanos: UInt,
+        var dev: UInt,
+        var ino: UInt,
+        var uid: UInt,
+        var gid: UInt,
+        var flags: UShort            // assume-valid(1) | extended(1) | stage(2) | namelen(12)
+    )
+    {
+        import Am.Lang
+    }
+}

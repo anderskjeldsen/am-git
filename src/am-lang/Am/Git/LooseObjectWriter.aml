@@ -20,8 +20,20 @@ namespace Am.Git
     class LooseObjectWriter(private var gitDir: String)
     {
         import Am.Lang
+        import Am.Collections
         import Am.IO
         import Am.Z
+
+        // SHA → PackObject map of everything `write()` has produced
+        // (or skipped because it was already on disk) during this
+        // writer's lifetime. Callers that need to read back an object
+        // they just wrote — e.g. commit re-seeding the index from the
+        // new tree — should consult this map instead of bouncing
+        // through the on-disk loose store. The disk round-trip works
+        // most places, but AmigaOS DOS doesn't reliably expose a
+        // freshly-written file to a same-process reader, and the
+        // in-memory mirror sidesteps that.
+        var written: HashMap<String, PackObject> = new HashMap<String, PackObject>()
 
         // Write the object (or noop if already on disk). Returns the
         // 40-char hex SHA-1 — caller plugs that into tree entries,
@@ -30,13 +42,38 @@ namespace Am.Git
             var sha = PackObject.computeSha(typeName, content)
             var path = this.pathFor(sha)
             var existing = new File(path)
-            if (existing.exists()) {
-                return sha
+            if (!existing.exists()) {
+                var wrapped = PackObject.wrapForSha(typeName, content)
+                var compressed = Zlib.deflate(wrapped)
+                Repository.writeBytes(path, compressed)
             }
-            var wrapped = PackObject.wrapForSha(typeName, content)
-            var compressed = Zlib.deflate(wrapped)
-            Repository.writeBytes(path, compressed)
+            // Mirror into `written` whether we actually wrote bytes or
+            // skipped — same-process readers don't care which.
+            if (!this.written.containsKey(sha)) {
+                var obj = new PackObject(LooseObjectWriter.typeCodeOf(typeName), content)
+                obj.sha = sha
+                this.written.set(sha, obj)
+            }
             return sha
+        }
+
+        // Same numeric type codes as LooseObjectReader.typeCodeOf and
+        // PackObject.typeName. Kept here as a private helper so the
+        // writer doesn't reach across into the reader for it.
+        private static fun typeCodeOf(typeName: String): Int {
+            if (typeName == "commit") {
+                return 1
+            }
+            if (typeName == "tree") {
+                return 2
+            }
+            if (typeName == "blob") {
+                return 3
+            }
+            if (typeName == "tag") {
+                return 4
+            }
+            throw new Exception("LooseObjectWriter: unknown type '" + typeName + "'")
         }
 
         // Compose the on-disk path for a SHA without writing anything.

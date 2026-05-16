@@ -1,19 +1,24 @@
 namespace Am.Git
 {
-    // `git status` (short form) — compare the working tree to HEAD's
-    // tree and report files that have changed.
+    // `git status` — three-way diff of HEAD vs index vs working tree.
     //
-    // We classify each path into one of:
+    // Output groups (matching `git status --short`):
     //
-    //   M  modified  — present in both, content differs
-    //   D  deleted   — present in HEAD, absent on disk
-    //   ??  untracked — present on disk, absent in HEAD
+    //   Staged (index vs HEAD):
+    //     A   added in index, missing from HEAD
+    //     M   modified in index relative to HEAD
+    //     D   removed from index, still in HEAD
     //
-    // Real `git status` distinguishes between staged and unstaged
-    // changes (it consults the index file). am-git doesn't maintain
-    // an index — every commit walks the working tree fresh — so all
-    // changes here are reported as if unstaged. The output prefix
-    // matches `git status --short` for the cases we cover.
+    //   Unstaged (worktree vs index):
+    //      M  content on disk differs from index
+    //      D  on-disk file missing while indexed
+    //
+    //   ??     untracked — present on disk, absent from both
+    //
+    // When there's no `.git/index`, we fall back to the pre-index
+    // behaviour: compare worktree directly to HEAD and report
+    // everything as unstaged. That keeps `am-git status` useful right
+    // after a clone (which doesn't populate an index).
     class StatusReport
     {
         import Am.Lang
@@ -21,20 +26,17 @@ namespace Am.Git
         import Am.IO
         import Am.Crypto
 
-        // Driver: print the report and return the count of changed
-        // paths (so callers like push hooks can branch on a clean
-        // tree in the future).
         static fun run(gitDir: String, workTreePath: String): Int {
-            var head = HeadReader.read(gitDir)
-            if (head.detached) {
-                ("HEAD detached at " + head.commitSha).println()
-            } else if (head.commitSha == null) {
-                ("On branch " + head.branch + " — no commits yet").println()
-            } else {
-                ("On branch " + head.branch).println()
-            }
+            // Resolve "." / "" to an absolute path — on AmigaOS without
+            // ixemul, opendir(".") isn't reliable; getcwd() is.
+            workTreePath = StatusReport.resolveBase(workTreePath)
 
-            // headPaths: relative path → blob SHA, for the HEAD tree.
+            var head = HeadReader.read(gitDir)
+            StatusReport.printBranchHeader(head)
+
+            // HEAD's tree as path → blob SHA. Empty for an unborn
+            // branch — every indexed / on-disk file then counts as a
+            // brand-new addition.
             var headPaths = new HashMap<String, String>()
             if (head.commitSha != null) {
                 var store = new ObjectStore(gitDir)
@@ -47,12 +49,92 @@ namespace Am.Git
                 StatusReport.collectTreePaths(rootTreeSha, "", headPaths, store)
             }
 
-            // diskPaths: relative path → blob SHA, computed from disk.
-            // Same hashing as `am-git hash-object` so the comparison
-            // is apples-to-apples with what a `commit` would produce.
+            // Working-tree state — same hashing as `am-git add`, so a
+            // file that's been staged-and-untouched compares equal.
             var diskPaths = new HashMap<String, String>()
             StatusReport.collectDiskPaths(workTreePath, "", diskPaths)
 
+            // Index state. Absence is fine — old repos / fresh clones
+            // don't have one, and we degrade to a worktree-vs-HEAD diff.
+            var indexFile = new File(gitDir + "/index")
+            if (!indexFile.exists()) {
+                return StatusReport.reportWithoutIndex(headPaths, diskPaths)
+            }
+
+            var idx = GitIndex.read(gitDir)
+            var indexPaths = idx.pathToSha()
+
+            // Staged: differences between index and HEAD.
+            var stagedAdded = List<String>.newList<String>()
+            var stagedModified = List<String>.newList<String>()
+            var stagedDeleted = List<String>.newList<String>()
+            var indexKeys = indexPaths.buildKeys()
+            var i = 0
+            while (i < indexKeys.getSize()) {
+                var path = indexKeys.get(i)
+                if (!headPaths.containsKey(path)) {
+                    stagedAdded.add(path)
+                } else if (headPaths.get(path) != indexPaths.get(path)) {
+                    stagedModified.add(path)
+                }
+                i = i + 1
+            }
+            var headKeys = headPaths.buildKeys()
+            var hi = 0
+            while (hi < headKeys.getSize()) {
+                var path = headKeys.get(hi)
+                if (!indexPaths.containsKey(path)) {
+                    stagedDeleted.add(path)
+                }
+                hi = hi + 1
+            }
+
+            // Unstaged: differences between worktree and index. Files
+            // in worktree but not the index land in `untracked`.
+            var unstagedModified = List<String>.newList<String>()
+            var unstagedDeleted = List<String>.newList<String>()
+            var untracked = List<String>.newList<String>()
+            var ii = 0
+            while (ii < indexKeys.getSize()) {
+                var path = indexKeys.get(ii)
+                if (!diskPaths.containsKey(path)) {
+                    unstagedDeleted.add(path)
+                } else if (diskPaths.get(path) != indexPaths.get(path)) {
+                    unstagedModified.add(path)
+                }
+                ii = ii + 1
+            }
+            var diskKeys = diskPaths.buildKeys()
+            var di = 0
+            while (di < diskKeys.getSize()) {
+                var path = diskKeys.get(di)
+                if (!indexPaths.containsKey(path)) {
+                    untracked.add(path)
+                }
+                di = di + 1
+            }
+
+            var changed = stagedAdded.getSize() + stagedModified.getSize() + stagedDeleted.getSize() +
+                          unstagedModified.getSize() + unstagedDeleted.getSize() + untracked.getSize()
+            if (changed == 0) {
+                "nothing to commit, working tree clean".println()
+                return 0
+            }
+            // First column = staged status, second = unstaged status,
+            // matching `git status --short`'s "XY <path>" layout.
+            StatusReport.printGroup("A  ", stagedAdded)
+            StatusReport.printGroup("M  ", stagedModified)
+            StatusReport.printGroup("D  ", stagedDeleted)
+            StatusReport.printGroup(" M ", unstagedModified)
+            StatusReport.printGroup(" D ", unstagedDeleted)
+            StatusReport.printGroup("?? ", untracked)
+            return changed
+        }
+
+        // No-index fallback: same shape as the old single-bucket
+        // report — everything is "unstaged".
+        private static fun reportWithoutIndex(headPaths: HashMap<String, String>,
+                                               diskPaths: HashMap<String, String>): Int {
             var modified = List<String>.newList<String>()
             var deleted = List<String>.newList<String>()
             var untracked = List<String>.newList<String>()
@@ -77,7 +159,6 @@ namespace Am.Git
                 }
                 j = j + 1
             }
-
             var changed = modified.getSize() + deleted.getSize() + untracked.getSize()
             if (changed == 0) {
                 "nothing to commit, working tree clean".println()
@@ -89,27 +170,57 @@ namespace Am.Git
             return changed
         }
 
+        private static fun printBranchHeader(head: HeadInfo) {
+            if (head.detached) {
+                ("HEAD detached at " + head.commitSha).println()
+            } else if (head.commitSha == null) {
+                ("On branch " + head.branch + " — no commits yet").println()
+            } else {
+                ("On branch " + head.branch).println()
+            }
+        }
+
         private static fun printGroup(prefix: String, paths: List<String>) {
-            // Sort for stable output — small lists, simple bubble sort
-            // keeps the code self-contained.
+            // Bubble sort by byte order so output is stable across
+            // runs and matches `git status` ordering.
+            var n = paths.getSize()
             var i = 0
-            while (i < paths.getSize() - 1) {
-                var k = i + 1
-                while (k < paths.getSize()) {
-                    if (paths.get(k) < paths.get(i)) {
-                        var tmp = paths.get(i)
-                        paths.set(i, paths.get(k))
-                        paths.set(k, tmp)
+            while (i < n - 1) {
+                var k = 0
+                while (k < n - 1 - i) {
+                    if (StatusReport.compareBytewise(paths.get(k), paths.get(k + 1)) > 0) {
+                        var tmp = paths.get(k)
+                        paths.set(k, paths.get(k + 1))
+                        paths.set(k + 1, tmp)
                     }
                     k = k + 1
                 }
                 i = i + 1
             }
-            var n = 0
-            while (n < paths.getSize()) {
-                (prefix + paths.get(n)).println()
-                n = n + 1
+            var p = 0
+            while (p < paths.getSize()) {
+                (prefix + paths.get(p)).println()
+                p = p + 1
             }
+        }
+
+        private static fun compareBytewise(a: String, b: String): Int {
+            var la: UInt = a.length().toUInt()
+            var lb: UInt = b.length().toUInt()
+            var min: UInt = la
+            if (lb < min) {
+                min = lb
+            }
+            var i: UInt = 0UI
+            while (i < min) {
+                var ca = a.characterAt(i).toInt()
+                var cb = b.characterAt(i).toInt()
+                if (ca != cb) {
+                    return ca - cb
+                }
+                i++
+            }
+            return la.toInt() - lb.toInt()
         }
 
         // Recursively walk HEAD's tree, building a map of relative
@@ -146,7 +257,7 @@ namespace Am.Git
         }
 
         // Walk the working tree (excluding `.git`), hashing each file
-        // as a blob so we can compare SHAs against the HEAD tree.
+        // as a blob so we can compare SHAs against the HEAD tree / index.
         private static fun collectDiskPaths(workTreePath: String,
                                              relPrefix: String,
                                              out: HashMap<String, String>) {
@@ -190,6 +301,13 @@ namespace Am.Git
             var f = new File(path)
             var stream = new FileStream(f, FileAccess.readOnly)
             return stream.readAll()
+        }
+
+        private static fun resolveBase(workTreePath: String): String {
+            if (workTreePath == null || workTreePath.length() == 0 || workTreePath == ".") {
+                return File.getCurrentDirectory()
+            }
+            return workTreePath
         }
     }
 }
