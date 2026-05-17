@@ -58,10 +58,21 @@ platforms:
   - id: amigaos
     extends: libc
     gccCommand: m68k-amigaos-gcc
+    # -ffunction-sections / -fdata-sections + -Wl,--gc-sections:
+    # each function and global goes into its own section, then the
+    # linker drops every section nothing references. Roughly halves
+    # the binary by dropping unused AmLang runtime classes/methods.
+    # Safe with libnix/libc — ncrt0.o's _start stays at offset 0 of
+    # the first code hunk (which is what the AmigaOS hunk loader
+    # executes), and vtable construction takes function addresses
+    # via relocations the linker tracks as live.
     gccAdditionalOptions:
       - -noixemul
+#      - -ffunction-sections
+#      - -fdata-sections
     additionalLinkerFlags:
       - -noixemul
+#      - -Wl,--gc-sections
   - id: linux-x64
     extends: libc
     gccCommand: gcc
@@ -74,10 +85,15 @@ platforms:
   - id: morphos-ppc
     extends: libc
     gccCommand: ppc-morphos-gcc -O3
+    # Same size-shrink mechanism as the amigaos target above —
+    # function/data sections + linker gc.
     gccAdditionalOptions:
       - -noixemul
+      - -ffunction-sections
+      - -fdata-sections
     additionalLinkerFlags:
       - -noixemul
+      - -Wl,--gc-sections
 
 buildTargets:
   - id: amigaos_docker
