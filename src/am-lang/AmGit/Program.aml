@@ -71,6 +71,8 @@ namespace AmGit
                 Program.runMergePlan(args)
             } else if (command == "merge") {
                 Program.runMerge(args)
+            } else if (command == "reset") {
+                Program.runReset(args)
             } else if (command == "help" || command == "--help" || command == "-h") {
                 Program.printUsage()
             } else if (command == "version" || command == "--version") {
@@ -952,6 +954,130 @@ namespace AmGit
             }
         }
 
+        // `am-git reset [--soft|--mixed|--hard] [<commit>]`
+        //
+        //   --soft           move HEAD only. Index + working tree
+        //                    untouched (your staged changes stay
+        //                    staged; uncommitted edits stay).
+        //   --mixed (default)  move HEAD AND reset the index to
+        //                    <commit>'s tree. Working tree untouched.
+        //   --hard           move HEAD, reset index, AND overwrite
+        //                    the working tree with <commit>'s tree.
+        //                    Destroys uncommitted edits — same
+        //                    semantics as real git.
+        //
+        // <commit> defaults to HEAD if omitted — i.e. `am-git reset`
+        // unstages everything (mixed) without changing where HEAD
+        // points.
+        //
+        // Detached HEAD: writes the new SHA directly to `.git/HEAD`.
+        // Otherwise updates `.git/refs/heads/<branch>`.
+        private static fun runReset(args: String[]) {
+            try {
+                var mode = "mixed"
+                var target: String = null
+                var i = 1UI
+                while (i < args.length()) {
+                    var a = args[i]
+                    if (a == "--soft") {
+                        mode = "soft"
+                    } else if (a == "--mixed") {
+                        mode = "mixed"
+                    } else if (a == "--hard") {
+                        mode = "hard"
+                    } else if (a.startsWith("--")) {
+                        ("reset: unrecognised flag '" + a + "'").println()
+                        return
+                    } else {
+                        if (target != null) {
+                            "usage: am-git reset [--soft|--mixed|--hard] [<commit>]".println()
+                            return
+                        }
+                        target = a
+                    }
+                    i = i + 1UI
+                }
+
+                var head = HeadReader.read(".git")
+                if (head.commitSha == null) {
+                    "reset: current branch has no commits — nothing to reset".println()
+                    return
+                }
+                if (target == null) {
+                    target = head.commitSha
+                }
+                var targetSha = Program.resolveCommitish(target)
+                if (targetSha == null) {
+                    ("reset: cannot resolve '" + target + "'").println()
+                    return
+                }
+                var store = new ObjectStore(".git")
+                if (!store.has(targetSha)) {
+                    ("reset: " + targetSha + " is not in the object store").println()
+                    return
+                }
+                var obj = store.read(targetSha)
+                if (obj.typeCode != 1) {
+                    ("reset: " + target + " is not a commit").println()
+                    return
+                }
+
+                // Move the ref / detached HEAD first. The applier
+                // below reads HEAD's tree, but we want the ref to
+                // already point at the new commit so a subsequent
+                // status / log reflects the move even if the working-
+                // tree write fails partway through.
+                if (head.detached) {
+                    (targetSha + "\n").writeToFile(".git/HEAD")
+                } else {
+                    var refPath = ".git/refs/heads/" + head.branch
+                    Repository.ensureParentDir(refPath)
+                    (targetSha + "\n").writeToFile(refPath)
+                }
+
+                if (mode == "soft") {
+                    Program.printResetSummary(head, targetSha, "soft")
+                    return
+                }
+
+                // --mixed and --hard both need the index re-seeded
+                // from <target>'s tree. --hard additionally
+                // materialises the tree into the working tree.
+                if (mode == "hard") {
+                    CheckoutClient.applyCommitToWorkTree(".git", ".", targetSha)
+                } else {
+                    // mixed: index only.
+                    var rootTreeSha = WorkTree.extractRootTreeSha(obj.content)
+                    GitIndex.fromTree(rootTreeSha, store).write(".git")
+                }
+
+                // Clear any in-progress merge state — a reset is the
+                // canonical way to abandon one (matches `git merge
+                // --abort` semantics when the target is HEAD).
+                Program.deleteIfExists(".git/MERGE_HEAD")
+                Program.deleteIfExists(".git/MERGE_MSG")
+
+                Program.printResetSummary(head, targetSha, mode)
+            } catch (ex: Exception) {
+                "reset: failed".println()
+                ex.printWithStackTrace()
+            }
+        }
+
+        private static fun printResetSummary(prevHead: HeadInfo, targetSha: String, mode: String) {
+            var prevShort = "(unborn)"
+            if (prevHead.commitSha != null) {
+                prevShort = prevHead.commitSha.substring(0UI, 7UI)
+            }
+            var newShort = targetSha.substring(0UI, 7UI)
+            var label = "HEAD"
+            if (!prevHead.detached) {
+                label = prevHead.branch
+            }
+            ("Reset (" + mode + ") " + label + " from " + prevShort +
+                " to " + newShort).println()
+        }
+
         // `am-git ls-stages` — print every index entry as
         // `<mode> <sha> <stage>\t<path>`, mirroring
         // `git ls-files --stage`. Useful when debugging conflict
@@ -1460,6 +1586,8 @@ namespace AmGit
             "  checkout <branch>                   Switch HEAD and the working tree to a branch".println()
             "  merge <branch>                      Merge <branch> into the current branch".println()
             "  merge-base <a> <b>                  Print the lowest common ancestor of two commits".println()
+            "  reset [--soft|--mixed|--hard]       Move HEAD (and optionally index / worktree) to <commit>".println()
+            "    [<commit>]".println()
             "  commit -m <message>                 Commit the cwd working tree against HEAD".println()
             "  commit-tree <tree>                  Write a commit object pointing at the given tree".println()
             "    [-p <parent>] -m <msg>".println()

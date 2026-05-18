@@ -45,9 +45,27 @@ namespace Am.Git
                 throw new Exception("checkout: ref content not a SHA: " + commitSha)
             }
 
-            // Load reachable objects. For typical repo sizes this fits
-            // comfortably in RAM; larger histories would want lazy
-            // lookup against ObjectStore directly.
+            // Apply the commit's tree to the working tree + index.
+            // applyCommitToWorkTree handles object loading, orphan
+            // pruning, blob writing, and index re-seeding.
+            CheckoutClient.applyCommitToWorkTree(gitDir, workTreePath, commitSha)
+
+            // Update HEAD to track the branch symbolically.
+            ("ref: refs/heads/" + branch + "\n").writeToFile(gitDir + "/HEAD")
+
+            ("Switched to branch " + branch + " at " + commitSha).println()
+        }
+
+        // Apply `commitSha`'s tree to the working tree and re-seed
+        // the index from it. Does NOT touch HEAD or any ref — that's
+        // the caller's responsibility. Used by both `checkout`
+        // (which updates HEAD after) and `reset --hard` (which
+        // updates the branch ref before).
+        //
+        // Reachable objects are loaded eagerly into a map, which
+        // avoids the same-process loose-read fragility on AmigaOS
+        // (see GitIndex.fromTreeMap for the underlying fix).
+        static fun applyCommitToWorkTree(gitDir: String, workTreePath: String, commitSha: String) {
             var store = new ObjectStore(gitDir)
             var walker = new ObjectWalker(store)
             var shas = walker.collect(commitSha, "0000000000000000000000000000000000000000")
@@ -61,7 +79,7 @@ namespace Am.Git
                 i = i + 1
             }
             if (!objects.containsKey(commitSha)) {
-                throw new Exception("checkout: commit " + commitSha + " not present in object store")
+                throw new Exception("commit " + commitSha + " not present in object store")
             }
 
             // Expected set of file paths under workTreePath, relative.
@@ -70,23 +88,19 @@ namespace Am.Git
             var rootTreeSha = WorkTree.extractRootTreeSha(commit.content)
             CheckoutClient.collectExpectedPaths(rootTreeSha, "", expected, objects)
 
-            // Wipe orphans before writing the new tree, so a file that
-            // moved between directories doesn't end up duplicated.
+            // Wipe orphans before writing the new tree, so a file
+            // that moved between directories doesn't end up
+            // duplicated.
             CheckoutClient.removeOrphans(workTreePath, "", expected)
 
-            // Re-use the existing checkout writer.
+            // Re-use the existing tree-writer.
             var wt = new WorkTree(workTreePath, objects)
             wt.checkout(commitSha)
 
-            // Update HEAD to track the branch symbolically.
-            ("ref: refs/heads/" + branch + "\n").writeToFile(gitDir + "/HEAD")
-
-            // Refresh the index so it mirrors the new HEAD. Real git
-            // does this; without it `am-git status` would report
-            // every file as "staged" after a checkout.
-            GitIndex.fromTree(rootTreeSha, store).write(gitDir)
-
-            ("Switched to branch " + branch + " at " + commitSha).println()
+            // Refresh the index so it mirrors the new tree. Without
+            // this, `am-git status` would report every file as
+            // "staged" after the call.
+            GitIndex.fromTreeMap(rootTreeSha, objects).write(gitDir)
         }
 
         // Walk the new commit's tree and record every blob's path
