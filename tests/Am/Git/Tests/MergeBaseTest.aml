@@ -1,0 +1,250 @@
+namespace Am.Git.Tests {
+
+    // MergeBase — lowest common ancestor in a commit DAG. The
+    // foundation for merge / rebase / pull-with-merge. We build small
+    // DAGs by writing real commit objects via LooseObjectWriter and
+    // querying through an ObjectStore — same path the production CLI
+    // uses, so anything that breaks the walker breaks here too.
+    //
+    // Topologies covered:
+    //
+    //   (1) Identity / null / missing input  → degenerate cases.
+    //   (2) Linear:  A ← B ← C               → merge-base(B, C) = B.
+    //   (3) Y-fork:  base ← {ours, theirs}   → merge-base = base.
+    //   (4) Diamond: base ← m1, m2 ← join    → merge-base = base
+    //                                          when querying the
+    //                                          two pre-merge tips.
+    //
+    // Each test cleans its own .git-like directory under cwd.
+    class MergeBaseTest {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+        import Am.Git
+        import Am.Tests
+
+        // Both args equal → the SHA itself, no DAG walking needed.
+        test identityReturnsItself() {
+            var store = MergeBaseTest.freshStore()
+            try {
+                var sha = MergeBaseTest.writeCommit(store, "tree-empty", List<String>.newList<String>())
+                var lca = MergeBase.find(sha, sha, store)
+                Assert.assertEquals(sha, lca)
+            } catch (ex: Exception) {
+                MergeBaseTest.cleanupTestDir()
+                throw ex
+            }
+            MergeBaseTest.cleanupTestDir()
+        }
+
+        // Either side null → null. Matches "no merge-base when one
+        // side is the unborn branch" semantics.
+        test nullSideReturnsNull() {
+            var store = MergeBaseTest.freshStore()
+            try {
+                var sha = MergeBaseTest.writeCommit(store, "tree-empty", List<String>.newList<String>())
+                Assert.assertNull(MergeBase.find(MergeBaseTest.nullSha(), sha, store))
+                Assert.assertNull(MergeBase.find(sha, MergeBaseTest.nullSha(), store))
+            } catch (ex: Exception) {
+                MergeBaseTest.cleanupTestDir()
+                throw ex
+            }
+            MergeBaseTest.cleanupTestDir()
+        }
+
+        // Linear chain: when A is an ancestor of B, merge-base(A, B)
+        // is A — same as the fast-forward case (which merge phase 2
+        // will rely on).
+        test linearAncestor() {
+            var store = MergeBaseTest.freshStore()
+            try {
+                var a = MergeBaseTest.writeCommit(store, "tree-empty",
+                    List<String>.newList<String>())
+                var b = MergeBaseTest.writeCommit(store, "tree-empty",
+                    MergeBaseTest.parents1(a))
+                var c = MergeBaseTest.writeCommit(store, "tree-empty",
+                    MergeBaseTest.parents1(b))
+
+                // merge-base(b, c) = b (b is ancestor of c).
+                Assert.assertEquals(b, MergeBase.find(b, c, store))
+                // merge-base(c, b) = b (symmetric).
+                Assert.assertEquals(b, MergeBase.find(c, b, store))
+                // merge-base(a, c) = a (a is ancestor of c).
+                Assert.assertEquals(a, MergeBase.find(a, c, store))
+            } catch (ex: Exception) {
+                MergeBaseTest.cleanupTestDir()
+                throw ex
+            }
+            MergeBaseTest.cleanupTestDir()
+        }
+
+        // Y-fork (the canonical merge case): one root, two branches
+        // diverging from it. merge-base of the two branch tips is
+        // the root.
+        test yForkReturnsBase() {
+            var store = MergeBaseTest.freshStore()
+            try {
+                var bcommit = MergeBaseTest.writeCommit(store, "tree-empty",
+                    List<String>.newList<String>())
+                var ours = MergeBaseTest.writeCommit(store, "tree-ours",
+                    MergeBaseTest.parents1(bcommit))
+                var theirs = MergeBaseTest.writeCommit(store, "tree-theirs",
+                    MergeBaseTest.parents1(bcommit))
+
+                Assert.assertEquals(bcommit, MergeBase.find(ours, theirs, store))
+                Assert.assertEquals(bcommit, MergeBase.find(theirs, ours, store))
+            } catch (ex: Exception) {
+                MergeBaseTest.cleanupTestDir()
+                throw ex
+            }
+            MergeBaseTest.cleanupTestDir()
+        }
+
+        // Deeper Y-fork — base ← x ← ours and base ← y ← theirs. The
+        // walker has to step past one commit on each side before
+        // hitting the common ancestor.
+        test yForkAfterMultipleCommits() {
+            var store = MergeBaseTest.freshStore()
+            try {
+                var bcommit = MergeBaseTest.writeCommit(store, "tree-empty",
+                    List<String>.newList<String>())
+                var x = MergeBaseTest.writeCommit(store, "tree-x",
+                    MergeBaseTest.parents1(bcommit))
+                var ours = MergeBaseTest.writeCommit(store, "tree-ours",
+                    MergeBaseTest.parents1(x))
+                var y = MergeBaseTest.writeCommit(store, "tree-y",
+                    MergeBaseTest.parents1(bcommit))
+                var theirs = MergeBaseTest.writeCommit(store, "tree-theirs",
+                    MergeBaseTest.parents1(y))
+
+                Assert.assertEquals(bcommit, MergeBase.find(ours, theirs, store))
+            } catch (ex: Exception) {
+                MergeBaseTest.cleanupTestDir()
+                throw ex
+            }
+            MergeBaseTest.cleanupTestDir()
+        }
+
+        // Unrelated histories: two roots that never join up. No common
+        // ancestor exists → returns null. Matches real git's "fatal:
+        // refusing to merge unrelated histories" precondition.
+        test unrelatedHistoriesReturnsNull() {
+            var store = MergeBaseTest.freshStore()
+            try {
+                var a = MergeBaseTest.writeCommit(store, "tree-empty",
+                    List<String>.newList<String>())
+                // Distinct root commit — different tree string forces
+                // a different SHA, no shared ancestry.
+                var b = MergeBaseTest.writeCommit(store, "tree-other-root",
+                    List<String>.newList<String>())
+
+                Assert.assertNull(MergeBase.find(a, b, store))
+            } catch (ex: Exception) {
+                MergeBaseTest.cleanupTestDir()
+                throw ex
+            }
+            MergeBaseTest.cleanupTestDir()
+        }
+
+        // Diamond: base ← m1, base ← m2, then `join` is a merge of m1
+        // and m2. merge-base(m1, m2) is base (their unique common
+        // ancestor in this minimal diamond).
+        test diamondMergeBaseIsRoot() {
+            var store = MergeBaseTest.freshStore()
+            try {
+                var bcommit = MergeBaseTest.writeCommit(store, "tree-empty",
+                    List<String>.newList<String>())
+                var m1 = MergeBaseTest.writeCommit(store, "tree-m1",
+                    MergeBaseTest.parents1(bcommit))
+                var m2 = MergeBaseTest.writeCommit(store, "tree-m2",
+                    MergeBaseTest.parents1(bcommit))
+
+                Assert.assertEquals(bcommit, MergeBase.find(m1, m2, store))
+            } catch (ex: Exception) {
+                MergeBaseTest.cleanupTestDir()
+                throw ex
+            }
+            MergeBaseTest.cleanupTestDir()
+        }
+
+        // ---- helpers -------------------------------------------------
+
+        // Fresh ObjectStore rooted at ./testmb. Wipes any previous
+        // state from earlier failing tests so we always start clean.
+        private static fun freshStore(): ObjectStore {
+            MergeBaseTest.cleanupTestDir()
+            return new ObjectStore("./testmb")
+        }
+
+        // Write a synthetic commit with the given tree-name (which we
+        // hash into a unique blob to give each "tree" a distinct SHA,
+        // even though we don't bother building real tree objects) and
+        // parent list. Returns the commit's SHA.
+        private static fun writeCommit(store: ObjectStore, treeMarker: String,
+                                        parents: List<String>): String {
+            // Use a blob's SHA as the fake tree SHA — we don't read
+            // tree contents anywhere in MergeBase, only commit
+            // parents, so any 40-char hex string works as the tree
+            // field.
+            var writer = new LooseObjectWriter("./testmb")
+            var treeBlob = writer.write("blob", treeMarker.toBytes("UTF-8"))
+
+            var body = "tree " + treeBlob + "\n"
+            var i = 0
+            while (i < parents.getSize()) {
+                body = body + "parent " + parents.get(i) + "\n"
+                i = i + 1
+            }
+            body = body + "author T <t@t> 1700000000 +0000\n"
+            body = body + "committer T <t@t> 1700000000 +0000\n"
+            body = body + "\n"
+            // Unique trailer so two commits with identical parents +
+            // tree still get distinct SHAs (otherwise the writer
+            // dedupes and we can't model two siblings).
+            body = body + "msg " + treeMarker + " " +
+                          parents.getSize().toString() + "\n"
+
+            return writer.write("commit", body.toBytes("UTF-8"))
+        }
+
+        private static fun parents1(p: String): List<String> {
+            var l = List<String>.newList<String>()
+            l.add(p)
+            return l
+        }
+
+        // Typed null for `MergeBase.find(null, ...)` — AmLang can't
+        // infer the type of a bare `null` at a call site.
+        private static fun nullSha(): String {
+            var s: String = null
+            return s
+        }
+
+        private static fun cleanupTestDir() {
+            var root = new File("./testmb")
+            if (!root.exists()) {
+                return
+            }
+            var objects = new File("./testmb/objects")
+            if (objects.exists()) {
+                var subs = objects.listFiles()
+                var i = 0
+                while (i < subs.length().toInt()) {
+                    var sub = subs[i.toUInt()]
+                    if (sub.isDirectory()) {
+                        var inner = sub.listFiles()
+                        var j = 0
+                        while (j < inner.length().toInt()) {
+                            inner[j.toUInt()].delete()
+                            j = j + 1
+                        }
+                        sub.delete()
+                    }
+                    i = i + 1
+                }
+                objects.delete()
+            }
+            root.delete()
+        }
+    }
+}

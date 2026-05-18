@@ -1,0 +1,128 @@
+namespace Am.Git.Tests {
+
+    // TreeBuilder — sort + serialize for tree objects. Both the sort
+    // rule (git's special "trees compare as if their name had a
+    // trailing /") and the serialised byte layout
+    // ("<mode> <name>\0<20-byte-raw-sha>") have to match real git
+    // exactly, otherwise our tree SHAs won't match what `git fsck`
+    // expects and we can't push.
+    class TreeBuilderTest {
+        import Am.Lang
+        import Am.Collections
+        import Am.Git
+        import Am.Tests
+
+        // Plain bytewise order for two files at the same level.
+        test sortFilesAlphabetic() {
+            var a = new TreeEntry("100644", "a.txt", TreeBuilderTest.zeroSha())
+            var b = new TreeEntry("100644", "b.txt", TreeBuilderTest.zeroSha())
+            Assert.assertTrue(TreeBuilder.compareEntries(a, b) < 0)
+            Assert.assertTrue(TreeBuilder.compareEntries(b, a) > 0)
+        }
+
+        // Equal name + equal type → equal. We don't fold case or
+        // normalise — git's bytewise comparator doesn't.
+        test sortEqualByName() {
+            var a = new TreeEntry("100644", "x", TreeBuilderTest.zeroSha())
+            var b = new TreeEntry("100644", "x", TreeBuilderTest.zeroSha())
+            Assert.assertEquals(0, TreeBuilder.compareEntries(a, b))
+        }
+
+        // The git-specific quirk: when name A is a prefix of name B,
+        // a trailing `/` (0x2F) is implied for trees and `\0` (0x00)
+        // for files. So "app" (tree) sorts AFTER "app.c" (file)
+        // because `/` (47) > `.` (46), even though "app" is shorter.
+        // This is the only place a naive strcmp diverges from git.
+        test sortTreePrefixVsFileSuffix() {
+            var tree = new TreeEntry("40000",  "app", TreeBuilderTest.zeroSha())
+            var file = new TreeEntry("100644", "app.c", TreeBuilderTest.zeroSha())
+            // file `app.c` should come BEFORE tree `app` because
+            //   "app.c" vs "app/" → '.' (46) < '/' (47)
+            Assert.assertTrue(TreeBuilder.compareEntries(file, tree) < 0)
+            Assert.assertTrue(TreeBuilder.compareEntries(tree, file) > 0)
+        }
+
+        // sortEntries actually applies the comparator. Verify by
+        // putting entries in reverse order and checking the result.
+        test sortEntriesIntegration() {
+            var entries = List<TreeEntry>.newList<TreeEntry>()
+            entries.add(new TreeEntry("100644", "c", TreeBuilderTest.zeroSha()))
+            entries.add(new TreeEntry("100644", "a", TreeBuilderTest.zeroSha()))
+            entries.add(new TreeEntry("100644", "b", TreeBuilderTest.zeroSha()))
+            TreeBuilder.sortEntries(entries)
+            Assert.assertEquals("a", entries.get(0).name)
+            Assert.assertEquals("b", entries.get(1).name)
+            Assert.assertEquals("c", entries.get(2).name)
+        }
+
+        // Serialise format: `<ascii-octal-mode> <name>\0<20-byte-raw-sha>`,
+        // no separator between entries. One entry, count the bytes.
+        test serializeSingleEntry() {
+            var entries = List<TreeEntry>.newList<TreeEntry>()
+            entries.add(new TreeEntry("100644", "f.txt",
+                "0123456789abcdef0123456789abcdef01234567"))
+            var bytes = TreeBuilder.serialize(entries)
+            // "100644" (6) + ' ' (1) + "f.txt" (5) + NUL (1) + 20 = 33
+            Assert.assertEquals(33, bytes.length().toInt())
+            // First seven bytes: "100644 "
+            Assert.assertEquals(49, bytes[0UI].toInt())   // '1'
+            Assert.assertEquals(48, bytes[1UI].toInt())   // '0'
+            Assert.assertEquals(48, bytes[2UI].toInt())   // '0'
+            Assert.assertEquals(54, bytes[3UI].toInt())   // '6'
+            Assert.assertEquals(52, bytes[4UI].toInt())   // '4'
+            Assert.assertEquals(52, bytes[5UI].toInt())   // '4'
+            Assert.assertEquals(32, bytes[6UI].toInt())   // ' '
+            // Name "f.txt"
+            Assert.assertEquals(102, bytes[7UI].toInt())  // 'f'
+            // NUL between name and SHA
+            Assert.assertEquals(0, bytes[12UI].toInt())
+            // First raw SHA byte: 0x01
+            Assert.assertEquals(0x01, bytes[13UI].toInt())
+            // Last raw SHA byte: 0x67
+            Assert.assertEquals(0x67, bytes[32UI].toInt())
+        }
+
+        // Round-trip: serialize → parseTree should give back the
+        // same entries in the same order. WorkTree.parseTree is the
+        // reader half — covered here because TreeBuilder.serialize
+        // is the only producer.
+        test serializeParseRoundTrip() {
+            var entries = List<TreeEntry>.newList<TreeEntry>()
+            entries.add(new TreeEntry("100644", "a.txt",
+                "0123456789abcdef0123456789abcdef01234567"))
+            entries.add(new TreeEntry("100755", "run.sh",
+                "fedcba9876543210fedcba9876543210fedcba98"))
+            entries.add(new TreeEntry("40000", "sub",
+                "1111111111111111111111111111111111111111"))
+            TreeBuilder.sortEntries(entries)
+            var bytes = TreeBuilder.serialize(entries)
+            var parsed = WorkTree.parseTree(bytes)
+            Assert.assertEquals(entries.getSize(), parsed.getSize())
+            var i = 0
+            while (i < entries.getSize()) {
+                Assert.assertEquals(entries.get(i).mode, parsed.get(i).mode)
+                Assert.assertEquals(entries.get(i).name, parsed.get(i).name)
+                Assert.assertEquals(entries.get(i).sha,  parsed.get(i).sha)
+                i = i + 1
+            }
+        }
+
+        // Reference SHA: a tree with a single empty blob entry called
+        // "x.txt" at mode 100644. Cross-checked with real git:
+        //   (write empty blob, then)
+        //   git mktree <<< $'100644 blob e69de29bb2d1d6434b8b29ae775ad8c2e48c5391\tx.txt'
+        // → c3fe1f0484edb75ca3c4c5e49ba19d820c84c179
+        test treeWithEmptyBlobSha() {
+            var entries = List<TreeEntry>.newList<TreeEntry>()
+            entries.add(new TreeEntry("100644", "x.txt",
+                "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"))
+            var bytes = TreeBuilder.serialize(entries)
+            var sha = PackObject.computeSha("tree", bytes)
+            Assert.assertEquals("c3fe1f0484edb75ca3c4c5e49ba19d820c84c179", sha)
+        }
+
+        private static fun zeroSha(): String {
+            return "0000000000000000000000000000000000000000"
+        }
+    }
+}

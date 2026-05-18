@@ -1,0 +1,395 @@
+namespace Am.Git.Tests {
+
+    // MergeApplier — phase 3. Takes a `List<MergeEntry>` plan and
+    // writes the workdir + index. The trickiest behaviours are
+    // around conflict marker emission (whole-file markers, binary
+    // detection) and the three-stage index layout, so the tests
+    // focus there.
+    //
+    // Each test sets up a temp `./testmerge` dir with a fresh object
+    // store, runs the applier, and inspects the workdir + index
+    // result. Cleans up at the start of each test rather than the
+    // end so a failure leaves the state on disk for debugging.
+    class MergeApplierTest {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+        import Am.Git
+        import Am.Tests
+
+        // ------------- take-theirs ------------------------------------
+
+        test takeTheirsWritesBlobAndStage0() {
+            MergeApplierTest.cleanup()
+            var store = MergeApplierTest.fresh()
+            var theirsSha = MergeApplierTest.writeBlob(store, "theirs-content")
+            var idx = new GitIndex()
+            var applier = new MergeApplier("./testmerge/work", store, idx)
+
+            var plan = List<MergeEntry>.newList<MergeEntry>()
+            plan.add(new MergeEntry("foo.txt",
+                MergeApplierTest.absent(),
+                MergeApplierTest.absent(),
+                new MergeFile(theirsSha, "100644"),
+                MergePlan.outcomeTakeTheirs))
+
+            var conflicts = applier.apply(plan)
+            Assert.assertEquals(0, conflicts.getSize())
+
+            // Workdir got theirs content
+            var written = MergeApplierTest.readFileString("./testmerge/work/foo.txt")
+            Assert.assertEquals("theirs-content", written)
+
+            // Index has stage-0 entry at theirs' SHA
+            Assert.assertEquals(1, idx.entries.getSize())
+            var e = idx.entries.get(0)
+            Assert.assertEquals("foo.txt", e.path)
+            Assert.assertEquals(theirsSha, e.sha)
+            Assert.assertEquals(0, e.stage())
+        }
+
+        // theirs = null means "they deleted this path" — workdir
+        // file disappears, index loses the row.
+        test takeTheirsDeletesWhenTheirsIsNull() {
+            MergeApplierTest.cleanup()
+            var store = MergeApplierTest.fresh()
+            var baseSha = MergeApplierTest.writeBlob(store, "to-be-deleted")
+            // Pre-create the workdir file so we can verify it's
+            // actually removed.
+            Repository.writeBytes("./testmerge/work/gone.txt",
+                "to-be-deleted".toBytes("UTF-8"))
+            var idx = new GitIndex()
+            idx.entries.add(MergeApplierTest.makeEntry(
+                "gone.txt", baseSha, 0US))
+            var applier = new MergeApplier("./testmerge/work", store, idx)
+
+            var plan = List<MergeEntry>.newList<MergeEntry>()
+            plan.add(new MergeEntry("gone.txt",
+                new MergeFile(baseSha, "100644"),
+                new MergeFile(baseSha, "100644"),
+                MergeApplierTest.absent(),
+                MergePlan.outcomeTakeTheirs))
+
+            applier.apply(plan)
+
+            Assert.assertFalse(new File("./testmerge/work/gone.txt").exists())
+            Assert.assertEquals(0, idx.entries.getSize())
+        }
+
+        // ------------- take-ours --------------------------------------
+
+        // Workdir already on ours, so no file write. The applier just
+        // confirms index is at stage 0 (we pre-populated it).
+        test takeOursLeavesWorkdirAndKeepsStage0() {
+            MergeApplierTest.cleanup()
+            var store = MergeApplierTest.fresh()
+            var oursSha = MergeApplierTest.writeBlob(store, "ours-content")
+            // Workdir is HEAD = ours already.
+            Repository.writeBytes("./testmerge/work/foo.txt",
+                "ours-content".toBytes("UTF-8"))
+            var idx = new GitIndex()
+            idx.entries.add(MergeApplierTest.makeEntry(
+                "foo.txt", oursSha, 0US))
+            var applier = new MergeApplier("./testmerge/work", store, idx)
+
+            var plan = List<MergeEntry>.newList<MergeEntry>()
+            plan.add(new MergeEntry("foo.txt",
+                MergeApplierTest.absent(),
+                new MergeFile(oursSha, "100644"),
+                MergeApplierTest.absent(),
+                MergePlan.outcomeTakeOurs))
+
+            applier.apply(plan)
+
+            var written = MergeApplierTest.readFileString("./testmerge/work/foo.txt")
+            Assert.assertEquals("ours-content", written)
+            Assert.assertEquals(1, idx.entries.getSize())
+            Assert.assertEquals(0, idx.entries.get(0).stage())
+            Assert.assertEquals(oursSha, idx.entries.get(0).sha)
+        }
+
+        // ------------- conflicts --------------------------------------
+
+        // Both-modified text conflict: three stage rows in index,
+        // whole-file markers in workdir.
+        test conflictBothModifiedWritesMarkersAndStages() {
+            MergeApplierTest.cleanup()
+            var store = MergeApplierTest.fresh()
+            var baseSha   = MergeApplierTest.writeBlob(store, "base")
+            var oursSha   = MergeApplierTest.writeBlob(store, "ours")
+            var theirsSha = MergeApplierTest.writeBlob(store, "theirs")
+            var idx = new GitIndex()
+            var applier = new MergeApplier("./testmerge/work", store, idx)
+
+            var plan = List<MergeEntry>.newList<MergeEntry>()
+            plan.add(new MergeEntry("f.txt",
+                new MergeFile(baseSha,   "100644"),
+                new MergeFile(oursSha,   "100644"),
+                new MergeFile(theirsSha, "100644"),
+                MergePlan.outcomeConflictBothModified))
+
+            var conflicts = applier.apply(plan)
+            Assert.assertEquals(1, conflicts.getSize())
+            Assert.assertEquals("f.txt", conflicts.get(0))
+
+            // Index: stage 1, 2, 3 for the same path.
+            Assert.assertEquals(3, idx.entries.getSize())
+            Assert.assertEquals(1, MergeApplierTest.stageOf(idx, "f.txt", baseSha))
+            Assert.assertEquals(2, MergeApplierTest.stageOf(idx, "f.txt", oursSha))
+            Assert.assertEquals(3, MergeApplierTest.stageOf(idx, "f.txt", theirsSha))
+
+            // Workdir: whole-file marker layout.
+            var content = MergeApplierTest.readFileString("./testmerge/work/f.txt")
+            Assert.assertEquals(
+                "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n",
+                content)
+        }
+
+        // Add/add: no base (stage 1 absent), markers between ours
+        // and theirs.
+        test conflictAddAddWritesTwoStagesAndMarkers() {
+            MergeApplierTest.cleanup()
+            var store = MergeApplierTest.fresh()
+            var oursSha   = MergeApplierTest.writeBlob(store, "ours-add")
+            var theirsSha = MergeApplierTest.writeBlob(store, "theirs-add")
+            var idx = new GitIndex()
+            var applier = new MergeApplier("./testmerge/work", store, idx)
+
+            var plan = List<MergeEntry>.newList<MergeEntry>()
+            plan.add(new MergeEntry("new.txt",
+                MergeApplierTest.absent(),
+                new MergeFile(oursSha,   "100644"),
+                new MergeFile(theirsSha, "100644"),
+                MergePlan.outcomeConflictAddAdd))
+
+            applier.apply(plan)
+
+            // Two stage rows (no stage 1 because no base).
+            Assert.assertEquals(2, idx.entries.getSize())
+            Assert.assertEquals(2, MergeApplierTest.stageOf(idx, "new.txt", oursSha))
+            Assert.assertEquals(3, MergeApplierTest.stageOf(idx, "new.txt", theirsSha))
+
+            var content = MergeApplierTest.readFileString("./testmerge/work/new.txt")
+            Assert.assertEquals(
+                "<<<<<<< HEAD\nours-add\n=======\ntheirs-add\n>>>>>>> branch\n",
+                content)
+        }
+
+        // Binary file conflict — markers must NOT be written (would
+        // corrupt the binary). Index still gets the three stages.
+        test conflictBinaryFileSkipsMarkers() {
+            MergeApplierTest.cleanup()
+            var store = MergeApplierTest.fresh()
+            // Each blob has an embedded NUL → recognised as binary.
+            // Differ in the last byte so the three blob SHAs are
+            // distinct.
+            var binBase   = MergeApplierTest.writeBlobBytes(store,
+                MergeApplierTest.binaryBytes(0x47.toUByte()))
+            var binOurs   = MergeApplierTest.writeBlobBytes(store,
+                MergeApplierTest.binaryBytes(0x48.toUByte()))
+            var binTheirs = MergeApplierTest.writeBlobBytes(store,
+                MergeApplierTest.binaryBytes(0x49.toUByte()))
+            var idx = new GitIndex()
+            var applier = new MergeApplier("./testmerge/work", store, idx)
+
+            var plan = List<MergeEntry>.newList<MergeEntry>()
+            plan.add(new MergeEntry("img.png",
+                new MergeFile(binBase,   "100644"),
+                new MergeFile(binOurs,   "100644"),
+                new MergeFile(binTheirs, "100644"),
+                MergePlan.outcomeConflictBothModified))
+
+            applier.apply(plan)
+
+            // Workdir got ours' raw bytes — no marker corruption.
+            var written = MergeApplierTest.readFileBytes("./testmerge/work/img.png")
+            Assert.assertEquals(5, written.length().toInt())
+            Assert.assertEquals(0x89, written[0UI].toInt())
+            Assert.assertEquals(0, written[2UI].toInt())
+            Assert.assertEquals(0x48, written[4UI].toInt())
+
+            // Index still records all three stages.
+            Assert.assertEquals(3, idx.entries.getSize())
+        }
+
+        // Conflict-deleted-by-us: we deleted, they modified. Workdir
+        // file is absent (the path doesn't exist locally); index gets
+        // stage 1 (base) and stage 3 (theirs) only.
+        test conflictDeletedByUsWritesBaseAndTheirsOnly() {
+            MergeApplierTest.cleanup()
+            var store = MergeApplierTest.fresh()
+            var baseSha   = MergeApplierTest.writeBlob(store, "base-deleted-by-us")
+            var theirsSha = MergeApplierTest.writeBlob(store, "modified-by-them")
+            var idx = new GitIndex()
+            var applier = new MergeApplier("./testmerge/work", store, idx)
+
+            var plan = List<MergeEntry>.newList<MergeEntry>()
+            plan.add(new MergeEntry("dropped.txt",
+                new MergeFile(baseSha,   "100644"),
+                MergeApplierTest.absent(),
+                new MergeFile(theirsSha, "100644"),
+                MergePlan.outcomeConflictDeletedByUs))
+
+            applier.apply(plan)
+
+            // Two stages: 1=base, 3=theirs. No stage 2 because ours
+            // is the deletion side.
+            Assert.assertEquals(2, idx.entries.getSize())
+            Assert.assertEquals(1, MergeApplierTest.stageOf(idx, "dropped.txt", baseSha))
+            Assert.assertEquals(3, MergeApplierTest.stageOf(idx, "dropped.txt", theirsSha))
+
+            // With ours = null (no content), the marker block has an
+            // empty top half (just the marker lines wrapping
+            // theirs).
+            var content = MergeApplierTest.readFileString("./testmerge/work/dropped.txt")
+            Assert.assertEquals(
+                "<<<<<<< HEAD\n\n=======\nmodified-by-them\n>>>>>>> branch\n",
+                content)
+        }
+
+        // ------------- mixed -------------------------------------------
+
+        // A realistic plan: one auto-resolved file (take-theirs) and
+        // one conflict. The applier must report only the conflict
+        // path and write both outcomes correctly.
+        test mixedPlanReportsOnlyConflicts() {
+            MergeApplierTest.cleanup()
+            var store = MergeApplierTest.fresh()
+            var theirsClean = MergeApplierTest.writeBlob(store, "they-changed")
+            var baseConflict   = MergeApplierTest.writeBlob(store, "base-c")
+            var oursConflict   = MergeApplierTest.writeBlob(store, "ours-c")
+            var theirsConflict = MergeApplierTest.writeBlob(store, "theirs-c")
+            var idx = new GitIndex()
+            var applier = new MergeApplier("./testmerge/work", store, idx)
+
+            var plan = List<MergeEntry>.newList<MergeEntry>()
+            plan.add(new MergeEntry("clean.txt",
+                MergeApplierTest.absent(),
+                MergeApplierTest.absent(),
+                new MergeFile(theirsClean, "100644"),
+                MergePlan.outcomeTakeTheirs))
+            plan.add(new MergeEntry("conflict.txt",
+                new MergeFile(baseConflict,   "100644"),
+                new MergeFile(oursConflict,   "100644"),
+                new MergeFile(theirsConflict, "100644"),
+                MergePlan.outcomeConflictBothModified))
+
+            var conflicts = applier.apply(plan)
+            Assert.assertEquals(1, conflicts.getSize())
+            Assert.assertEquals("conflict.txt", conflicts.get(0))
+
+            // clean.txt: stage-0 entry, workdir has theirs content
+            Assert.assertEquals(0, MergeApplierTest.stageOf(idx, "clean.txt", theirsClean))
+            Assert.assertEquals("they-changed",
+                MergeApplierTest.readFileString("./testmerge/work/clean.txt"))
+
+            // conflict.txt: three stage rows
+            Assert.assertEquals(1, MergeApplierTest.stageOf(idx, "conflict.txt", baseConflict))
+            Assert.assertEquals(2, MergeApplierTest.stageOf(idx, "conflict.txt", oursConflict))
+            Assert.assertEquals(3, MergeApplierTest.stageOf(idx, "conflict.txt", theirsConflict))
+        }
+
+        // ---- helpers --------------------------------------------------
+
+        // Fresh store under ./testmerge/.git (acts as gitDir for the
+        // LooseObjectWriter the helper uses).
+        private static fun fresh(): ObjectStore {
+            return new ObjectStore("./testmerge/.git")
+        }
+
+        // Write a UTF-8 string as a blob into the store, return its
+        // SHA. The store gets read-back via ObjectStore.read so we
+        // don't need to bypass any caching.
+        private static fun writeBlob(store: ObjectStore, content: String): String {
+            return MergeApplierTest.writeBlobBytes(store, content.toBytes("UTF-8"))
+        }
+
+        private static fun writeBlobBytes(store: ObjectStore, bytes: UByte[]): String {
+            var writer = new LooseObjectWriter("./testmerge/.git")
+            return writer.write("blob", bytes)
+        }
+
+        // 5 bytes with an embedded NUL — varies the last byte so
+        // distinct calls produce distinct blob SHAs. Embedded NUL
+        // forces our `looksBinary` heuristic to return true.
+        private static fun binaryBytes(lastByte: UByte): UByte[] {
+            var out = new UByte[5UI]
+            out[0UI] = 0x89UB
+            out[1UI] = 0x50UB
+            out[2UI] = 0UB       // <- the NUL that marks it binary
+            out[3UI] = 0x4eUB
+            out[4UI] = lastByte
+            return out
+        }
+
+        // Make an IndexEntry at the requested raw flag (and thus
+        // stage) for a path/sha. Used to pre-populate the index
+        // before invoking the applier.
+        private static fun makeEntry(path: String, sha: String, flags: UShort): IndexEntry {
+            return new IndexEntry(
+                path, sha, 33188UI, 0UI,
+                0UI, 0UI, 0UI, 0UI,
+                0UI, 0UI, 0UI, 0UI,
+                flags)
+        }
+
+        // Find the entry with (path, sha) and return its stage.
+        // Returns -1 if not found — Assert.assertEquals comparing to
+        // an expected stage will fail loudly enough.
+        private static fun stageOf(idx: GitIndex, path: String, sha: String): Int {
+            var i = 0
+            while (i < idx.entries.getSize()) {
+                var e = idx.entries.get(i)
+                if (e.path == path && e.sha == sha) {
+                    return e.stage()
+                }
+                i = i + 1
+            }
+            return -1
+        }
+
+        private static fun readFileString(path: String): String {
+            var bytes = MergeApplierTest.readFileBytes(path)
+            return String.fromBytes(bytes, "UTF-8")
+        }
+
+        private static fun readFileBytes(path: String): UByte[] {
+            var f = new File(path)
+            var stream = new FileStream(f, FileAccess.readOnly)
+            return stream.readAll()
+        }
+
+        // Typed `null` for `MergeFile` parameter slots — same idiom
+        // as the other test files. We could drop these once the
+        // compiler's null-arg inference covers literal `null` at
+        // every call site we hit; for now a typed local is safest.
+        private static fun absent(): MergeFile {
+            var f: MergeFile = null
+            return f
+        }
+
+        // Walk the test dir and remove every file + every subdir.
+        // We do this at the start of each test (not the end) so a
+        // failed test leaves the on-disk state intact for
+        // debugging.
+        private static fun cleanup() {
+            MergeApplierTest.deleteRecursive("./testmerge")
+        }
+
+        private static fun deleteRecursive(path: String) {
+            var f = new File(path)
+            if (!f.exists()) {
+                return
+            }
+            if (f.isDirectory()) {
+                var children = f.listFiles()
+                var i = 0
+                while (i < children.length().toInt()) {
+                    MergeApplierTest.deleteRecursive(children[i.toUInt()].toString())
+                    i = i + 1
+                }
+            }
+            f.delete()
+        }
+    }
+}

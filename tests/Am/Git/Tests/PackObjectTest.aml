@@ -1,0 +1,74 @@
+namespace Am.Git.Tests {
+
+    // PackObject — wrap + SHA-1 hashing of git object content. Wrong
+    // wrapping would mean every commit, tree, and blob we write has
+    // a SHA real git can't reproduce, which silently desyncs the
+    // repository from anything we exchange with it.
+    class PackObjectTest {
+        import Am.Lang
+        import Am.Git
+        import Am.Tests
+
+        // Reference vector: SHA-1 of `"blob 0\0"` is the well-known
+        // empty-blob SHA `e69de29bb2d1d6434b8b29ae775ad8c2e48c5391`.
+        // Real git uses this constant as the SHA of an empty file.
+        test emptyBlobSha() {
+            var content = new UByte[0UI]
+            var sha = PackObject.computeSha("blob", content)
+            Assert.assertEquals("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391", sha)
+        }
+
+        // Reference vector: SHA-1 of `"tree 0\0"` is the well-known
+        // empty-tree SHA. Both clone and commit code paths rely on
+        // producing exactly this string for an empty root tree.
+        test emptyTreeSha() {
+            var content = new UByte[0UI]
+            var sha = PackObject.computeSha("tree", content)
+            Assert.assertEquals("4b825dc642cb6eb9a060e54bf8d69288fbee4904", sha)
+        }
+
+        // The wrapper bytes must be `"<type> <decimal-size>\0<content>"`
+        // — embedded NUL between header and body is what trips up a
+        // naive String-based implementation. We verify the NUL is
+        // exactly at the right offset.
+        test wrapEmbedsNulAtCorrectOffset() {
+            var content = "hello".toBytes("UTF-8")
+            var wrapped = PackObject.wrapForSha("blob", content)
+            // "blob 5" = 6 bytes, then NUL at index 6, then 5 content bytes.
+            Assert.assertEquals(12, wrapped.length().toInt())
+            Assert.assertEquals(0, wrapped[6UI].toInt())
+            // "blob "
+            Assert.assertEquals(98, wrapped[0UI].toInt())   // 'b'
+            Assert.assertEquals(108, wrapped[1UI].toInt())  // 'l'
+            Assert.assertEquals(111, wrapped[2UI].toInt())  // 'o'
+            Assert.assertEquals(98, wrapped[3UI].toInt())   // 'b'
+            Assert.assertEquals(32, wrapped[4UI].toInt())   // ' '
+            // "5"
+            Assert.assertEquals(53, wrapped[5UI].toInt())
+            // Content "hello" past the NUL.
+            Assert.assertEquals(104, wrapped[7UI].toInt())  // 'h'
+            Assert.assertEquals(111, wrapped[11UI].toInt()) // 'o'
+        }
+
+        // Reference vector for "hello" as a blob. Cross-checked with
+        //   git hash-object --stdin <<< 'hello'   (with trailing newline)
+        // Without the newline:
+        //   printf hello | git hash-object --stdin
+        // → b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0
+        test helloBlobSha() {
+            var content = "hello".toBytes("UTF-8")
+            var sha = PackObject.computeSha("blob", content)
+            Assert.assertEquals("b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0", sha)
+        }
+
+        // typeName mapping must round-trip with LooseObjectReader's
+        // typeCodeOf. A mismatch would mark e.g. a tree as a blob and
+        // break checkout.
+        test typeNamesForKnownCodes() {
+            Assert.assertEquals("commit", new PackObject(1, new UByte[0UI]).typeName())
+            Assert.assertEquals("tree",   new PackObject(2, new UByte[0UI]).typeName())
+            Assert.assertEquals("blob",   new PackObject(3, new UByte[0UI]).typeName())
+            Assert.assertEquals("tag",    new PackObject(4, new UByte[0UI]).typeName())
+        }
+    }
+}

@@ -1,0 +1,285 @@
+namespace Am.Git
+{
+    // One file's content + mode inside a single tree (base / ours /
+    // theirs). `null` slots in MergeEntry mean the path was absent
+    // from that side's tree, which carries real meaning (a delete vs.
+    // a never-existed differs only in context, not in this object).
+    class MergeFile(var sha: String, var mode: String)
+    {
+        import Am.Lang
+    }
+
+    // One path's verdict in a 3-way merge.
+    //
+    // `baseFile`/`ours`/`theirs` are nullable — null means the file
+    // doesn't exist in that side's tree. `outcome` is one of the
+    // `MergePlan.outcome*` constants; see those for what each value
+    // means and what a phase-3 applier should do.
+    //
+    // (Renamed from `base` because AmLang reserves that as a keyword
+    // for parent-class access.)
+    class MergeEntry(
+        var path: String,
+        var baseFile: MergeFile,
+        var ours: MergeFile,
+        var theirs: MergeFile,
+        var outcome: Int
+    )
+    {
+        import Am.Lang
+    }
+
+    // Pure three-way tree classifier. Given three tree SHAs (base,
+    // ours, theirs) it walks all three and produces one MergeEntry
+    // per path, classifying each as either auto-resolvable or a
+    // conflict. No disk writes — the merge command consumes this
+    // plan and decides what to write where.
+    //
+    // The classification rules mirror git's:
+    //
+    //   ours == theirs            → take either (unchanged)
+    //   ours == base              → take theirs (only theirs changed)
+    //   theirs == base            → take ours   (only ours changed)
+    //   base == null,             → both added different content
+    //     ours != theirs            (add/add conflict)
+    //   ours == null              → modified by them, deleted by us
+    //                               (modify/delete conflict)
+    //   theirs == null            → modified by us, deleted by them
+    //                               (modify/delete conflict)
+    //   otherwise                 → both modified differently
+    //                               (content conflict — needs markers)
+    //
+    // Without a line-level diff we can't tell whether two divergent
+    // edits actually touch the same lines, so any "both modified
+    // differently" is a conflict in our world. Real git auto-merges
+    // disjoint hunks; we don't yet.
+    class MergePlan
+    {
+        import Am.Lang
+        import Am.Collections
+
+        // Outcome codes. Picked plain Ints so MergeEntry has no
+        // recursive deps on a separate enum class; `outcomeName` maps
+        // them back to printable strings for debugging.
+        static var outcomeUnchanged: Int = 0
+        static var outcomeTakeOurs: Int = 1
+        static var outcomeTakeTheirs: Int = 2
+        static var outcomeConflictBothModified: Int = 3
+        static var outcomeConflictDeletedByUs: Int = 4
+        static var outcomeConflictDeletedByThem: Int = 5
+        static var outcomeConflictAddAdd: Int = 6
+
+        // Compute the plan. `baseTreeSha` may be null (unrelated
+        // histories — caller usually bails before getting here) which
+        // is treated as the empty tree.
+        static fun compute(baseTreeSha: String,
+                           oursTreeSha: String,
+                           theirsTreeSha: String,
+                           store: ObjectStore): List<MergeEntry> {
+            var baseMap = MergePlan.flattenTree(baseTreeSha, store)
+            var oursMap = MergePlan.flattenTree(oursTreeSha, store)
+            var theirsMap = MergePlan.flattenTree(theirsTreeSha, store)
+
+            // Union of all paths — walk each map's keys and dedup via
+            // a HashSet, then sort for deterministic output.
+            var seen = new HashSet<String>()
+            MergePlan.addKeys(baseMap, seen)
+            MergePlan.addKeys(oursMap, seen)
+            MergePlan.addKeys(theirsMap, seen)
+
+            var paths = MergePlan.collectAndSort(seen)
+            var out = List<MergeEntry>.newList<MergeEntry>()
+            var i = 0
+            while (i < paths.getSize()) {
+                var p = paths.get(i)
+                var b: MergeFile = null
+                var o: MergeFile = null
+                var t: MergeFile = null
+                if (baseMap.containsKey(p))   { b = baseMap.get(p) }
+                if (oursMap.containsKey(p))   { o = oursMap.get(p) }
+                if (theirsMap.containsKey(p)) { t = theirsMap.get(p) }
+                var outcome = MergePlan.classifyOne(b, o, t)
+                out.add(new MergeEntry(p, b, o, t, outcome))
+                i = i + 1
+            }
+            return out
+        }
+
+        // Decide the outcome for one path given its three versions.
+        // Each arg may be null (absent in that tree).
+        private static fun classifyOne(b: MergeFile, o: MergeFile, t: MergeFile): Int {
+            if (MergePlan.fileEqual(o, t)) {
+                // Same final content on both sides → not a conflict,
+                // even if it's a divergent rewrite both made the same
+                // way. Counts as "unchanged" relative to the merge.
+                return MergePlan.outcomeUnchanged
+            }
+            if (MergePlan.fileEqual(o, b)) {
+                // Only theirs changed.
+                return MergePlan.outcomeTakeTheirs
+            }
+            if (MergePlan.fileEqual(t, b)) {
+                // Only ours changed.
+                return MergePlan.outcomeTakeOurs
+            }
+            // From here on, all three differ in some way.
+            if (b == null) {
+                // Neither side inherited a base — both added different
+                // content at the same path.
+                return MergePlan.outcomeConflictAddAdd
+            }
+            if (o == null) {
+                // We deleted; they modified.
+                return MergePlan.outcomeConflictDeletedByUs
+            }
+            if (t == null) {
+                // We modified; they deleted.
+                return MergePlan.outcomeConflictDeletedByThem
+            }
+            // Both modified, neither matches base, neither matches the
+            // other → real content conflict.
+            return MergePlan.outcomeConflictBothModified
+        }
+
+        // Two `MergeFile`s are equal iff both are null, or both are
+        // non-null and have matching SHA + mode. Mode equality matters
+        // because a file→symlink retype is a semantic change even
+        // when content hashes are identical.
+        private static fun fileEqual(a: MergeFile, b: MergeFile): Bool {
+            if (a == null && b == null) {
+                return true
+            }
+            if (a == null || b == null) {
+                return false
+            }
+            return a.sha == b.sha && a.mode == b.mode
+        }
+
+        // Recursively flatten a tree into path → MergeFile. Empty
+        // trees (incl. a null SHA, treated as empty) produce an empty
+        // map — caller doesn't need to special-case that.
+        private static fun flattenTree(treeSha: String, store: ObjectStore): HashMap<String, MergeFile> {
+            var out = new HashMap<String, MergeFile>()
+            if (treeSha == null) {
+                return out
+            }
+            MergePlan.flattenInto(treeSha, "", store, out)
+            return out
+        }
+
+        private static fun flattenInto(treeSha: String, prefix: String,
+                                        store: ObjectStore, out: HashMap<String, MergeFile>) {
+            if (!store.has(treeSha)) {
+                return
+            }
+            var obj = store.read(treeSha)
+            if (obj.typeCode != 2) {
+                return
+            }
+            var entries = WorkTree.parseTree(obj.content)
+            var i = 0
+            while (i < entries.getSize()) {
+                var e = entries.get(i)
+                var p = MergePlan.joinPath(prefix, e.name)
+                if (e.isTree()) {
+                    MergePlan.flattenInto(e.sha, p, store, out)
+                } else if (e.isFile() || e.isSymlink()) {
+                    out.set(p, new MergeFile(e.sha, e.mode))
+                }
+                // Gitlinks (160000) and anything else we don't model
+                // are intentionally skipped — same policy as elsewhere.
+                i = i + 1
+            }
+        }
+
+        private static fun joinPath(prefix: String, name: String): String {
+            if (prefix.length() == 0) {
+                return name
+            }
+            return prefix + "/" + name
+        }
+
+        private static fun addKeys(m: HashMap<String, MergeFile>, into: HashSet<String>) {
+            var keys = m.buildKeys()
+            var i = 0
+            while (i < keys.getSize()) {
+                into.add(keys.get(i))
+                i = i + 1
+            }
+        }
+
+        // HashSet → bytewise-sorted List<String>. Sorted output makes
+        // the plan deterministic and easy to diff in tests.
+        private static fun collectAndSort(set: HashSet<String>): List<String> {
+            var raw = List<String>.newList<String>()
+            var it = set.iterator()
+            loop {
+                if (!it.hasNext()) {
+                    break
+                }
+                raw.add(it.next())
+            }
+            // Bubble sort — small N, keeps deps minimal.
+            var n = raw.getSize()
+            var i = 0
+            while (i < n - 1) {
+                var j = 0
+                while (j < n - 1 - i) {
+                    if (MergePlan.compareBytewise(raw.get(j), raw.get(j + 1)) > 0) {
+                        var tmp = raw.get(j)
+                        raw.set(j, raw.get(j + 1))
+                        raw.set(j + 1, tmp)
+                    }
+                    j = j + 1
+                }
+                i = i + 1
+            }
+            return raw
+        }
+
+        private static fun compareBytewise(a: String, b: String): Int {
+            var la = a.length()
+            var lb = b.length()
+            var min = la
+            if (lb < min) {
+                min = lb
+            }
+            var i: UInt = 0UI
+            while (i.toInt() < min) {
+                var ca = a.characterAt(i).toInt()
+                var cb = b.characterAt(i).toInt()
+                if (ca != cb) {
+                    return ca - cb
+                }
+                i++
+            }
+            return la - lb
+        }
+
+        // Stringify an outcome for `merge-plan` debug output. Kept in
+        // one place so the printable names don't drift from the
+        // constants above.
+        static fun outcomeName(outcome: Int): String {
+            if (outcome == MergePlan.outcomeUnchanged)            { return "unchanged" }
+            if (outcome == MergePlan.outcomeTakeOurs)             { return "take-ours" }
+            if (outcome == MergePlan.outcomeTakeTheirs)           { return "take-theirs" }
+            if (outcome == MergePlan.outcomeConflictBothModified) { return "conflict-both-modified" }
+            if (outcome == MergePlan.outcomeConflictDeletedByUs)  { return "conflict-deleted-by-us" }
+            if (outcome == MergePlan.outcomeConflictDeletedByThem){ return "conflict-deleted-by-them" }
+            if (outcome == MergePlan.outcomeConflictAddAdd)       { return "conflict-add-add" }
+            return "unknown"
+        }
+
+        // Convenience: true iff any entry's outcome is a conflict.
+        static fun hasConflicts(plan: List<MergeEntry>): Bool {
+            var i = 0
+            while (i < plan.getSize()) {
+                if (plan.get(i).outcome >= MergePlan.outcomeConflictBothModified) {
+                    return true
+                }
+                i = i + 1
+            }
+            return false
+        }
+    }
+}

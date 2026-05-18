@@ -1,0 +1,171 @@
+namespace Am.Git.Tests {
+
+    // LooseObjectWriter + LooseObjectReader round-trip — write a blob/
+    // tree/commit to `.git/objects/<xx>/<rest>`, read it back, verify
+    // bytes and SHA match. This is the deepest end-to-end coverage of
+    // object storage; it exercises wrapping, zlib deflate, file I/O,
+    // zlib inflate, and parsing all in one path.
+    //
+    // Uses `./testloose` as a fake .git dir. The directory layout
+    // mirrors a real .git: `objects/<xx>/<rest>` files.
+    class LooseObjectTest {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+        import Am.Git
+        import Am.Tests
+
+        // Small ASCII blob — covers the typical short-loose-object
+        // path that real-world git hits on every commit.
+        test writeReadBlobRoundTrip() {
+            LooseObjectTest.cleanupTestDir()
+            try {
+                var content = "hello, world!".toBytes("UTF-8")
+                var writer = new LooseObjectWriter("./testloose")
+                var sha = writer.write("blob", content)
+
+                var reader = new LooseObjectReader("./testloose")
+                var obj = reader.read(sha)
+                Assert.assertEquals(3, obj.typeCode)   // 3 = blob
+                Assert.assertEquals(content.length().toInt(),
+                                     obj.content.length().toInt())
+                var i: UInt = 0UI
+                while (i < content.length()) {
+                    Assert.assertEquals(content[i].toInt(), obj.content[i].toInt())
+                    i++
+                }
+                Assert.assertEquals(sha, obj.sha)
+            } catch (ex: Exception) {
+                LooseObjectTest.cleanupTestDir()
+                throw ex
+            }
+            LooseObjectTest.cleanupTestDir()
+        }
+
+        // Tree object — different type code, exercise the same path
+        // with a binary-ish payload (mode/name/raw-SHA bytes with
+        // embedded NULs and high-bit chars).
+        test writeReadTreeRoundTrip() {
+            LooseObjectTest.cleanupTestDir()
+            try {
+                var entries = List<TreeEntry>.newList<TreeEntry>()
+                entries.add(new TreeEntry("100644", "f.txt",
+                    "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"))
+                var content = TreeBuilder.serialize(entries)
+
+                var writer = new LooseObjectWriter("./testloose")
+                var sha = writer.write("tree", content)
+
+                var reader = new LooseObjectReader("./testloose")
+                var obj = reader.read(sha)
+                Assert.assertEquals(2, obj.typeCode)   // 2 = tree
+                Assert.assertEquals(content.length().toInt(),
+                                     obj.content.length().toInt())
+                // Parsing back must yield the same entry.
+                var parsed = WorkTree.parseTree(obj.content)
+                Assert.assertEquals(1, parsed.getSize())
+                Assert.assertEquals("100644", parsed.get(0).mode)
+                Assert.assertEquals("f.txt",  parsed.get(0).name)
+                Assert.assertEquals("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+                                     parsed.get(0).sha)
+            } catch (ex: Exception) {
+                LooseObjectTest.cleanupTestDir()
+                throw ex
+            }
+            LooseObjectTest.cleanupTestDir()
+        }
+
+        // Writing the same content twice must return the same SHA
+        // (content-addressed) and not duplicate work. The writer's
+        // `written` map should also contain the object.
+        test writeIsContentAddressed() {
+            LooseObjectTest.cleanupTestDir()
+            try {
+                var content = "duplicate".toBytes("UTF-8")
+                var writer = new LooseObjectWriter("./testloose")
+                var sha1 = writer.write("blob", content)
+                var sha2 = writer.write("blob", content)
+                Assert.assertEquals(sha1, sha2)
+                Assert.assertTrue(writer.written.containsKey(sha1))
+            } catch (ex: Exception) {
+                LooseObjectTest.cleanupTestDir()
+                throw ex
+            }
+            LooseObjectTest.cleanupTestDir()
+        }
+
+        // Empty content — produces the canonical empty-blob SHA and
+        // must still round-trip. Real git happily stores empty blobs;
+        // we should too.
+        test writeReadEmptyBlob() {
+            LooseObjectTest.cleanupTestDir()
+            try {
+                var content = new UByte[0UI]
+                var writer = new LooseObjectWriter("./testloose")
+                var sha = writer.write("blob", content)
+                Assert.assertEquals("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391", sha)
+
+                var reader = new LooseObjectReader("./testloose")
+                var obj = reader.read(sha)
+                Assert.assertEquals(3, obj.typeCode)
+                Assert.assertEquals(0, obj.content.length().toInt())
+            } catch (ex: Exception) {
+                LooseObjectTest.cleanupTestDir()
+                throw ex
+            }
+            LooseObjectTest.cleanupTestDir()
+        }
+
+        // Reader's pathFor must agree with the writer's. Cross-checked
+        // by computing the SHA, writing via the writer, then probing
+        // the reader's path.
+        test readerWriterPathsAgree() {
+            LooseObjectTest.cleanupTestDir()
+            try {
+                var content = "path-check".toBytes("UTF-8")
+                var writer = new LooseObjectWriter("./testloose")
+                var sha = writer.write("blob", content)
+
+                var reader = new LooseObjectReader("./testloose")
+                Assert.assertEquals(writer.pathFor(sha), reader.pathFor(sha))
+
+                var f = new File(reader.pathFor(sha))
+                Assert.assertTrue(f.exists())
+            } catch (ex: Exception) {
+                LooseObjectTest.cleanupTestDir()
+                throw ex
+            }
+            LooseObjectTest.cleanupTestDir()
+        }
+
+        // Remove every file we wrote under `./testloose`. We don't
+        // have rmdir-recursive in AmLang yet, so we walk the known
+        // 2-char subdir structure ourselves.
+        private static fun cleanupTestDir() {
+            var root = new File("./testloose")
+            if (!root.exists()) {
+                return
+            }
+            var objectsDir = new File("./testloose/objects")
+            if (objectsDir.exists()) {
+                var subs = objectsDir.listFiles()
+                var i = 0
+                while (i < subs.length().toInt()) {
+                    var sub = subs[i.toUInt()]
+                    if (sub.isDirectory()) {
+                        var inner = sub.listFiles()
+                        var j = 0
+                        while (j < inner.length().toInt()) {
+                            inner[j.toUInt()].delete()
+                            j = j + 1
+                        }
+                        sub.delete()
+                    }
+                    i = i + 1
+                }
+                objectsDir.delete()
+            }
+            root.delete()
+        }
+    }
+}

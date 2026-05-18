@@ -1,0 +1,205 @@
+namespace Am.Git.Tests {
+
+    // GitIndex — DIRC v2 reader / writer. The on-disk format is fixed
+    // (real git has to read what we write and vice versa), so the
+    // tests here pin down the round-trip rather than re-deriving the
+    // bit layout. We exercise:
+    //
+    //   * basic single-entry round-trip
+    //   * multi-entry, with sorting
+    //   * conflict stages 1/2/3 for a single path
+    //   * upsert by (path, stage) — must NOT clobber other stages
+    //   * clearConflictStages — only stages 1/2/3, never stage 0
+    //   * hasUnmerged — true iff any stage > 0
+    //
+    // All tests use a private subdirectory under cwd so they don't
+    // collide with each other. The cwd is wherever the test runner
+    // launches the binary; we clean up after each test.
+    class GitIndexTest {
+        import Am.Lang
+        import Am.IO
+        import Am.Git
+        import Am.Tests
+
+        // Disk fixture: write index → read back → verify entries match.
+        test singleEntryRoundTrip() {
+            GitIndexTest.cleanupGitDir()
+            try {
+                var idx = new GitIndex()
+                idx.entries.add(GitIndexTest.entry(
+                    "a.txt",
+                    "0123456789abcdef0123456789abcdef01234567",
+                    33188UI, 0US))
+                idx.write("./testidx")
+
+                var read = GitIndex.read("./testidx")
+                Assert.assertEquals(1, read.entries.getSize())
+                var e = read.entries.get(0)
+                Assert.assertEquals("a.txt", e.path)
+                Assert.assertEquals("0123456789abcdef0123456789abcdef01234567", e.sha)
+                Assert.assertEquals(33188UI, e.mode)
+                Assert.assertEquals(0, e.stage())
+            } catch (ex: Exception) {
+                GitIndexTest.cleanupGitDir()
+                throw ex
+            }
+            GitIndexTest.cleanupGitDir()
+        }
+
+        // Multiple entries must round-trip in sorted order. We feed
+        // them in reverse alphabetic order; the writer sorts before
+        // emitting.
+        test multipleEntriesSorted() {
+            GitIndexTest.cleanupGitDir()
+            try {
+                var idx = new GitIndex()
+                idx.entries.add(GitIndexTest.entry("c", "1111111111111111111111111111111111111111", 33188UI, 0US))
+                idx.entries.add(GitIndexTest.entry("a", "2222222222222222222222222222222222222222", 33188UI, 0US))
+                idx.entries.add(GitIndexTest.entry("b", "3333333333333333333333333333333333333333", 33188UI, 0US))
+                idx.write("./testidx")
+
+                var read = GitIndex.read("./testidx")
+                Assert.assertEquals(3, read.entries.getSize())
+                Assert.assertEquals("a", read.entries.get(0).path)
+                Assert.assertEquals("b", read.entries.get(1).path)
+                Assert.assertEquals("c", read.entries.get(2).path)
+            } catch (ex: Exception) {
+                GitIndexTest.cleanupGitDir()
+                throw ex
+            }
+            GitIndexTest.cleanupGitDir()
+        }
+
+        // The three stages of a conflict must all survive the
+        // round-trip, in stage order 1, 2, 3 for the same path.
+        test conflictStagesRoundTrip() {
+            GitIndexTest.cleanupGitDir()
+            try {
+                var idx = new GitIndex()
+                idx.entries.add(GitIndexTest.entry(
+                    "f", "1111111111111111111111111111111111111111",
+                    33188UI, 0x1005US))
+                idx.entries.add(GitIndexTest.entry(
+                    "f", "2222222222222222222222222222222222222222",
+                    33188UI, 0x2005US))
+                idx.entries.add(GitIndexTest.entry(
+                    "f", "3333333333333333333333333333333333333333",
+                    33188UI, 0x3005US))
+                idx.write("./testidx")
+
+                var read = GitIndex.read("./testidx")
+                Assert.assertEquals(3, read.entries.getSize())
+                Assert.assertEquals(1, read.entries.get(0).stage())
+                Assert.assertEquals(2, read.entries.get(1).stage())
+                Assert.assertEquals(3, read.entries.get(2).stage())
+                Assert.assertEquals("1111111111111111111111111111111111111111",
+                                     read.entries.get(0).sha)
+                Assert.assertEquals("2222222222222222222222222222222222222222",
+                                     read.entries.get(1).sha)
+                Assert.assertEquals("3333333333333333333333333333333333333333",
+                                     read.entries.get(2).sha)
+            } catch (ex: Exception) {
+                GitIndexTest.cleanupGitDir()
+                throw ex
+            }
+            GitIndexTest.cleanupGitDir()
+        }
+
+        // upsert distinguishes by (path, stage). Updating stage 2
+        // must leave stages 1 and 3 untouched.
+        test upsertPreservesOtherStages() {
+            var idx = new GitIndex()
+            idx.entries.add(GitIndexTest.entry(
+                "f", "1111111111111111111111111111111111111111", 33188UI, 0x1005US))
+            idx.entries.add(GitIndexTest.entry(
+                "f", "2222222222222222222222222222222222222222", 33188UI, 0x2005US))
+            idx.entries.add(GitIndexTest.entry(
+                "f", "3333333333333333333333333333333333333333", 33188UI, 0x3005US))
+
+            // Replace stage 2.
+            idx.upsert(GitIndexTest.entry(
+                "f", "abababababababababababababababababababab", 33188UI, 0x2005US))
+
+            Assert.assertEquals(3, idx.entries.getSize())
+            // Find each stage and confirm.
+            var s1 = GitIndexTest.findStage(idx, "f", 1)
+            var s2 = GitIndexTest.findStage(idx, "f", 2)
+            var s3 = GitIndexTest.findStage(idx, "f", 3)
+            Assert.assertEquals("1111111111111111111111111111111111111111", s1.sha)
+            Assert.assertEquals("abababababababababababababababababababab", s2.sha)
+            Assert.assertEquals("3333333333333333333333333333333333333333", s3.sha)
+        }
+
+        // clearConflictStages removes stages 1/2/3 only. A stage-0
+        // resolved entry alongside the conflict stays.
+        test clearConflictStagesPreservesStageZero() {
+            var idx = new GitIndex()
+            idx.entries.add(GitIndexTest.entry(
+                "f", "1111111111111111111111111111111111111111", 33188UI, 0x1005US))
+            idx.entries.add(GitIndexTest.entry(
+                "f", "2222222222222222222222222222222222222222", 33188UI, 0x2005US))
+            idx.entries.add(GitIndexTest.entry(
+                "f", "3333333333333333333333333333333333333333", 33188UI, 0x3005US))
+            // A stage-0 resolved version (artificial but tests the
+            // boundary).
+            idx.entries.add(GitIndexTest.entry(
+                "f", "0000000000000000000000000000000000000000", 33188UI, 0x0005US))
+
+            var removed = idx.clearConflictStages("f")
+            Assert.assertEquals(3, removed)
+            Assert.assertEquals(1, idx.entries.getSize())
+            Assert.assertEquals(0, idx.entries.get(0).stage())
+            Assert.assertEquals("0000000000000000000000000000000000000000",
+                                 idx.entries.get(0).sha)
+        }
+
+        // hasUnmerged is true iff at least one entry is at stage > 0.
+        test hasUnmergedSemantics() {
+            var idx = new GitIndex()
+            Assert.assertFalse(idx.hasUnmerged())
+
+            idx.entries.add(GitIndexTest.entry(
+                "f", "0000000000000000000000000000000000000000", 33188UI, 0x0005US))
+            Assert.assertFalse(idx.hasUnmerged())
+
+            idx.entries.add(GitIndexTest.entry(
+                "g", "1111111111111111111111111111111111111111", 33188UI, 0x2007US))
+            Assert.assertTrue(idx.hasUnmerged())
+        }
+
+        // ---- helpers -------------------------------------------------
+
+        private static fun entry(path: String, sha: String, mode: UInt, flags: UShort): IndexEntry {
+            return new IndexEntry(
+                path, sha, mode, 0UI,
+                0UI, 0UI, 0UI, 0UI,
+                0UI, 0UI, 0UI, 0UI,
+                flags)
+        }
+
+        private static fun findStage(idx: GitIndex, path: String, stage: Int): IndexEntry {
+            var i = 0
+            while (i < idx.entries.getSize()) {
+                var e = idx.entries.get(i)
+                if (e.path == path && e.stage() == stage) {
+                    return e
+                }
+                i = i + 1
+            }
+            return null
+        }
+
+        // Remove the temp index dir so consecutive disk tests don't
+        // see each other's state. Tolerant of "doesn't exist".
+        private static fun cleanupGitDir() {
+            var f = new File("./testidx/index")
+            if (f.exists()) {
+                f.delete()
+            }
+            var d = new File("./testidx")
+            if (d.exists()) {
+                d.delete()
+            }
+        }
+    }
+}

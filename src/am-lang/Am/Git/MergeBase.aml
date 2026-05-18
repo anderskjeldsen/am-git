@@ -1,0 +1,115 @@
+namespace Am.Git
+{
+    // Lowest-common-ancestor of two commits in the DAG — the foundation
+    // for every merge / rebase / pull-with-merge that follows. Given
+    // two commit SHAs A and B, find the closest commit reachable from
+    // both.
+    //
+    // Algorithm:
+    //   1. Walk A's ancestry (including A itself) breadth-first into
+    //      a `HashSet<String>`.
+    //   2. Walk B's ancestry breadth-first; the first commit we visit
+    //      that's also in A's set is the merge-base.
+    //
+    // BFS-first-hit returns the commit closest to B in graph distance.
+    // For linear histories and "normal" branch topologies that's also
+    // the latest common ancestor (= what you want for a 3-way merge).
+    // For criss-cross merges with multiple valid merge-bases this just
+    // returns one of them; real git would recurse to find a virtual
+    // base, but that's a phase-4+ concern.
+    //
+    // Returns the merge-base SHA, or `null` if the commits have no
+    // shared ancestor (unrelated histories — git itself bails on
+    // these unless you pass `--allow-unrelated-histories`).
+    class MergeBase
+    {
+        import Am.Lang
+        import Am.Collections
+
+        // Either commit may be `null` (unborn branch) — we return null
+        // in that case, matching git's "no merge base" semantics.
+        static fun find(aSha: String, bSha: String, store: ObjectStore): String {
+            if (aSha == null || bSha == null) {
+                return null
+            }
+            // Fast-out: identical commits are their own merge-base.
+            if (aSha == bSha) {
+                return aSha
+            }
+
+            var ancestorsOfA = MergeBase.collectAncestors(aSha, store)
+            // If A wasn't even readable (missing object), the set is
+            // empty — no point walking B.
+            if (ancestorsOfA.getSize() == 0) {
+                return null
+            }
+
+            // BFS from B, return first hit.
+            var queue = List<String>.newList<String>()
+            queue.add(bSha)
+            var visited = new HashSet<String>()
+            loop {
+                if (queue.getSize() == 0) {
+                    break
+                }
+                var current = queue.get(0)
+                queue.removeAt(0)
+                if (visited.contains(current)) {
+                    continue
+                }
+                visited.add(current)
+                if (ancestorsOfA.contains(current)) {
+                    return current
+                }
+                var parents = MergeBase.parentsOf(current, store)
+                var i = 0
+                while (i < parents.getSize()) {
+                    queue.add(parents.get(i))
+                    i = i + 1
+                }
+            }
+            return null
+        }
+
+        // Every commit reachable from `sha` (including `sha` itself).
+        // Stops at missing objects rather than throwing so a shallow
+        // history doesn't abort the whole merge-base.
+        private static fun collectAncestors(sha: String, store: ObjectStore): HashSet<String> {
+            var set = new HashSet<String>()
+            var queue = List<String>.newList<String>()
+            queue.add(sha)
+            loop {
+                if (queue.getSize() == 0) {
+                    break
+                }
+                var current = queue.get(0)
+                queue.removeAt(0)
+                if (set.contains(current)) {
+                    continue
+                }
+                set.add(current)
+                var parents = MergeBase.parentsOf(current, store)
+                var i = 0
+                while (i < parents.getSize()) {
+                    queue.add(parents.get(i))
+                    i = i + 1
+                }
+            }
+            return set
+        }
+
+        // Empty list when the commit is missing or isn't actually a
+        // commit (typeCode != 1) — keeps the BFS simple.
+        private static fun parentsOf(sha: String, store: ObjectStore): List<String> {
+            if (!store.has(sha)) {
+                return List<String>.newList<String>()
+            }
+            var obj = store.read(sha)
+            if (obj.typeCode != 1) {
+                return List<String>.newList<String>()
+            }
+            var commit = Commit.parse(sha, obj.content)
+            return commit.parents
+        }
+    }
+}

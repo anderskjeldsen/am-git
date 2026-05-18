@@ -26,5 +26,23 @@ namespace Am.Git
     )
     {
         import Am.Lang
+
+        // Stage 0..3 — bits 12-13 of `flags`. 0 = resolved/normal,
+        // 1 = merge-base, 2 = ours (HEAD), 3 = theirs (other branch).
+        // Real git uses this layout when a merge leaves conflicts; we
+        // do too. See GitIndex header comment for the full flag map.
+        fun stage(): Int {
+            return ((this.flags.toInt() / 4096) & 3)
+        }
+
+        // Replace this entry's stage bits with `s` (0..3). Leaves
+        // assume-valid / extended / namelen bits untouched.
+        fun setStage(s: Int) {
+            // Mask off old stage (bits 12-13 = 0x3000), then OR in the
+            // new stage in the same position.
+            var cleared = this.flags.toInt() & 53247   // 0xFFFF ^ 0x3000 = 0xCFFF = 53247
+            var withStage = cleared | ((s & 3) * 4096) // s << 12
+            this.flags = withStage.toUShort()
+        }
     }
 }

@@ -49,5 +49,8 @@ deps:
 run:
 	$(CMD) run . -bt $(HOST_BT) -ll $(LOGLEVEL) $(LPP)
 
+test:
+	$(CMD) test . -bt $(HOST_BT) -ll $(LOGLEVEL) $(LPP)
+
 clean:
 	rm -rf builds

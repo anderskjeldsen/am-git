@@ -1,0 +1,93 @@
+namespace Am.Git.Tests {
+
+    // Commit object parsing — the inflated body of a commit object
+    // is `tree`/`parent`/`author`/`committer` headers, a blank line,
+    // and a message. Misreading any header silently breaks log,
+    // merge-base, push.
+    class CommitTest {
+        import Am.Lang
+        import Am.Collections
+        import Am.Git
+        import Am.Tests
+
+        // Single-parent commit with the canonical header layout.
+        test parseSingleParent() {
+            var raw = ("tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n" +
+                       "parent aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" +
+                       "author A <a@x> 1700000000 +0000\n" +
+                       "committer B <b@y> 1700000001 +0100\n" +
+                       "\n" +
+                       "first commit\n").toBytes("UTF-8")
+            var c = Commit.parse("deadbeef", raw)
+            Assert.assertEquals("4b825dc642cb6eb9a060e54bf8d69288fbee4904", c.treeSha)
+            Assert.assertEquals(1, c.parents.getSize())
+            Assert.assertEquals("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", c.parents.get(0))
+            Assert.assertEquals("A <a@x> 1700000000 +0000", c.author)
+            Assert.assertEquals("B <b@y> 1700000001 +0100", c.committer)
+            Assert.assertEquals("first commit\n", c.message)
+            Assert.assertEquals("deadbeef", c.sha)
+        }
+
+        // Root commit (no `parent` line) — parents list must be empty.
+        // This is what the very first commit in a repo looks like.
+        test parseRootCommit() {
+            var raw = ("tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n" +
+                       "author A <a@x> 1700000000 +0000\n" +
+                       "committer A <a@x> 1700000000 +0000\n" +
+                       "\n" +
+                       "root\n").toBytes("UTF-8")
+            var c = Commit.parse("rootsha", raw)
+            Assert.assertEquals(0, c.parents.getSize())
+        }
+
+        // Merge commit — multiple `parent` lines, must all be captured
+        // in order. MergeBase / log rely on this ordering being stable.
+        test parseMergeCommit() {
+            var raw = ("tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n" +
+                       "parent 1111111111111111111111111111111111111111\n" +
+                       "parent 2222222222222222222222222222222222222222\n" +
+                       "parent 3333333333333333333333333333333333333333\n" +
+                       "author A <a@x> 1700000000 +0000\n" +
+                       "committer A <a@x> 1700000000 +0000\n" +
+                       "\n" +
+                       "octopus\n").toBytes("UTF-8")
+            var c = Commit.parse("octosha", raw)
+            Assert.assertEquals(3, c.parents.getSize())
+            Assert.assertEquals("1111111111111111111111111111111111111111", c.parents.get(0))
+            Assert.assertEquals("2222222222222222222222222222222222222222", c.parents.get(1))
+            Assert.assertEquals("3333333333333333333333333333333333333333", c.parents.get(2))
+        }
+
+        // Multi-line message — the blank line separator must split
+        // headers from body cleanly. A buggy parser might gobble the
+        // first message line as another header.
+        test parseMultilineMessage() {
+            var raw = ("tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n" +
+                       "author A <a@x> 1700000000 +0000\n" +
+                       "committer A <a@x> 1700000000 +0000\n" +
+                       "\n" +
+                       "subject\n" +
+                       "\n" +
+                       "body line 1\n" +
+                       "body line 2\n").toBytes("UTF-8")
+            var c = Commit.parse("multilinesha", raw)
+            Assert.assertEquals("subject\n\nbody line 1\nbody line 2\n", c.message)
+        }
+
+        // Unknown headers (gpgsig, encoding, mergetag…) must be
+        // ignored, not fatal. Real-world commits often have these.
+        test parseTolerantOfUnknownHeaders() {
+            var raw = ("tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n" +
+                       "author A <a@x> 1700000000 +0000\n" +
+                       "committer A <a@x> 1700000000 +0000\n" +
+                       "encoding UTF-8\n" +
+                       "gpgsig garbage-key-data\n" +
+                       "\n" +
+                       "msg\n").toBytes("UTF-8")
+            var c = Commit.parse("hsha", raw)
+            // Headers we care about still parsed correctly.
+            Assert.assertEquals("4b825dc642cb6eb9a060e54bf8d69288fbee4904", c.treeSha)
+            Assert.assertEquals("msg\n", c.message)
+        }
+    }
+}

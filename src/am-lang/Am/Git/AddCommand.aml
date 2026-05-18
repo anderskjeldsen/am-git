@@ -156,7 +156,12 @@ namespace Am.Git
                 mtimeSec, 0UI,           // ctime (same as mtime — no separate ctime from AmLang)
                 0UI, 0UI,                 // dev, ino
                 0UI, 0UI,                 // uid, gid
-                0US)                      // flags — namelen is set on write
+                0US)                      // flags — namelen is set on write (stage 0)
+            // Clear any leftover conflict-stage rows (1/2/3) for this
+            // path — staging the resolved working-tree version is
+            // what marks a merge conflict as fixed. clearConflictStages
+            // is a no-op on non-conflicted paths so this stays cheap.
+            idx.clearConflictStages(relPath)
             idx.upsert(entry)
         }
 

@@ -23,7 +23,10 @@ namespace Am.Git
     class CommitWriter(private var writer: LooseObjectWriter)
     {
         import Am.Lang
+        import Am.Collections
 
+        // Single-parent (or no-parent) convenience wrapper. Threads
+        // the single SHA through to the multi-parent path.
         fun write(rootTreeSha: String,
                   parentSha: String,
                   author: Identity,
@@ -31,10 +34,31 @@ namespace Am.Git
                   committer: Identity,
                   committerTime: DateTime,
                   message: String): String {
+            var parents = List<String>.newList<String>()
+            if (parentSha != null) {
+                parents.add(parentSha)
+            }
+            return this.writeMulti(rootTreeSha, parents, author, authorTime,
+                                    committer, committerTime, message)
+        }
+
+        // Multi-parent variant — emits one `parent <sha>\n` line per
+        // entry in `parents`. An empty `parents` list produces a root
+        // commit (no parent line); two entries produces a merge
+        // commit; three+ entries produce an octopus merge.
+        fun writeMulti(rootTreeSha: String,
+                       parents: List<String>,
+                       author: Identity,
+                       authorTime: DateTime,
+                       committer: Identity,
+                       committerTime: DateTime,
+                       message: String): String {
             var sb = new StringBuilder()
             sb.add("tree ").add(rootTreeSha).add("\n")
-            if (parentSha != null) {
-                sb.add("parent ").add(parentSha).add("\n")
+            var i = 0
+            while (i < parents.getSize()) {
+                sb.add("parent ").add(parents.get(i)).add("\n")
+                i = i + 1
             }
             sb.add("author ").add(author.formatLine(authorTime)).add("\n")
             sb.add("committer ").add(committer.formatLine(committerTime)).add("\n")

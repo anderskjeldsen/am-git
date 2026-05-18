@@ -1,0 +1,74 @@
+namespace Am.Git.Tests {
+
+    // IndexEntry's `stage()` / `setStage(s)` pack the 2-bit merge
+    // stage into bits 12-13 of the 16-bit `flags` field. Getting the
+    // bit math wrong silently corrupts conflict indexes — the entry
+    // would round-trip through GitIndex but real git would see it
+    // at the wrong stage.
+    class IndexEntryTest {
+        import Am.Lang
+        import Am.Git
+        import Am.Tests
+
+        // Default-constructed entry (flags = 0) is at stage 0.
+        test stageZeroByDefault() {
+            var e = IndexEntryTest.makeEntry(0US)
+            Assert.assertEquals(0, e.stage())
+        }
+
+        // Setting and reading back each stage 0..3.
+        test setStageRoundTrip() {
+            var e = IndexEntryTest.makeEntry(0US)
+            var s = 0
+            while (s <= 3) {
+                e.setStage(s)
+                Assert.assertEquals(s, e.stage())
+                s = s + 1
+            }
+        }
+
+        // setStage must preserve namelen bits (lower 12) — clobbering
+        // those would make the on-disk path field unreadable.
+        test setStagePreservesNameLen() {
+            // flags = 5 (name length 5) at stage 0.
+            var e = IndexEntryTest.makeEntry(5US)
+            e.setStage(2)
+            // Expected layout: stage=2 (0x2000) | namelen=5 = 0x2005.
+            Assert.assertEquals(0x2005, e.flags.toInt())
+            // And reading back the stage gives 2.
+            Assert.assertEquals(2, e.stage())
+        }
+
+        // setStage must preserve the assume-valid (bit 15) and extended
+        // (bit 14) flags above it, even when not in active use.
+        test setStagePreservesTopFlags() {
+            // assume-valid + extended + stage=0 + namelen=3 = 0xC003.
+            var e = IndexEntryTest.makeEntry(0xC003US)
+            e.setStage(1)
+            // Now: 0xC003 with stage bits 12-13 cleared then set to 1.
+            // = (0xC003 & 0xCFFF) | 0x1000 = 0xC003 | 0x1000 = 0xD003.
+            Assert.assertEquals(0xD003, e.flags.toInt())
+            Assert.assertEquals(1, e.stage())
+        }
+
+        // Real-git stage encoding: bytes `1005`/`2005`/`3005` show up
+        // in a conflicted index (see GitIndexTest). Verify that those
+        // raw flag values decode to stages 1/2/3.
+        test realGitConflictFlagsDecode() {
+            Assert.assertEquals(1, IndexEntryTest.makeEntry(0x1005US).stage())
+            Assert.assertEquals(2, IndexEntryTest.makeEntry(0x2005US).stage())
+            Assert.assertEquals(3, IndexEntryTest.makeEntry(0x3005US).stage())
+        }
+
+        // Helper: build a minimal IndexEntry with a given flags value.
+        // Other fields don't matter for stage-bit tests.
+        private static fun makeEntry(flags: UShort): IndexEntry {
+            return new IndexEntry(
+                "f", "0000000000000000000000000000000000000000",
+                33188UI, 0UI,
+                0UI, 0UI, 0UI, 0UI,
+                0UI, 0UI, 0UI, 0UI,
+                flags)
+        }
+    }
+}

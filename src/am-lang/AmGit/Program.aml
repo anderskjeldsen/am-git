@@ -63,6 +63,14 @@ namespace AmGit
                 Program.runRm(args)
             } else if (command == "pull") {
                 Program.runPull(args)
+            } else if (command == "merge-base") {
+                Program.runMergeBase(args)
+            } else if (command == "ls-stages") {
+                Program.runLsStages(args)
+            } else if (command == "merge-plan") {
+                Program.runMergePlan(args)
+            } else if (command == "merge") {
+                Program.runMerge(args)
             } else if (command == "help" || command == "--help" || command == "-h") {
                 Program.printUsage()
             } else if (command == "version" || command == "--version") {
@@ -316,18 +324,52 @@ namespace AmGit
                 // `am-git add` yet.
                 var treeSha: String = null
                 var indexFile = new File(".git/index")
+                var idxForUnmergedCheck: GitIndex = null
                 if (indexFile.exists()) {
                     var idx = GitIndex.read(".git")
+                    idxForUnmergedCheck = idx
                     if (idx.entries.getSize() == 0) {
                         "commit: nothing to commit (index is empty)".println()
+                        return
+                    }
+                    // Refuse to commit while the index records an
+                    // unresolved merge — same precondition as real
+                    // git ("Committing is not possible because you
+                    // have unmerged files").
+                    if (idx.hasUnmerged()) {
+                        "commit: unresolved merge conflicts — fix the listed paths and `am-git add` them first".println()
+                        var ui = 0
+                        while (ui < idx.entries.getSize()) {
+                            var ue = idx.entries.get(ui)
+                            if (ue.stage() != 0) {
+                                ("  " + ue.path + " (stage " + ue.stage().toString() + ")").println()
+                            }
+                            ui = ui + 1
+                        }
                         return
                     }
                     treeSha = IndexTreeBuilder.build(idx, writer)
                 } else {
                     treeSha = new TreeBuilder(".", writer).build()
                 }
-                var commitSha = new CommitWriter(writer).write(
-                    treeSha, head.commitSha,
+
+                // Merge-commit detection: if `.git/MERGE_HEAD` is
+                // present we're finalising a 3-way merge `am-git
+                // merge` left half-done. The file's contents are the
+                // SHA of the second parent.
+                var parents = List<String>.newList<String>()
+                if (head.commitSha != null) {
+                    parents.add(head.commitSha)
+                }
+                var mergeHeadFile = new File(".git/MERGE_HEAD")
+                var inMergeFinalisation = mergeHeadFile.exists()
+                if (inMergeFinalisation) {
+                    var rawMergeHead = String.readFromFile(".git/MERGE_HEAD")
+                    parents.add(Program.trim(rawMergeHead))
+                }
+
+                var commitSha = new CommitWriter(writer).writeMulti(
+                    treeSha, parents,
                     author, authorTime,
                     committer, committerTime,
                     message)
@@ -356,6 +398,14 @@ namespace AmGit
                 // loose object isn't reliable on AmigaOS, and we
                 // already have every object we just wrote in memory.
                 GitIndex.fromTreeMap(treeSha, writer.written).write(".git")
+
+                // If this was a merge-commit finalisation, the merge
+                // is done — clear the two metadata files so the next
+                // commit isn't accidentally promoted into a merge.
+                if (inMergeFinalisation) {
+                    Program.deleteIfExists(".git/MERGE_HEAD")
+                    Program.deleteIfExists(".git/MERGE_MSG")
+                }
 
                 // Summary line. `firstLine` is the message up to the
                 // first `\n` (matches `git commit`'s output convention).
@@ -578,6 +628,430 @@ namespace AmGit
             } catch (ex: Exception) {
                 ("pull: " + ex.message).println()
             }
+        }
+
+        // `am-git merge-base <a> <b>` — print the SHA of the lowest
+        // common ancestor of two commits. Each arg is either a 40-char
+        // hex SHA or a local branch name (resolved against
+        // .git/refs/heads/). Prints nothing and exits silently when
+        // the commits share no history (matches real git, which uses
+        // a non-zero exit code; we don't have one wired up yet).
+        private static fun runMergeBase(args: String[]) {
+            try {
+                if (args.length() != 3UI) {
+                    "usage: am-git merge-base <commit-a> <commit-b>".println()
+                    return
+                }
+                var aSha = Program.resolveCommitish(args[1UI])
+                var bSha = Program.resolveCommitish(args[2UI])
+                if (aSha == null) {
+                    ("merge-base: cannot resolve '" + args[1UI] + "'").println()
+                    return
+                }
+                if (bSha == null) {
+                    ("merge-base: cannot resolve '" + args[2UI] + "'").println()
+                    return
+                }
+                var store = new ObjectStore(".git")
+                var baseSha = MergeBase.find(aSha, bSha, store)
+                if (baseSha != null) {
+                    baseSha.println()
+                }
+            } catch (ex: Exception) {
+                ("merge-base: " + ex.message).println()
+            }
+        }
+
+        // `am-git merge-plan <ours> <theirs>` — print the 3-way
+        // classification of every changed path between two commits,
+        // using their common ancestor as the base. Dry-run: nothing
+        // is written. Used to validate the merge classifier on
+        // realistic histories before piece 3 wires up the actual
+        // applier.
+        //
+        // Output: one line per changed path:
+        //   <outcome>\t<path>\t<ours-sha>\t<theirs-sha>\t<base-sha>
+        // Unchanged paths are omitted to keep the output focused.
+        private static fun runMergePlan(args: String[]) {
+            try {
+                if (args.length() != 3UI) {
+                    "usage: am-git merge-plan <ours-commit> <theirs-commit>".println()
+                    return
+                }
+                var oursSha = Program.resolveCommitish(args[1UI])
+                var theirsSha = Program.resolveCommitish(args[2UI])
+                if (oursSha == null) {
+                    ("merge-plan: cannot resolve '" + args[1UI] + "'").println()
+                    return
+                }
+                if (theirsSha == null) {
+                    ("merge-plan: cannot resolve '" + args[2UI] + "'").println()
+                    return
+                }
+                var store = new ObjectStore(".git")
+                var baseSha = MergeBase.find(oursSha, theirsSha, store)
+                if (baseSha == null) {
+                    "merge-plan: no common ancestor (unrelated histories)".println()
+                    return
+                }
+                var oursTree = Program.commitTreeSha(oursSha, store)
+                var theirsTree = Program.commitTreeSha(theirsSha, store)
+                var baseTree = Program.commitTreeSha(baseSha, store)
+                ("# base " + baseSha).println()
+                ("# ours " + oursSha + " (tree " + oursTree + ")").println()
+                ("# theirs " + theirsSha + " (tree " + theirsTree + ")").println()
+                var plan = MergePlan.compute(baseTree, oursTree, theirsTree, store)
+                var conflicts = 0
+                var i = 0
+                while (i < plan.getSize()) {
+                    var e = plan.get(i)
+                    if (e.outcome != MergePlan.outcomeUnchanged) {
+                        var line = MergePlan.outcomeName(e.outcome) + "\t" + e.path +
+                                   "\t" + Program.shaOrDash(e.ours) +
+                                   "\t" + Program.shaOrDash(e.theirs) +
+                                   "\t" + Program.shaOrDash(e.baseFile)
+                        line.println()
+                        if (e.outcome >= MergePlan.outcomeConflictBothModified) {
+                            conflicts = conflicts + 1
+                        }
+                    }
+                    i = i + 1
+                }
+                if (conflicts > 0) {
+                    ("# " + conflicts.toString() + " conflict(s)").println()
+                } else {
+                    "# no conflicts".println()
+                }
+            } catch (ex: Exception) {
+                ("merge-plan: " + ex.message).println()
+            }
+        }
+
+        // Read a commit's root-tree SHA. Throws if the commit isn't in
+        // the store — the merge-plan caller bails on that case loud
+        // and clear rather than silently merging against an empty tree.
+        private static fun commitTreeSha(commitSha: String, store: ObjectStore): String {
+            if (!store.has(commitSha)) {
+                throw new Exception("commit not found in object store: " + commitSha)
+            }
+            var obj = store.read(commitSha)
+            if (obj.typeCode != 1) {
+                throw new Exception(commitSha + " is not a commit")
+            }
+            return WorkTree.extractRootTreeSha(obj.content)
+        }
+
+        // "(absent)" → "-" so the columnar output stays readable.
+        private static fun shaOrDash(f: MergeFile): String {
+            if (f == null) {
+                return "-"
+            }
+            return f.sha
+        }
+
+        // `am-git merge <branch>` — merge the named branch into the
+        // current branch. Three resolution paths:
+        //
+        //   1. `branch` is an ancestor of HEAD → "already up to date",
+        //      do nothing.
+        //   2. HEAD is an ancestor of `branch` → fast-forward: move
+        //      the branch ref + materialise the new working tree.
+        //      No merge commit; same as real git's default ff-on-ff.
+        //   3. Divergent histories → 3-way merge:
+        //      - compute MergePlan
+        //      - apply it (writes workdir + index stages)
+        //      - if no conflicts → create a 2-parent merge commit,
+        //        advance HEAD, clear MERGE_HEAD
+        //      - if conflicts → write `.git/MERGE_HEAD` +
+        //        `.git/MERGE_MSG`, leave the workdir in conflict
+        //        state, print the conflict list. The user resolves,
+        //        runs `am-git add <file>...`, then `am-git commit`
+        //        to finalise.
+        //
+        // Refuses to merge from detached HEAD (we don't have an
+        // anonymous ref to advance) and from an unborn branch (no
+        // HEAD commit to merge with).
+        private static fun runMerge(args: String[]) {
+            try {
+                if (args.length() != 2UI) {
+                    "usage: am-git merge <branch>".println()
+                    return
+                }
+                var head = HeadReader.read(".git")
+                if (head.detached) {
+                    "merge: cannot merge from detached HEAD".println()
+                    return
+                }
+                if (head.commitSha == null) {
+                    "merge: current branch has no commits yet — nothing to merge into".println()
+                    return
+                }
+
+                var theirsName = args[1UI]
+                var theirsSha = Program.resolveCommitish(theirsName)
+                if (theirsSha == null) {
+                    ("merge: cannot resolve '" + theirsName + "'").println()
+                    return
+                }
+                var oursSha = head.commitSha
+
+                var store = new ObjectStore(".git")
+                var baseSha = MergeBase.find(oursSha, theirsSha, store)
+                if (baseSha == null) {
+                    "merge: refusing to merge unrelated histories".println()
+                    return
+                }
+
+                // Case 1: nothing to do.
+                if (baseSha == theirsSha) {
+                    "Already up to date.".println()
+                    return
+                }
+
+                // Case 2: fast-forward.
+                if (baseSha == oursSha) {
+                    Program.fastForwardMerge(head, theirsSha, theirsName)
+                    return
+                }
+
+                // Case 3: real 3-way merge.
+                Program.threeWayMerge(head, oursSha, theirsSha, baseSha, theirsName, store)
+            } catch (ex: Exception) {
+                "merge: failed".println()
+                ex.printWithStackTrace()
+            }
+        }
+
+        // Advance the current branch ref to the merged-in commit and
+        // materialise its working tree. No merge commit — the merge
+        // is fast-forwardable.
+        private static fun fastForwardMerge(head: HeadInfo, theirsSha: String,
+                                             theirsName: String) {
+            var refPath = ".git/refs/heads/" + head.branch
+            Repository.ensureParentDir(refPath)
+            (theirsSha + "\n").writeToFile(refPath)
+
+            // Checkout the new tree on top of the working tree. We
+            // reuse CheckoutClient since the semantics are the same
+            // as a regular branch checkout — only the ref name
+            // differs, and we've already moved it.
+            CheckoutClient.checkout(".git", ".", head.branch)
+
+            ("Fast-forward: " + head.branch + " advanced to " +
+                theirsSha.substring(0UI, 7UI) + " (was " +
+                head.commitSha.substring(0UI, 7UI) + ")").println()
+        }
+
+        // Three-way merge. Computes the plan, applies it, and either
+        // creates a merge commit (clean) or writes `MERGE_HEAD` +
+        // `MERGE_MSG` and exits with the conflict list (dirty).
+        private static fun threeWayMerge(head: HeadInfo, oursSha: String,
+                                          theirsSha: String, baseSha: String,
+                                          theirsName: String, store: ObjectStore) {
+            var oursTree   = Program.commitTreeSha(oursSha, store)
+            var theirsTree = Program.commitTreeSha(theirsSha, store)
+            var baseTree   = Program.commitTreeSha(baseSha, store)
+
+            var plan = MergePlan.compute(baseTree, oursTree, theirsTree, store)
+
+            // Read or initialise the index. For a fresh worktree-only
+            // commit history the index may not exist yet; the applier
+            // populates it with stage-0 entries for everything.
+            var idx = GitIndex.read(".git")
+            var applier = new MergeApplier(".", store, idx)
+            var conflicts = applier.apply(plan)
+            idx.write(".git")
+
+            if (conflicts.getSize() == 0) {
+                Program.completeMergeCommit(head, oursSha, theirsSha, theirsName, store)
+                return
+            }
+
+            // Conflicts: record state for `am-git commit` to pick up
+            // once the user resolves. MERGE_HEAD holds the second
+            // parent SHA; MERGE_MSG is a default commit message
+            // including the conflict list (same shape as real git).
+            (theirsSha + "\n").writeToFile(".git/MERGE_HEAD")
+            Program.writeMergeMsg(theirsName, conflicts)
+            ("Auto-merging produced conflicts in " +
+                conflicts.getSize().toString() + " file(s):").println()
+            var i = 0
+            while (i < conflicts.getSize()) {
+                ("  " + conflicts.get(i)).println()
+                i = i + 1
+            }
+            "".println()
+            "Resolve the conflicts, run `am-git add <file>...`, then `am-git commit`.".println()
+        }
+
+        // After a clean 3-way merge: build a fresh root tree from the
+        // (now resolved) index, write a 2-parent commit, advance the
+        // branch ref.
+        private static fun completeMergeCommit(head: HeadInfo, oursSha: String,
+                                                 theirsSha: String, theirsName: String,
+                                                 store: ObjectStore) {
+            var author = Identity.loadAuthor()
+            var committer = Identity.loadCommitter()
+            if (author == null || committer == null) {
+                "merge: identity not configured (set AM_GIT_USER_NAME and AM_GIT_USER_EMAIL)".println()
+                return
+            }
+            var authorTime = Identity.loadAuthorDate()
+            if (authorTime == null)    { authorTime = new DateTime() }
+            var committerTime = Identity.loadCommitterDate()
+            if (committerTime == null) { committerTime = new DateTime() }
+
+            var idx = GitIndex.read(".git")
+            var writer = new LooseObjectWriter(".git")
+            var treeSha = IndexTreeBuilder.build(idx, writer)
+
+            var parents = List<String>.newList<String>()
+            parents.add(oursSha)
+            parents.add(theirsSha)
+
+            var message = "Merge branch '" + theirsName + "'\n"
+            var commitSha = new CommitWriter(writer).writeMulti(
+                treeSha, parents, author, authorTime,
+                committer, committerTime, message)
+
+            var refPath = ".git/refs/heads/" + head.branch
+            Repository.ensureParentDir(refPath)
+            (commitSha + "\n").writeToFile(refPath)
+
+            // Clean up any stale merge metadata (a previous interrupted
+            // merge could have left these around — but in the clean
+            // path neither file should exist).
+            Program.deleteIfExists(".git/MERGE_HEAD")
+            Program.deleteIfExists(".git/MERGE_MSG")
+
+            ("Merge made by 'am-git merge' [" + head.branch + " " +
+                commitSha.substring(0UI, 7UI) + "]").println()
+        }
+
+        // Default MERGE_MSG text — real git's format starts with
+        // "Merge branch '<name>'" and lists the conflicting paths as
+        // "# Conflicts:" comments. `am-git commit` will use this as
+        // the message body if the user doesn't pass `-m`.
+        private static fun writeMergeMsg(theirsName: String, conflicts: List<String>) {
+            var sb = new StringBuilder()
+            sb.add("Merge branch '").add(theirsName).add("'\n")
+            sb.add("\n")
+            sb.add("# Conflicts:\n")
+            var i = 0
+            while (i < conflicts.getSize()) {
+                sb.add("#\t").add(conflicts.get(i)).add("\n")
+                i = i + 1
+            }
+            sb.toString().writeToFile(".git/MERGE_MSG")
+        }
+
+        private static fun deleteIfExists(path: String) {
+            var f = new File(path)
+            if (f.exists()) {
+                f.delete()
+            }
+        }
+
+        // `am-git ls-stages` — print every index entry as
+        // `<mode> <sha> <stage>\t<path>`, mirroring
+        // `git ls-files --stage`. Useful when debugging conflict
+        // resolution: stage 0 = resolved, 1/2/3 = base/ours/theirs.
+        //
+        // With `--rewrite` it also writes the index back out unchanged
+        // — a round-trip sanity check that proves stage bits and the
+        // rest of the entry record survive a read/write cycle byte-
+        // for-byte (modulo extension blocks we don't emit).
+        private static fun runLsStages(args: String[]) {
+            try {
+                var rewrite = false
+                var i = 1UI
+                while (i < args.length()) {
+                    if (args[i] == "--rewrite") {
+                        rewrite = true
+                    }
+                    i++
+                }
+                var idx = GitIndex.read(".git")
+                var j = 0
+                while (j < idx.entries.getSize()) {
+                    var e = idx.entries.get(j)
+                    var modeStr = Program.modeOctal(e.mode)
+                    (modeStr + " " + e.sha + " " + e.stage().toString() + "\t" + e.path).println()
+                    j = j + 1
+                }
+                if (rewrite) {
+                    idx.write(".git")
+                    "(index rewritten)".println()
+                }
+            } catch (ex: Exception) {
+                ("ls-stages: " + ex.message).println()
+            }
+        }
+
+        // Mode bits → 6-char octal string (matches `git ls-files --stage`).
+        private static fun modeOctal(mode: UInt): String {
+            // 33188 = 0o100644, 33261 = 0o100755, 40960 = 0o120000,
+            // 57344 = 0o160000, 16384 = 0o040000 (tree).
+            if (mode == 33261UI) { return "100755" }
+            if (mode == 40960UI) { return "120000" }
+            if (mode == 57344UI) { return "160000" }
+            if (mode == 16384UI) { return "040000" }
+            return "100644"
+        }
+
+        // Resolve a "commit-ish" — a 40-char hex SHA passes through,
+        // anything else is treated as a local branch name and looked
+        // up under .git/refs/heads/. Returns null if neither path
+        // works.
+        private static fun resolveCommitish(s: String): String {
+            if (s == null || s.length() == 0) {
+                return null
+            }
+            if (s.length() == 40 && Program.isHex(s)) {
+                return s
+            }
+            var refPath = ".git/refs/heads/" + s
+            var f = new File(refPath)
+            if (!f.exists()) {
+                return null
+            }
+            var raw = String.readFromFile(refPath)
+            return Program.trim(raw)
+        }
+
+        private static fun isHex(s: String): Bool {
+            var i: UInt = 0UI
+            while (i < s.length()) {
+                var c = s.characterAt(i).toInt()
+                var ok = (c >= 48 && c <= 57) ||      // 0-9
+                         (c >= 97 && c <= 102) ||     // a-f
+                         (c >= 65 && c <= 70)         // A-F
+                if (!ok) {
+                    return false
+                }
+                i++
+            }
+            return true
+        }
+
+        // Strip trailing CR/LF/whitespace — ref files have a trailing
+        // newline.
+        private static fun trim(raw: String): String {
+            var end = raw.length()
+            var go = true
+            while (go) {
+                if (end <= 0) {
+                    go = false
+                } else {
+                    var c = raw.characterAt((end - 1).toUInt()).toInt()
+                    if (c == 10 || c == 13 || c == 32 || c == 9) {
+                        end = end - 1
+                    } else {
+                        go = false
+                    }
+                }
+            }
+            return raw.substring(0UI, end.toUInt())
         }
 
         // Stage one or more paths into `.git/index`. Mirrors
@@ -984,6 +1458,8 @@ namespace AmGit
             "  log [-n N]                          Walk commit ancestry from HEAD".println()
             "  branch [<name> | -d <name>]         List / create / delete local branches".println()
             "  checkout <branch>                   Switch HEAD and the working tree to a branch".println()
+            "  merge <branch>                      Merge <branch> into the current branch".println()
+            "  merge-base <a> <b>                  Print the lowest common ancestor of two commits".println()
             "  commit -m <message>                 Commit the cwd working tree against HEAD".println()
             "  commit-tree <tree>                  Write a commit object pointing at the given tree".println()
             "    [-p <parent>] -m <msg>".println()

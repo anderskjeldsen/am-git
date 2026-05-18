@@ -276,18 +276,57 @@ namespace Am.Git
             Repository.writeBytes(gitDir + "/index", out)
         }
 
-        // Upsert an entry, identifying by path. Sort happens lazily
-        // at write time.
+        // Upsert an entry, identifying by path AND stage. The pair
+        // (path, stage) is the real identity of an index row — during a
+        // conflicted merge the same path appears three times with
+        // stages 1/2/3 simultaneously, and they must not clobber each
+        // other.
         fun upsert(entry: IndexEntry) {
+            var s = entry.stage()
             var i = 0
             while (i < this.entries.getSize()) {
-                if (this.entries.get(i).path == entry.path) {
+                var existing = this.entries.get(i)
+                if (existing.path == entry.path && existing.stage() == s) {
                     this.entries.set(i, entry)
                     return
                 }
                 i = i + 1
             }
             this.entries.add(entry)
+        }
+
+        // Drop every conflict-stage entry (stages 1/2/3) for `path`,
+        // returning how many were removed. Call this after a user
+        // resolves a conflict and we're about to write the resolved
+        // blob at stage 0.
+        fun clearConflictStages(path: String): Int {
+            var removed = 0
+            var i = 0
+            while (i < this.entries.getSize()) {
+                var e = this.entries.get(i)
+                if (e.path == path && e.stage() != 0) {
+                    this.entries.removeAt(i)
+                    removed = removed + 1
+                } else {
+                    i = i + 1
+                }
+            }
+            return removed
+        }
+
+        // True iff any entry is at stage > 0 — i.e. the index records
+        // an unresolved conflict somewhere. Used by `commit` (to refuse
+        // committing with unresolved conflicts) and by `status` (to
+        // show "UU"/"AA"/"DD" markers).
+        fun hasUnmerged(): Bool {
+            var i = 0
+            while (i < this.entries.getSize()) {
+                if (this.entries.get(i).stage() != 0) {
+                    return true
+                }
+                i = i + 1
+            }
+            return false
         }
 
         // Remove the entry for `path`. Returns true if anything was
@@ -383,15 +422,24 @@ namespace Am.Git
         private fun sortByPath() {
             // Bubble sort — entry counts are small (~hundreds typically),
             // and this keeps the implementation self-contained.
+            //
+            // Same-path entries (the three stages of a conflict) sort
+            // by stage ascending so 1/2/3 appear in canonical order,
+            // matching real git's on-disk layout.
             var n = this.entries.getSize()
             var i = 0
             while (i < n - 1) {
                 var j = 0
                 while (j < n - 1 - i) {
-                    if (GitIndex.compareBytewise(this.entries.get(j).path, this.entries.get(j + 1).path) > 0) {
-                        var tmp = this.entries.get(j)
-                        this.entries.set(j, this.entries.get(j + 1))
-                        this.entries.set(j + 1, tmp)
+                    var a = this.entries.get(j)
+                    var b = this.entries.get(j + 1)
+                    var cmp = GitIndex.compareBytewise(a.path, b.path)
+                    if (cmp == 0) {
+                        cmp = a.stage() - b.stage()
+                    }
+                    if (cmp > 0) {
+                        this.entries.set(j, b)
+                        this.entries.set(j + 1, a)
                     }
                     j = j + 1
                 }

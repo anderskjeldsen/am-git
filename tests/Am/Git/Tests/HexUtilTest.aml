@@ -1,0 +1,56 @@
+namespace Am.Git.Tests {
+
+    // HexUtil — converts 20-byte raw SHA-1 ↔ 40-char hex.
+    // The SHA-bytes-in-tree-objects path depends on this being
+    // exactly byte-symmetric; a swap or sign-extension bug would
+    // corrupt every tree we write.
+    class HexUtilTest {
+        import Am.Lang
+        import Am.Git
+        import Am.Tests
+
+        // Round-trip: random-looking input bytes 0..19 → hex → bytes
+        // must equal the input.
+        test hexRoundTrip() {
+            var raw = new UByte[20UI]
+            var i: UInt = 0UI
+            while (i < 20UI) {
+                raw[i] = i.toUByte()
+                i++
+            }
+            var hex = HexUtil.toHex(raw)
+            Assert.assertEquals(40, hex.length())
+            var back = HexUtil.fromHex(hex)
+            Assert.assertEquals(20, back.length().toInt())
+            var k: UInt = 0UI
+            while (k < 20UI) {
+                Assert.assertEquals(raw[k].toInt(), back[k].toInt())
+                k++
+            }
+        }
+
+        // toHex must produce lowercase — git compares SHAs as strings
+        // and an uppercase-half mismatch is silent corruption.
+        test toHexIsLowercase() {
+            var raw = new UByte[1UI]
+            raw[0UI] = 0xABUB
+            var hex = HexUtil.toHex(raw)
+            Assert.assertEquals("ab", hex)
+        }
+
+        // fromHex must accept both cases — real git's pack index uses
+        // lowercase, but we shouldn't reject an uppercase string if
+        // one ever shows up.
+        test fromHexAcceptsUppercase() {
+            var lower = HexUtil.fromHex("deadbeef")
+            var upper = HexUtil.fromHex("DEADBEEF")
+            Assert.assertEquals(4, lower.length().toInt())
+            Assert.assertEquals(4, upper.length().toInt())
+            var i: UInt = 0UI
+            while (i < 4UI) {
+                Assert.assertEquals(lower[i].toInt(), upper[i].toInt())
+                i++
+            }
+        }
+    }
+}

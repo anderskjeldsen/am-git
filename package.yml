@@ -51,6 +51,12 @@ dependencies:
     tag: latest
     branch: main
     url: https://github.com/anderskjeldsen/am-web-client.git
+  - id: am-tests
+    testOnly: true
+    realm: github
+    type: git-repo
+    tag: latest
+    url: https://github.com/anderskjeldsen/am-tests.git
 
 platforms:
   - id: libc

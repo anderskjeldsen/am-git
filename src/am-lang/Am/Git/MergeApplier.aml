@@ -1,0 +1,292 @@
+namespace Am.Git
+{
+    // Phase-3 applier: given a `List<MergeEntry>` produced by
+    // `MergePlan.compute`, write the working tree and index entries
+    // each entry's outcome calls for. Returns the list of conflicting
+    // paths so the caller can decide whether to make a merge commit
+    // or leave the user in a "needs resolution" state.
+    //
+    // What each outcome does on disk:
+    //
+    //   unchanged       → nothing
+    //   take-ours       → workdir already matches HEAD, so no write;
+    //                     index stays at the existing stage-0 entry
+    //                     (or is removed if `ours` is a delete)
+    //   take-theirs     → write theirs' blob to workdir (or delete
+    //                     the workdir file if theirs is a delete);
+    //                     upsert stage-0 index entry to theirs' SHA
+    //   conflict-*      → write three stage rows (1=base, 2=ours,
+    //                     3=theirs) for the path; clear any stage-0;
+    //                     write `<<<<<<< / ======= / >>>>>>>`
+    //                     markers to the workdir file IF both sides
+    //                     look like text. Binary conflicts leave the
+    //                     workdir on ours and rely on the index
+    //                     stages for tooling to read.
+    //
+    // The index is mutated in place; the caller writes it back to
+    // `.git/index` when the apply pass finishes. This is so the
+    // caller can also write `MERGE_HEAD` / `MERGE_MSG` atomically in
+    // the same "merge produced conflicts" branch.
+    class MergeApplier(
+        private var workTreePath: String,
+        private var store: ObjectStore,
+        private var idx: GitIndex
+    )
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        // Apply every entry in `plan`. Returns the paths that came out
+        // as conflicts (in plan order). An empty list means a clean
+        // merge — caller can immediately create a merge commit.
+        fun apply(plan: List<MergeEntry>): List<String> {
+            var conflicts = List<String>.newList<String>()
+            var i = 0
+            while (i < plan.getSize()) {
+                var entry = plan.get(i)
+                if (entry.outcome == MergePlan.outcomeUnchanged) {
+                    // No-op. Both sides agree (or absent) — workdir
+                    // and index already reflect that.
+                } else if (entry.outcome == MergePlan.outcomeTakeOurs) {
+                    this.applyTakeOurs(entry)
+                } else if (entry.outcome == MergePlan.outcomeTakeTheirs) {
+                    this.applyTakeTheirs(entry)
+                } else {
+                    // Every remaining outcome is a conflict.
+                    this.applyConflict(entry)
+                    conflicts.add(entry.path)
+                }
+                i = i + 1
+            }
+            return conflicts
+        }
+
+        // Ours wins. Workdir already matches HEAD = ours, so no file
+        // write. Index stays at stage 0 with ours' SHA; if ours is a
+        // delete we also drop the index entry to match.
+        private fun applyTakeOurs(entry: MergeEntry) {
+            this.idx.clearConflictStages(entry.path)
+            if (entry.ours == null) {
+                this.idx.removeByPath(entry.path)
+            } else {
+                this.upsertStage(entry.path, entry.ours, 0)
+            }
+        }
+
+        // Theirs wins — workdir gets their blob (or the file is
+        // deleted), index moves to their SHA at stage 0.
+        private fun applyTakeTheirs(entry: MergeEntry) {
+            this.idx.clearConflictStages(entry.path)
+            var fullPath = this.workTreePath + "/" + entry.path
+            if (entry.theirs == null) {
+                MergeApplier.deleteIfPresent(fullPath)
+                this.idx.removeByPath(entry.path)
+            } else {
+                var content = this.readBlob(entry.theirs.sha)
+                Repository.writeBytes(fullPath, content)
+                this.upsertStage(entry.path, entry.theirs, 0)
+            }
+        }
+
+        // Conflict: write 1/2/3 stages for whichever sides exist,
+        // drop stage 0, and try to write conflict markers to the
+        // workdir. Binary files skip the markers — index stages are
+        // enough for any GUI merge tool to drive a resolution.
+        private fun applyConflict(entry: MergeEntry) {
+            this.idx.clearConflictStages(entry.path)
+            // Drop stage-0 if any — once we're in conflict state, the
+            // resolved version doesn't exist yet.
+            MergeApplier.removeStageZero(this.idx, entry.path)
+
+            if (entry.baseFile != null) {
+                this.upsertStage(entry.path, entry.baseFile, 1)
+            }
+            if (entry.ours != null) {
+                this.upsertStage(entry.path, entry.ours, 2)
+            }
+            if (entry.theirs != null) {
+                this.upsertStage(entry.path, entry.theirs, 3)
+            }
+
+            this.writeConflictMarkers(entry)
+        }
+
+        // Compose the workdir file for a conflict. We don't have a
+        // line-level diff yet, so the "hunk" is the whole file on
+        // each side — the user sees both versions in full and edits
+        // the result by hand. If either side is binary we don't
+        // write markers at all (a marker line inside a PNG would
+        // corrupt it); we keep the workdir on ours' version and
+        // print a binary-conflict note. The three index stages are
+        // still recorded so GUI merge tools can present a picker.
+        private fun writeConflictMarkers(entry: MergeEntry) {
+            var fullPath = this.workTreePath + "/" + entry.path
+
+            var oursContent: UByte[] = null
+            var theirsContent: UByte[] = null
+            if (entry.ours != null)   { oursContent   = this.readBlob(entry.ours.sha) }
+            if (entry.theirs != null) { theirsContent = this.readBlob(entry.theirs.sha) }
+
+            var oursBinary = MergeApplier.looksBinary(oursContent)
+            var theirsBinary = MergeApplier.looksBinary(theirsContent)
+            if (oursBinary || theirsBinary) {
+                // Leave workdir on ours' version (or delete if ours
+                // is null) — same as real git when a binary conflict
+                // happens. The user uses `am-git checkout --theirs`
+                // / `--ours` (not implemented yet) or another tool.
+                ("warning: binary conflict in " + entry.path +
+                    " — workdir kept at HEAD; resolve via index stages").println()
+                if (oursContent != null) {
+                    Repository.writeBytes(fullPath, oursContent)
+                } else {
+                    MergeApplier.deleteIfPresent(fullPath)
+                }
+                return
+            }
+
+            var markers = MergeApplier.buildMarkerFile(oursContent, theirsContent)
+            Repository.writeBytes(fullPath, markers)
+        }
+
+        // Markers as bytes: we can't go via String concat because
+        // either side may contain non-UTF-8 sequences (we'd lose
+        // them on round-trip). Build a flat UByte[].
+        //
+        // Layout:
+        //   "<<<<<<< HEAD\n"
+        //   <ours content, possibly followed by a synthesized \n
+        //    if it doesn't already end with one>
+        //   "=======\n"
+        //   <theirs content, same trailing-newline handling>
+        //   ">>>>>>> branch\n"
+        //
+        // We use the literal label "branch" because the applier
+        // doesn't know the merge target's name. The merge command
+        // overwrites the file or amends the label after if it
+        // wants to (real git uses "HEAD" / "<branchname>"); kept
+        // simple here.
+        private static fun buildMarkerFile(ours: UByte[], theirs: UByte[]): UByte[] {
+            var buf = List<UByte>.newList<UByte>()
+            MergeApplier.appendString(buf, "<<<<<<< HEAD\n")
+            MergeApplier.appendContentWithNewline(buf, ours)
+            MergeApplier.appendString(buf, "=======\n")
+            MergeApplier.appendContentWithNewline(buf, theirs)
+            MergeApplier.appendString(buf, ">>>>>>> branch\n")
+            return buf.toArray()
+        }
+
+        // Append `content` followed by a single newline if `content`
+        // didn't end with one (so the next marker line starts cleanly
+        // on a new line). Null content is treated as empty.
+        private static fun appendContentWithNewline(buf: List<UByte>, content: UByte[]) {
+            if (content == null || content.length() == 0UI) {
+                buf.add(10UB)
+                return
+            }
+            var i: UInt = 0UI
+            while (i < content.length()) {
+                buf.add(content[i])
+                i++
+            }
+            if (content[content.length() - 1UI].toInt() != 10) {
+                buf.add(10UB)
+            }
+        }
+
+        private static fun appendString(buf: List<UByte>, s: String) {
+            var bytes = s.toBytes("UTF-8")
+            var i: UInt = 0UI
+            while (i < bytes.length()) {
+                buf.add(bytes[i])
+                i++
+            }
+        }
+
+        // Heuristic: any NUL byte in the first 8 KB → binary. Same
+        // heuristic real git uses (the `buffer_is_binary` function in
+        // xdiff-interface.c). Null content (the side doesn't exist)
+        // counts as "not binary".
+        private static fun looksBinary(content: UByte[]): Bool {
+            if (content == null) {
+                return false
+            }
+            var limit = 8192
+            var total = content.length().toInt()
+            if (total < limit) {
+                limit = total
+            }
+            var i = 0
+            while (i < limit) {
+                if (content[i.toUInt()].toInt() == 0) {
+                    return true
+                }
+                i = i + 1
+            }
+            return false
+        }
+
+        // Read a blob from the object store. Throws if absent so a
+        // partial apply doesn't silently produce a half-baked
+        // workdir.
+        private fun readBlob(sha: String): UByte[] {
+            if (!this.store.has(sha)) {
+                throw new Exception("MergeApplier: blob " + sha + " not in object store")
+            }
+            var obj = this.store.read(sha)
+            return obj.content
+        }
+
+        // ---- index helpers ----------------------------------------
+
+        // Insert / replace an entry at `stage` for `path` with
+        // `file`'s blob SHA and mode. The IndexEntry stat fields
+        // stay zero — real git would re-hash on first status check
+        // to recover, which is fine for our use.
+        private fun upsertStage(path: String, file: MergeFile, stage: Int) {
+            var mode = MergeApplier.modeStringToUInt(file.mode)
+            var entry = new IndexEntry(
+                path, file.sha, mode, 0UI,
+                0UI, 0UI, 0UI, 0UI,
+                0UI, 0UI, 0UI, 0UI,
+                0US)
+            entry.setStage(stage)
+            this.idx.upsert(entry)
+        }
+
+        // Drop the stage-0 entry for `path`, if one exists. We have
+        // GitIndex.clearConflictStages for stages 1-3; stage 0 needs
+        // its own removal because clearConflictStages intentionally
+        // leaves the resolved version alone.
+        private static fun removeStageZero(idx: GitIndex, path: String) {
+            var i = 0
+            while (i < idx.entries.getSize()) {
+                var e = idx.entries.get(i)
+                if (e.path == path && e.stage() == 0) {
+                    idx.entries.removeAt(i)
+                    return
+                }
+                i = i + 1
+            }
+        }
+
+        // Tree-mode strings (ASCII octal) → on-disk index mode UInt.
+        // Mirrors IndexTreeBuilder.modeToString in the other
+        // direction. Anything we don't recognise falls back to
+        // regular file (0o100644 = 33188).
+        private static fun modeStringToUInt(mode: String): UInt {
+            if (mode == "100755") { return 33261UI }
+            if (mode == "120000") { return 40960UI }
+            if (mode == "160000") { return 57344UI }
+            return 33188UI
+        }
+
+        // Delete a workdir file, tolerating "not there yet".
+        private static fun deleteIfPresent(path: String) {
+            var f = new File(path)
+            if (f.exists()) {
+                f.delete()
+            }
+        }
+    }
+}
