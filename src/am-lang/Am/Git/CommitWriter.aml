@@ -42,6 +42,32 @@ namespace Am.Git
                                     committer, committerTime, message)
         }
 
+        // Rebase / cherry-pick variant: preserve a pre-formatted
+        // `author <name> <email> <ts> <tz>` line verbatim and only
+        // pick a fresh committer line. Used when re-applying a
+        // commit on a new base — the original author and author-date
+        // must survive byte-for-byte (otherwise `git log --author`
+        // breaks, and the commit's identity drifts).
+        fun writeRawAuthor(rootTreeSha: String,
+                           parentSha: String,
+                           authorLine: String,
+                           committer: Identity,
+                           committerTime: DateTime,
+                           message: String): String {
+            var sb = new StringBuilder()
+            sb.add("tree ").add(rootTreeSha).add("\n")
+            if (parentSha != null) {
+                sb.add("parent ").add(parentSha).add("\n")
+            }
+            sb.add("author ").add(authorLine).add("\n")
+            sb.add("committer ").add(committer.formatLine(committerTime)).add("\n")
+            sb.add("\n").add(message)
+            if (!message.endsWith("\n")) {
+                sb.add("\n")
+            }
+            return this.writer.write("commit", sb.toString().toBytes("UTF-8"))
+        }
+
         // Multi-parent variant — emits one `parent <sha>\n` line per
         // entry in `parents`. An empty `parents` list produces a root
         // commit (no parent line); two entries produces a merge

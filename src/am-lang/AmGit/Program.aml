@@ -75,6 +75,8 @@ namespace AmGit
                 Program.runReset(args)
             } else if (command == "diff") {
                 Program.runDiff(args)
+            } else if (command == "rebase") {
+                Program.runRebase(args)
             } else if (command == "help" || command == "--help" || command == "-h") {
                 Program.printUsage()
             } else if (command == "version" || command == "--version") {
@@ -956,6 +958,276 @@ namespace AmGit
             }
         }
 
+        // `am-git rebase <upstream>` — phase A (clean path only).
+        //
+        // Replays every commit on the current branch that's NOT on
+        // <upstream>, on top of <upstream>, producing N new commits
+        // with new SHAs.
+        //
+        //     before:         upstream                 after:        upstream
+        //                        |                                       |
+        //          base ── C1 ── C2 ── HEAD                base ── … ── C1' ── C2' (HEAD)
+        //
+        // Strategy: reset HEAD to <upstream>, then for each commit
+        // in the original ahead-of-upstream range (oldest first),
+        // three-way merge it onto current HEAD using MergePlan +
+        // MergeApplier — the same machinery as `am-git merge`, one
+        // commit at a time. A clean apply produces a new commit
+        // with the original commit's author + author-date + message
+        // (committer is updated to "now" by `loadCommitter`).
+        //
+        // v1 limitations:
+        //   * Linear histories only — if any commit in the range is
+        //     a merge commit (multiple parents), we bail before
+        //     touching anything.
+        //   * No `--continue` / `--abort` yet (phase B). If the
+        //     reapply hits a conflict, we ROLL BACK fully — reset
+        //     HEAD + worktree + index to ORIG_HEAD — and tell the
+        //     user. So a failed rebase leaves you exactly where you
+        //     started, not partway through.
+        //   * No `--onto X` yet — always rebases onto <upstream>.
+        private static fun runRebase(args: String[]) {
+            try {
+                if (args.length() != 2UI) {
+                    "usage: am-git rebase <upstream>".println()
+                    return
+                }
+                var head = HeadReader.read(".git")
+                if (head.detached) {
+                    "rebase: cannot rebase from detached HEAD".println()
+                    return
+                }
+                if (head.commitSha == null) {
+                    "rebase: current branch has no commits yet".println()
+                    return
+                }
+                var upstreamName = args[1UI]
+                var upstreamSha = Program.resolveCommitish(upstreamName)
+                if (upstreamSha == null) {
+                    ("rebase: cannot resolve '" + upstreamName + "'").println()
+                    return
+                }
+
+                var store = new ObjectStore(".git")
+                var baseSha = MergeBase.find(head.commitSha, upstreamSha, store)
+                if (baseSha == null) {
+                    "rebase: refusing to rebase on unrelated history".println()
+                    return
+                }
+
+                // Already at / past upstream → nothing to do.
+                if (head.commitSha == upstreamSha) {
+                    "Current branch already at upstream.".println()
+                    return
+                }
+                // We are an ancestor of upstream → fast-forward.
+                if (baseSha == head.commitSha) {
+                    Program.rebaseFastForward(head, upstreamSha)
+                    return
+                }
+                // Upstream is an ancestor of HEAD → already rebased.
+                if (baseSha == upstreamSha) {
+                    "Current branch is up to date with upstream.".println()
+                    return
+                }
+
+                // Real rebase. Collect ahead-of-upstream commits in
+                // order from base (exclusive) to HEAD (inclusive),
+                // oldest-first. Linearity check happens inside.
+                var commits = Program.collectLinearAhead(head.commitSha, baseSha, store)
+                if (commits == null) {
+                    // collectLinearAhead already printed the reason.
+                    return
+                }
+
+                ("Rebasing " + commits.getSize().toString() + " commit(s) onto " +
+                    upstreamSha.substring(0UI, 7UI)).println()
+
+                // Save ORIG_HEAD so phase-B `--abort` (and the rollback
+                // path below) has somewhere to point at.
+                (head.commitSha + "\n").writeToFile(".git/ORIG_HEAD")
+                var origHead = head.commitSha
+
+                // Reset to upstream — both ref and workdir + index.
+                Program.moveBranchRef(head.branch, upstreamSha)
+                CheckoutClient.applyCommitToWorkTree(".git", ".", upstreamSha)
+
+                // Replay each commit onto the moving HEAD.
+                var currentHeadSha = upstreamSha
+                var i = 0
+                while (i < commits.getSize()) {
+                    var commit = commits.get(i)
+                    var replayed = Program.replayCommit(commit, currentHeadSha, head.branch, store)
+                    if (replayed == null) {
+                        // Conflict — phase A has no resume; roll back.
+                        ("rebase: conflict re-applying " + commit.sha.substring(0UI, 7UI) +
+                            " '" + Program.firstLine(commit.message) + "'").println()
+                        "  rolling back to ORIG_HEAD (phase-B `--continue` not yet wired)".println()
+                        Program.moveBranchRef(head.branch, origHead)
+                        CheckoutClient.applyCommitToWorkTree(".git", ".", origHead)
+                        return
+                    }
+                    currentHeadSha = replayed
+                    ("  applied " + commit.sha.substring(0UI, 7UI) + " → " +
+                        replayed.substring(0UI, 7UI) + " '" +
+                        Program.firstLine(commit.message) + "'").println()
+                    i = i + 1
+                }
+
+                ("Successfully rebased " + head.branch + " onto " +
+                    upstreamSha.substring(0UI, 7UI)).println()
+            } catch (ex: Exception) {
+                "rebase: failed".println()
+                ex.printWithStackTrace()
+            }
+        }
+
+        // FF-style "rebase" — HEAD is an ancestor of upstream, so
+        // the rebased history equals upstream. Just move the ref +
+        // checkout, no commits to replay.
+        private static fun rebaseFastForward(head: HeadInfo, upstreamSha: String) {
+            Program.moveBranchRef(head.branch, upstreamSha)
+            CheckoutClient.applyCommitToWorkTree(".git", ".", upstreamSha)
+            ("Fast-forward: " + head.branch + " advanced to " +
+                upstreamSha.substring(0UI, 7UI)).println()
+        }
+
+        // Walk commits from `headSha` (inclusive) back to `stopSha`
+        // (exclusive), enforcing linearity along the way. Returns
+        // oldest-first. Returns null + prints an explanation if the
+        // range contains a merge commit (v1 doesn't rebase through
+        // them).
+        private static fun collectLinearAhead(headSha: String, stopSha: String,
+                                                store: ObjectStore): List<Commit> {
+            var chain = List<Commit>.newList<Commit>()
+            var current = headSha
+            loop {
+                if (current == null) {
+                    "rebase: walked past the merge-base without finding it (history corruption?)".println()
+                    return null
+                }
+                if (current == stopSha) {
+                    break
+                }
+                if (!store.has(current)) {
+                    ("rebase: commit " + current + " not in object store").println()
+                    return null
+                }
+                var obj = store.read(current)
+                if (obj.typeCode != 1) {
+                    ("rebase: " + current + " is not a commit").println()
+                    return null
+                }
+                var commit = Commit.parse(current, obj.content)
+                if (commit.parents.getSize() > 1) {
+                    ("rebase: commit " + current.substring(0UI, 7UI) +
+                        " is a merge — v1 doesn't rebase through merge commits.").println()
+                    "  Either flatten the history with `git rebase --rebase-merges` (real git) or pick a different upstream.".println()
+                    return null
+                }
+                chain.add(commit)
+                if (commit.parents.getSize() == 0) {
+                    "rebase: ran off the end of history (no parent) before hitting the merge-base".println()
+                    return null
+                }
+                current = commit.parents.get(0)
+            }
+            // chain is newest-first; reverse for oldest-first apply order.
+            return Program.reverseCommits(chain)
+        }
+
+        // Three-way merge `commit` (theirs) onto `currentHeadSha`
+        // (ours) using `commit.parents.get(0)`'s tree as the base.
+        // On clean apply, writes a new commit and returns its SHA;
+        // on conflict, returns null. Updates the branch ref to point
+        // at the new commit on success.
+        //
+        // Author + author-date + message are preserved verbatim from
+        // the original commit; the committer line is set fresh from
+        // the env (real git does the same).
+        private static fun replayCommit(commit: Commit, currentHeadSha: String,
+                                          branch: String, store: ObjectStore): String {
+            // Parent's tree as the merge base. The parent must exist
+            // in the store — we walked through it during
+            // collectLinearAhead.
+            var parentSha = commit.parents.get(0)
+            var parentCommit = store.read(parentSha)
+            var baseTree = WorkTree.extractRootTreeSha(parentCommit.content)
+            var currentHeadCommit = store.read(currentHeadSha)
+            var oursTree = WorkTree.extractRootTreeSha(currentHeadCommit.content)
+            var theirsTree = commit.treeSha
+
+            var plan = MergePlan.compute(baseTree, oursTree, theirsTree, store)
+
+            var idx = GitIndex.read(".git")
+            var applier = new MergeApplier(".", store, idx)
+            var conflicts = applier.apply(plan)
+            idx.write(".git")
+
+            if (conflicts.getSize() > 0) {
+                return null
+            }
+
+            // Build a new tree from the resolved index, then commit.
+            var idxAfter = GitIndex.read(".git")
+            var writer = new LooseObjectWriter(".git")
+            var newTreeSha = IndexTreeBuilder.build(idxAfter, writer)
+
+            var committer = Identity.loadCommitter()
+            if (committer == null) {
+                throw new Exception("rebase: identity not configured (set AM_GIT_USER_NAME and AM_GIT_USER_EMAIL)")
+            }
+            var committerTime = Identity.loadCommitterDate()
+            if (committerTime == null) {
+                committerTime = new DateTime()
+            }
+
+            var newCommitSha = new CommitWriter(writer).writeRawAuthor(
+                newTreeSha, currentHeadSha,
+                commit.author,           // preserve original author line verbatim
+                committer, committerTime,
+                commit.message)
+
+            // Move the branch ref forward to the new commit.
+            Program.moveBranchRef(branch, newCommitSha)
+            return newCommitSha
+        }
+
+        // Reverse a List<Commit>. AmLang's List doesn't have a
+        // built-in reverse, so we walk it bottom-up.
+        private static fun reverseCommits(in: List<Commit>): List<Commit> {
+            var out = List<Commit>.newList<Commit>()
+            var i = in.getSize() - 1
+            while (i >= 0) {
+                out.add(in.get(i))
+                i = i - 1
+            }
+            return out
+        }
+
+        // First line of a multi-line commit message (everything up
+        // to the first `\n`). Used for one-line progress output.
+        private static fun firstLine(message: String): String {
+            if (message == null) {
+                return ""
+            }
+            var nl = message.indexOf("\n")
+            if (nl < 0) {
+                return message
+            }
+            return message.substring(0UI, nl.toUInt())
+        }
+
+        // Centralised "write a SHA to refs/heads/<branch>" — used
+        // by both rebase and reset, kept here so the
+        // ensureParentDir + trailing-newline contract lives in one
+        // spot.
+        private static fun moveBranchRef(branch: String, sha: String) {
+            var refPath = ".git/refs/heads/" + branch
+            Repository.ensureParentDir(refPath)
+            (sha + "\n").writeToFile(refPath)
+        }
+
         // `am-git reset [--soft|--mixed|--hard] [<commit>]`
         //
         //   --soft           move HEAD only. Index + working tree
@@ -1718,6 +1990,7 @@ namespace AmGit
             "  merge-base <a> <b>                  Print the lowest common ancestor of two commits".println()
             "  reset [--soft|--mixed|--hard]       Move HEAD (and optionally index / worktree) to <commit>".println()
             "    [<commit>]".println()
+            "  rebase <upstream>                   Replay current-branch commits on top of <upstream>".println()
             "  diff [--staged] [--name-only |      Path-level diff (worktree/index/HEAD/two commits)".println()
             "    --name-status] [<a> [<b>]]".println()
             "  commit -m <message>                 Commit the cwd working tree against HEAD".println()
