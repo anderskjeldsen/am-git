@@ -1,0 +1,238 @@
+namespace Am.Git.Tests {
+
+    // GitIgnore — pattern matching + multi-level .gitignore loading.
+    //
+    // The matcher is what most tests exercise: we construct a small
+    // `GitIgnore` by hand (via the `from(...)` helper) and ask
+    // `isIgnored` directly. The end-to-end loading path (find every
+    // .gitignore under a worktree, parse them, scope rules) is
+    // covered by a single disk-fixture test at the bottom.
+    class GitIgnoreTest {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+        import Am.Git
+        import Am.Tests
+
+        // ---- comments & blank lines ----------------------------------
+
+        // Comments (`#`) and blank lines must produce no rules.
+        test commentsAndBlanksIgnored() {
+            var ig = GitIgnoreTest.from(
+                "# a comment\n" +
+                "\n" +
+                "   \n" +
+                "#another\n")
+            // Nothing's ignored — no rules.
+            Assert.assertFalse(ig.isIgnored("foo.txt", false))
+            Assert.assertFalse(ig.isIgnored("build", true))
+        }
+
+        // ---- basename patterns ---------------------------------------
+
+        // A bare pattern matches by basename anywhere in the tree.
+        test bareBasenameMatchesAnywhere() {
+            var ig = GitIgnoreTest.from("*.log\n")
+            Assert.assertTrue(ig.isIgnored("foo.log", false))
+            Assert.assertTrue(ig.isIgnored("a/b/foo.log", false))
+            Assert.assertFalse(ig.isIgnored("foo.txt", false))
+            Assert.assertFalse(ig.isIgnored("logfile", false))
+        }
+
+        // Bare literal name matches directory components too.
+        test bareNameMatchesDirComponent() {
+            var ig = GitIgnoreTest.from("build\n")
+            Assert.assertTrue(ig.isIgnored("build", true))
+            Assert.assertTrue(ig.isIgnored("src/build/obj.o", false))
+            Assert.assertTrue(ig.isIgnored("nested/path/build/x", false))
+            Assert.assertFalse(ig.isIgnored("not-build.txt", false))
+        }
+
+        // ---- anchored patterns ---------------------------------------
+
+        // Leading `/` anchors the pattern to the .gitignore's dir.
+        test leadingSlashAnchorsToRoot() {
+            var ig = GitIgnoreTest.from("/build\n")
+            Assert.assertTrue(ig.isIgnored("build", true))
+            Assert.assertTrue(ig.isIgnored("build/obj.o", false))
+            // NOT matched: subdirectory called build.
+            Assert.assertFalse(ig.isIgnored("src/build/obj.o", false))
+        }
+
+        // A pattern with an interior `/` is anchored too.
+        test interiorSlashAnchors() {
+            var ig = GitIgnoreTest.from("src/build\n")
+            Assert.assertTrue(ig.isIgnored("src/build", true))
+            Assert.assertTrue(ig.isIgnored("src/build/foo.o", false))
+            // Same name at a different depth → no match.
+            Assert.assertFalse(ig.isIgnored("other/src/build", true))
+            Assert.assertFalse(ig.isIgnored("build", true))
+        }
+
+        // ---- dir-only patterns ---------------------------------------
+
+        // Trailing `/` makes the pattern dir-only — files of the same
+        // name are NOT ignored.
+        test trailingSlashRestrictsToDirs() {
+            var ig = GitIgnoreTest.from("logs/\n")
+            // The directory.
+            Assert.assertTrue(ig.isIgnored("logs", true))
+            // A file called logs at the same level — NOT ignored.
+            Assert.assertFalse(ig.isIgnored("logs", false))
+            // Files inside the dir component still match by the
+            // matched directory component.
+            Assert.assertTrue(ig.isIgnored("logs/today.log", false))
+        }
+
+        // ---- glob metacharacters -------------------------------------
+
+        // `*` matches any run of non-`/` chars.
+        test starMatchesAnyNonSlashRun() {
+            var ig = GitIgnoreTest.from("*.tmp\n")
+            Assert.assertTrue(ig.isIgnored("a.tmp", false))
+            Assert.assertTrue(ig.isIgnored("longer-name.tmp", false))
+            // .tmp inside path → still matches by basename.
+            Assert.assertTrue(ig.isIgnored("sub/foo.tmp", false))
+            // .tmp directory component shouldn't fire on a NESTED
+            // file with a non-matching basename.
+            Assert.assertFalse(ig.isIgnored("sub/foo.txt", false))
+        }
+
+        // `?` matches exactly one non-`/` char.
+        test questionMatchesSingleChar() {
+            var ig = GitIgnoreTest.from("?.o\n")
+            Assert.assertTrue(ig.isIgnored("a.o", false))
+            Assert.assertTrue(ig.isIgnored("b.o", false))
+            Assert.assertFalse(ig.isIgnored("ab.o", false))
+            Assert.assertFalse(ig.isIgnored(".o", false))
+        }
+
+        // Glob characters don't cross slashes — `*.log` doesn't match
+        // a path that has a `/` in the spot the `*` would consume.
+        test starDoesNotCrossSlash() {
+            var ig = GitIgnoreTest.from("foo*\n")
+            Assert.assertTrue(ig.isIgnored("foo", false))
+            Assert.assertTrue(ig.isIgnored("foobar", false))
+            // Within a single basename: fine.
+            Assert.assertTrue(ig.isIgnored("nested/foobar", false))
+            // The pattern is unanchored, so basename `foo*` matches
+            // at any depth — but `*` itself can't cross `/`.
+            // Already covered above; just make sure a path WHERE the
+            // basename doesn't satisfy `foo*` is rejected.
+            Assert.assertFalse(ig.isIgnored("nested/notfoo", false))
+        }
+
+        // ---- negation -----------------------------------------------
+
+        // `!pattern` un-ignores. Order matters: a later `!` overrides
+        // an earlier match; an earlier `!` is overridden by a later
+        // positive rule.
+        test negationLastMatchWins() {
+            var ig = GitIgnoreTest.from(
+                "*.log\n" +
+                "!keep.log\n")
+            Assert.assertTrue(ig.isIgnored("a.log", false))
+            Assert.assertFalse(ig.isIgnored("keep.log", false))
+        }
+
+        test negationOverriddenByLater() {
+            var ig = GitIgnoreTest.from(
+                "!keep.log\n" +
+                "*.log\n")
+            // Last match (the `*.log`) wins → still ignored.
+            Assert.assertTrue(ig.isIgnored("keep.log", false))
+        }
+
+        // ---- multi-line files ---------------------------------------
+
+        // Multiple rules in one file all apply.
+        test multipleRulesInOneFile() {
+            var ig = GitIgnoreTest.from(
+                "*.log\n" +
+                "build/\n" +
+                "node_modules\n")
+            Assert.assertTrue(ig.isIgnored("a.log", false))
+            Assert.assertTrue(ig.isIgnored("build", true))
+            Assert.assertTrue(ig.isIgnored("node_modules/x", false))
+            Assert.assertFalse(ig.isIgnored("src/main.aml", false))
+        }
+
+        // ---- end-to-end on disk -------------------------------------
+
+        // Real .gitignore files at two depths get loaded, parsed, and
+        // applied with correct scoping. Exercises:
+        //   - root .gitignore vs subdir/.gitignore
+        //   - .git/info/exclude
+        //   - subdir scope (a subdir rule must NOT match outside it)
+        test loadFromWorktreeWithMultipleLevels() {
+            GitIgnoreTest.cleanup()
+            try {
+                // Worktree layout:
+                //   ./testignore/.gitignore         contains "*.log"
+                //   ./testignore/.git/info/exclude  contains "secret"
+                //   ./testignore/src/.gitignore     contains "*.tmp"
+                Repository.ensureDir("./testignore/src")
+                Repository.ensureDir("./testignore/.git/info")
+                "*.log\n".writeToFile("./testignore/.gitignore")
+                "secret\n".writeToFile("./testignore/.git/info/exclude")
+                "*.tmp\n".writeToFile("./testignore/src/.gitignore")
+
+                var ig = GitIgnore.load("./testignore", "./testignore/.git")
+
+                // Root *.log rule applies everywhere.
+                Assert.assertTrue(ig.isIgnored("foo.log", false))
+                Assert.assertTrue(ig.isIgnored("src/foo.log", false))
+
+                // info/exclude's "secret" applies everywhere.
+                Assert.assertTrue(ig.isIgnored("secret", false))
+                Assert.assertTrue(ig.isIgnored("src/secret", false))
+
+                // src/.gitignore's "*.tmp" only matches under src/.
+                Assert.assertTrue(ig.isIgnored("src/scratch.tmp", false))
+                Assert.assertFalse(ig.isIgnored("scratch.tmp", false))
+
+                // Untouched paths aren't ignored.
+                Assert.assertFalse(ig.isIgnored("main.aml", false))
+                Assert.assertFalse(ig.isIgnored("src/main.aml", false))
+            } catch (ex: Exception) {
+                GitIgnoreTest.cleanup()
+                throw ex
+            }
+            GitIgnoreTest.cleanup()
+        }
+
+        // ---- helpers --------------------------------------------------
+
+        // Parse a single in-memory .gitignore body into a GitIgnore.
+        // We don't have a public constructor that takes raw text,
+        // but writing to a temp file + calling GitIgnore.load is
+        // unwieldy for the matcher-only tests, so we go through
+        // a disk fixture but only at the root.
+        private static fun from(content: String): GitIgnore {
+            GitIgnoreTest.cleanup()
+            Repository.ensureDir("./testignore")
+            content.writeToFile("./testignore/.gitignore")
+            return GitIgnore.load("./testignore", "./testignore/.git")
+        }
+
+        private static fun cleanup() {
+            GitIgnoreTest.deleteRecursive("./testignore")
+        }
+
+        private static fun deleteRecursive(path: String) {
+            var f = new File(path)
+            if (!f.exists()) {
+                return
+            }
+            if (f.isDirectory()) {
+                var children = f.listFiles()
+                var i = 0
+                while (i < children.length().toInt()) {
+                    GitIgnoreTest.deleteRecursive(children[i.toUInt()].toString())
+                    i = i + 1
+                }
+            }
+            f.delete()
+        }
+    }
+}

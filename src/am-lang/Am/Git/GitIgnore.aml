@@ -1,0 +1,406 @@
+namespace Am.Git
+{
+    // One parsed line from a `.gitignore` file. We strip the
+    // leading `!` (recorded in `negate`) and the trailing `/`
+    // (recorded in `dirOnly`) at parse time so `matches()` doesn't
+    // have to deal with them.
+    //
+    // `anchored` means "must match starting from the .gitignore's
+    // directory" — true when the original pattern contained a `/`
+    // anywhere other than the trailing position. Bare patterns
+    // (`*.log`, `build`) are unanchored and match by basename
+    // anywhere below the .gitignore.
+    //
+    // `basePath` is the slash-separated path of the .gitignore's
+    // directory relative to the worktree root. The empty string
+    // means the root .gitignore. Used to scope rules so a
+    // `subdir/.gitignore` rule never matches outside `subdir/`.
+    class GitIgnoreRule(
+        var pattern: String,
+        var negate: Bool,
+        var dirOnly: Bool,
+        var anchored: Bool,
+        var basePath: String
+    )
+    {
+        import Am.Lang
+    }
+
+    // `.gitignore` parser + matcher.
+    //
+    // Scope:
+    //   * Loads every `.gitignore` reachable from the worktree root,
+    //     plus `.git/info/exclude` if present (real git's
+    //     non-versioned per-repo exclude file).
+    //   * Comments (`#` at column 0) and blank lines.
+    //   * Leading `!` negation. Trailing `/` to restrict to
+    //     directories.
+    //   * Glob metacharacters `*` (any chars except `/`) and `?`
+    //     (single char except `/`). No `**` and no `[abc]` ranges
+    //     — those need a real glob compiler and aren't a regular
+    //     papercut in practice.
+    //
+    // Match semantics follow gitignore(5): rules are tested in
+    // file order, last match wins, a `!`-rule reverses an earlier
+    // match. Patterns containing `/` are anchored to the
+    // .gitignore's directory; bare patterns match by basename at
+    // any depth below it.
+    //
+    // Use:
+    //
+    //   var ig = GitIgnore.load(workTreePath, ".git")
+    //   if (ig.isIgnored(relPath, isDir)) { skip }
+    class GitIgnore
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        private var rules: List<GitIgnoreRule> = List<GitIgnoreRule>.newList<GitIgnoreRule>()
+
+        // Walk the worktree from `workTreePath`, load every
+        // .gitignore at every depth, plus `.git/info/exclude`. The
+        // walk uses `.git` as the skip dir — same convention as
+        // every other tree walk in am-git.
+        static fun load(workTreePath: String, gitDir: String): GitIgnore {
+            var g = new GitIgnore()
+            // .git/info/exclude first so file-level .gitignore rules
+            // can override it (last match wins).
+            var excludeFile = new File(gitDir + "/info/exclude")
+            if (excludeFile.exists()) {
+                g.loadFile(excludeFile.toString(), "")
+            }
+            g.loadGitIgnoreUnder(workTreePath, "")
+            return g
+        }
+
+        // Recursive .gitignore discovery. At each directory, if a
+        // .gitignore file is present, load it with the directory's
+        // relative path as `basePath` so the rules are scoped
+        // correctly.
+        private fun loadGitIgnoreUnder(absDirPath: String, relPrefix: String) {
+            var ignoreFile = new File(absDirPath + "/.gitignore")
+            if (ignoreFile.exists()) {
+                this.loadFile(ignoreFile.toString(), relPrefix)
+            }
+            var dir = new File(absDirPath)
+            if (!dir.exists()) {
+                return
+            }
+            var entries = dir.listFiles()
+            var i = 0
+            while (i < entries.length().toInt()) {
+                var f = entries[i.toUInt()]
+                var name = f.getName()
+                if (name == ".git") {
+                    i = i + 1
+                    continue
+                }
+                if (f.isDirectory()) {
+                    var sub: String
+                    if (relPrefix.length() == 0) {
+                        sub = name
+                    } else {
+                        sub = relPrefix + "/" + name
+                    }
+                    this.loadGitIgnoreUnder(f.toString(), sub)
+                }
+                i = i + 1
+            }
+        }
+
+        // Parse one file, append rules to `this.rules`.
+        private fun loadFile(absPath: String, basePath: String) {
+            var raw = String.readFromFile(absPath)
+            var lines = GitIgnore.splitLines(raw)
+            var i = 0
+            while (i < lines.getSize()) {
+                var rule = GitIgnore.parseLine(lines.get(i), basePath)
+                if (rule != null) {
+                    this.rules.add(rule)
+                }
+                i = i + 1
+            }
+        }
+
+        // Parse one line. Returns null for blanks / comments.
+        private static fun parseLine(line: String, basePath: String): GitIgnoreRule {
+            var trimmed = GitIgnore.trimTrailingWhitespace(line)
+            if (trimmed.length() == 0) {
+                return null
+            }
+            if (trimmed.characterAt(0UI).toInt() == 35) {  // '#'
+                return null
+            }
+
+            var negate = false
+            var work = trimmed
+            if (work.characterAt(0UI).toInt() == 33) {  // '!'
+                negate = true
+                work = work.substringToEnd(1UI)
+            }
+
+            var dirOnly = false
+            if (work.length() > 0 && work.characterAt((work.length() - 1).toUInt()).toInt() == 47) {  // trailing '/'
+                dirOnly = true
+                work = work.substring(0UI, (work.length() - 1).toUInt())
+            }
+
+            // Anchored if the (now-stripped) pattern contains a slash
+            // anywhere — including a leading one, which we then peel
+            // off so the matcher doesn't have to special-case it.
+            var anchored = false
+            if (GitIgnore.contains(work, "/")) {
+                anchored = true
+                if (work.length() > 0 && work.characterAt(0UI).toInt() == 47) {
+                    work = work.substringToEnd(1UI)
+                }
+            }
+
+            if (work.length() == 0) {
+                return null
+            }
+            return new GitIgnoreRule(work, negate, dirOnly, anchored, basePath)
+        }
+
+        // True iff `relPath` (slash-separated, relative to the
+        // worktree root) is ignored. `isDir` is needed because some
+        // rules are directory-only.
+        fun isIgnored(relPath: String, isDir: Bool): Bool {
+            var ignored = false
+            var i = 0
+            while (i < this.rules.getSize()) {
+                var rule = this.rules.get(i)
+                if (GitIgnore.ruleMatches(rule, relPath, isDir)) {
+                    var neg = rule.negate
+                    if (neg) {
+                        ignored = false
+                    } else {
+                        ignored = true
+                    }
+                }
+                i = i + 1
+            }
+            return ignored
+        }
+
+        // True iff `rule` matches `relPath`. Handles three things at
+        // once:
+        //
+        //   * Base-path scoping — a rule from `subdir/.gitignore`
+        //     only applies to paths under `subdir/`.
+        //   * Dir-only restriction — applies to the leaf only. A
+        //     `logs/` rule must NOT match a sibling FILE called
+        //     `logs` (isDir=false at the leaf), but MUST match a
+        //     FILE under the `logs/` directory because the dir
+        //     itself is ignored.
+        //   * "Ignored-directory implies ignored-contents" — if any
+        //     directory component along `relPath` matches the
+        //     pattern, the rule fires for the file too. Real git
+        //     achieves the same effect by not descending into
+        //     ignored directories during the worktree walk; we get
+        //     it here so callers that test paths independently get
+        //     the right answer.
+        private static fun ruleMatches(rule: GitIgnoreRule, relPath: String, isDir: Bool): Bool {
+            // Scope the rule to its base directory.
+            var localPath = relPath
+            if (rule.basePath.length() > 0) {
+                var prefix = rule.basePath + "/"
+                if (!GitIgnore.startsWith(localPath, prefix)) {
+                    return false
+                }
+                localPath = localPath.substringToEnd(prefix.length().toUInt())
+            }
+
+            var parts = GitIgnore.splitOn(localPath, "/")
+            var n = parts.getSize()
+
+            if (rule.anchored) {
+                // Anchored: pattern must match the FULL localPath
+                // (leaf), or a slash-separated prefix of it (a
+                // directory in the path). Either case fires the rule.
+                if (GitIgnore.globMatch(rule.pattern, localPath)) {
+                    // Full-path match — dir-only restricts to isDir.
+                    if (!rule.dirOnly) {
+                        return true
+                    }
+                    if (isDir) {
+                        return true
+                    }
+                    return false
+                }
+                // Try each non-leaf prefix: those are by definition
+                // directories (something followed by `/`), so dir-only
+                // rules fire here unconditionally.
+                var rebuilt = ""
+                var i = 0
+                while (i < n - 1) {
+                    if (rebuilt.length() > 0) {
+                        rebuilt = rebuilt + "/"
+                    }
+                    rebuilt = rebuilt + parts.get(i)
+                    if (GitIgnore.globMatch(rule.pattern, rebuilt)) {
+                        return true
+                    }
+                    i = i + 1
+                }
+                return false
+            }
+
+            // Unanchored: pattern matches by basename at any depth.
+            // Walk every segment; a non-leaf match always fires (the
+            // segment is a directory in the path), a leaf match
+            // respects dir-only.
+            var j = 0
+            while (j < n) {
+                if (GitIgnore.globMatch(rule.pattern, parts.get(j))) {
+                    if (j < n - 1) {
+                        return true
+                    }
+                    // Leaf segment.
+                    if (!rule.dirOnly) {
+                        return true
+                    }
+                    if (isDir) {
+                        return true
+                    }
+                }
+                j = j + 1
+            }
+            return false
+        }
+
+        // Glob match: `*` matches any run of non-`/` chars,
+        // `?` matches a single non-`/` char. Recursive backtracking
+        // — fine for the short patterns .gitignore lines actually
+        // contain. Returns true iff the entire `s` matches the
+        // entire `pattern`.
+        private static fun globMatch(pattern: String, s: String): Bool {
+            return GitIgnore.globMatchAt(pattern, 0, s, 0)
+        }
+
+        private static fun globMatchAt(pattern: String, pi: Int, s: String, si: Int): Bool {
+            var plen = pattern.length()
+            var slen = s.length()
+            if (pi >= plen) {
+                return si >= slen
+            }
+            var pc = pattern.characterAt(pi.toUInt()).toInt()
+            if (pc == 42) {  // '*'
+                // Match zero or more chars (excluding '/').
+                // Try every length from 0 up.
+                var k = si
+                while (k <= slen) {
+                    if (GitIgnore.globMatchAt(pattern, pi + 1, s, k)) {
+                        return true
+                    }
+                    if (k < slen) {
+                        var sc = s.characterAt(k.toUInt()).toInt()
+                        if (sc == 47) {  // '/'
+                            return false
+                        }
+                    }
+                    k = k + 1
+                }
+                return false
+            }
+            if (pc == 63) {  // '?'
+                if (si >= slen) {
+                    return false
+                }
+                var sc = s.characterAt(si.toUInt()).toInt()
+                if (sc == 47) {
+                    return false
+                }
+                return GitIgnore.globMatchAt(pattern, pi + 1, s, si + 1)
+            }
+            // Literal.
+            if (si >= slen) {
+                return false
+            }
+            var sc = s.characterAt(si.toUInt()).toInt()
+            if (sc != pc) {
+                return false
+            }
+            return GitIgnore.globMatchAt(pattern, pi + 1, s, si + 1)
+        }
+
+        // ---- small string helpers (not in stdlib yet) -----------
+
+        private static fun splitLines(raw: String): List<String> {
+            var out = List<String>.newList<String>()
+            var sb = new StringBuilder()
+            var i: UInt = 0UI
+            while (i < raw.length().toUInt()) {
+                var c = raw.characterAt(i).toInt()
+                if (c == 10) {
+                    out.add(sb.toString())
+                    sb = new StringBuilder()
+                } else if (c == 13) {
+                    // CR; treat as no-op so CRLF files still split
+                    // cleanly. The LF on the next iteration finalises
+                    // the line.
+                } else {
+                    sb.addChar(c.toUShort())
+                }
+                i++
+            }
+            // Don't lose a trailing line missing a final \n.
+            if (sb.getLength() > 0UI) {
+                out.add(sb.toString())
+            }
+            return out
+        }
+
+        private static fun splitOn(s: String, sep: String): List<String> {
+            var out = List<String>.newList<String>()
+            var sepC = sep.characterAt(0UI).toInt()
+            var sb = new StringBuilder()
+            var i: UInt = 0UI
+            while (i < s.length().toUInt()) {
+                var c = s.characterAt(i).toInt()
+                if (c == sepC) {
+                    out.add(sb.toString())
+                    sb = new StringBuilder()
+                } else {
+                    sb.addChar(c.toUShort())
+                }
+                i++
+            }
+            out.add(sb.toString())
+            return out
+        }
+
+        // True iff `needle` appears anywhere in `hay`. We have
+        // String.indexOf for this elsewhere, but it returns Int
+        // and we just want a boolean.
+        private static fun contains(hay: String, needle: String): Bool {
+            return hay.indexOf(needle) >= 0
+        }
+
+        private static fun startsWith(s: String, prefix: String): Bool {
+            return s.startsWith(prefix)
+        }
+
+        // Strip trailing space/tab/CR/LF. We don't strip leading
+        // whitespace because gitignore patterns can legitimately
+        // start with characters that look like spacing.
+        private static fun trimTrailingWhitespace(s: String): String {
+            var end = s.length()
+            var go = true
+            while (go) {
+                if (end <= 0) {
+                    go = false
+                } else {
+                    var c = s.characterAt((end - 1).toUInt()).toInt()
+                    if (c == 32 || c == 9 || c == 13 || c == 10) {
+                        end = end - 1
+                    } else {
+                        go = false
+                    }
+                }
+            }
+            return s.substring(0UI, end.toUInt())
+        }
+    }
+}

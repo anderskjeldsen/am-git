@@ -38,10 +38,16 @@ namespace Am.Git
             var writer = new LooseObjectWriter(gitDir)
             var added = 0
 
+            // Load .gitignore rules once per `add` invocation. They
+            // apply to recursive `add .` / dir adds; explicit paths
+            // (`am-git add some/ignored/file`) bypass the check, same
+            // as real git's "if you name it explicitly, you mean it".
+            var ignore = GitIgnore.load(workTreePath, gitDir)
+
             var i = 0
             while (i < paths.getSize()) {
                 added = added + AddCommand.addOne(gitDir, workTreePath, paths.get(i),
-                                                    idx, writer)
+                                                    idx, writer, ignore)
                 i = i + 1
             }
 
@@ -53,10 +59,11 @@ namespace Am.Git
         // files actually staged (so a no-op `add` still tells the
         // user what happened).
         private static fun addOne(gitDir: String, workTreePath: String, rawPath: String,
-                                   idx: GitIndex, writer: LooseObjectWriter): Int {
+                                   idx: GitIndex, writer: LooseObjectWriter,
+                                   ignore: GitIgnore): Int {
             // "." → the work tree itself.
             if (rawPath == "." || rawPath == "./") {
-                return AddCommand.addDir(gitDir, workTreePath, "", idx, writer)
+                return AddCommand.addDir(gitDir, workTreePath, "", idx, writer, ignore)
             }
             // Strip a leading "./" so the relative key matches the
             // format used elsewhere (HEAD tree paths, status output).
@@ -75,15 +82,17 @@ namespace Am.Git
                 return 0
             }
             if (f.isDirectory()) {
-                return AddCommand.addDir(gitDir, workTreePath, rel, idx, writer)
+                return AddCommand.addDir(gitDir, workTreePath, rel, idx, writer, ignore)
             }
             AddCommand.stageFile(gitDir, workTreePath, rel, idx, writer)
             return 1
         }
 
-        // Walk a directory, staging every non-`.git` file underneath.
+        // Walk a directory, staging every non-`.git` file underneath
+        // that isn't excluded by `.gitignore`.
         private static fun addDir(gitDir: String, workTreePath: String, relPrefix: String,
-                                   idx: GitIndex, writer: LooseObjectWriter): Int {
+                                   idx: GitIndex, writer: LooseObjectWriter,
+                                   ignore: GitIgnore): Int {
             var dirPath: String
             if (relPrefix.length() == 0) {
                 dirPath = workTreePath
@@ -110,8 +119,18 @@ namespace Am.Git
                 } else {
                     relPath = relPrefix + "/" + name
                 }
-                if (f.isDirectory()) {
-                    count = count + AddCommand.addDir(gitDir, workTreePath, relPath, idx, writer)
+                var isDir = f.isDirectory()
+                // Skip paths the user told us to ignore. We test
+                // before recursing into dirs, so ignored dirs aren't
+                // walked at all — matches real git's behaviour and
+                // saves us a pile of File operations on large
+                // builds/ trees.
+                if (ignore.isIgnored(relPath, isDir)) {
+                    i = i + 1
+                    continue
+                }
+                if (isDir) {
+                    count = count + AddCommand.addDir(gitDir, workTreePath, relPath, idx, writer, ignore)
                 } else {
                     AddCommand.stageFile(gitDir, workTreePath, relPath, idx, writer)
                     count = count + 1

@@ -167,6 +167,100 @@ namespace Am.Git.Tests {
             Assert.assertTrue(idx.hasUnmerged())
         }
 
+        // pathToSha must skip conflict-stage rows — folding multiple
+        // stages into a path-keyed HashMap would have stage 3 silently
+        // overwrite stage 1/2. Resolved entries pass through normally.
+        test pathToShaExcludesConflictStages() {
+            var idx = new GitIndex()
+            idx.entries.add(GitIndexTest.entry(
+                "clean", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                33188UI, 0x0005US))
+            idx.entries.add(GitIndexTest.entry(
+                "conflicted", "1111111111111111111111111111111111111111",
+                33188UI, 0x100aUS))
+            idx.entries.add(GitIndexTest.entry(
+                "conflicted", "2222222222222222222222222222222222222222",
+                33188UI, 0x200aUS))
+            idx.entries.add(GitIndexTest.entry(
+                "conflicted", "3333333333333333333333333333333333333333",
+                33188UI, 0x300aUS))
+
+            var m = idx.pathToSha()
+            Assert.assertEquals(1, m.getSize())
+            Assert.assertTrue(m.containsKey("clean"))
+            Assert.assertFalse(m.containsKey("conflicted"))
+            Assert.assertEquals("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                m.get("clean"))
+        }
+
+        // unmergedPaths returns deduped paths in insertion order.
+        test unmergedPathsDeduped() {
+            var idx = new GitIndex()
+            idx.entries.add(GitIndexTest.entry(
+                "a", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 33188UI, 0x1001US))
+            idx.entries.add(GitIndexTest.entry(
+                "a", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 33188UI, 0x2001US))
+            idx.entries.add(GitIndexTest.entry(
+                "a", "cccccccccccccccccccccccccccccccccccccccc", 33188UI, 0x3001US))
+            idx.entries.add(GitIndexTest.entry(
+                "b", "dddddddddddddddddddddddddddddddddddddddd", 33188UI, 0x1001US))
+            idx.entries.add(GitIndexTest.entry(
+                "c", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", 33188UI, 0x0001US))
+
+            var paths = idx.unmergedPaths()
+            Assert.assertEquals(2, paths.getSize())
+            Assert.assertEquals("a", paths.get(0))
+            Assert.assertEquals("b", paths.get(1))
+        }
+
+        // unmergedXY pattern-matches the stage triple. Each of the
+        // four canonical conflict shapes maps to its own XY code.
+        test unmergedXYAllShapes() {
+            // UU: all three stages present
+            var idx1 = GitIndexTest.indexWithStages("p",
+                true, true, true)
+            Assert.assertEquals("UU", idx1.unmergedXY("p"))
+
+            // AA: stages 2+3 only (no base)
+            var idx2 = GitIndexTest.indexWithStages("p",
+                false, true, true)
+            Assert.assertEquals("AA", idx2.unmergedXY("p"))
+
+            // DU: stages 1+3 only (we deleted)
+            var idx3 = GitIndexTest.indexWithStages("p",
+                true, false, true)
+            Assert.assertEquals("DU", idx3.unmergedXY("p"))
+
+            // UD: stages 1+2 only (they deleted)
+            var idx4 = GitIndexTest.indexWithStages("p",
+                true, true, false)
+            Assert.assertEquals("UD", idx4.unmergedXY("p"))
+
+            // No conflict at all → empty string
+            var idx5 = new GitIndex()
+            Assert.assertEquals("", idx5.unmergedXY("p"))
+        }
+
+        private static fun indexWithStages(path: String, has1: Bool, has2: Bool, has3: Bool): GitIndex {
+            var idx = new GitIndex()
+            if (has1) {
+                idx.entries.add(GitIndexTest.entry(
+                    path, "1111111111111111111111111111111111111111",
+                    33188UI, 0x1001US))
+            }
+            if (has2) {
+                idx.entries.add(GitIndexTest.entry(
+                    path, "2222222222222222222222222222222222222222",
+                    33188UI, 0x2001US))
+            }
+            if (has3) {
+                idx.entries.add(GitIndexTest.entry(
+                    path, "3333333333333333333333333333333333333333",
+                    33188UI, 0x3001US))
+            }
+            return idx
+        }
+
         // ---- helpers -------------------------------------------------
 
         private static fun entry(path: String, sha: String, mode: UInt, flags: UShort): IndexEntry {

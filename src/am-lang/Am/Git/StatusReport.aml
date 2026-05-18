@@ -51,8 +51,11 @@ namespace Am.Git
 
             // Working-tree state — same hashing as `am-git add`, so a
             // file that's been staged-and-untouched compares equal.
+            // We honour .gitignore at status-walk time so ignored
+            // files don't show up as `??` noise.
+            var ignore = GitIgnore.load(workTreePath, gitDir)
             var diskPaths = new HashMap<String, String>()
-            StatusReport.collectDiskPaths(workTreePath, "", diskPaths)
+            StatusReport.collectDiskPaths(workTreePath, "", diskPaths, ignore)
 
             // Index state. Absence is fine — old repos / fresh clones
             // don't have one, and we degrade to a worktree-vs-HEAD diff.
@@ -63,8 +66,20 @@ namespace Am.Git
 
             var idx = GitIndex.read(gitDir)
             var indexPaths = idx.pathToSha()
+            // Unmerged paths (any path with a stage > 0 row). These
+            // need their own bucket because the regular staged/unstaged
+            // diff doesn't have a single "index version" to compare
+            // against — there's a base, an "ours", and a "theirs".
+            var unmergedList = idx.unmergedPaths()
+            var unmergedSet = new HashSet<String>()
+            var um = 0
+            while (um < unmergedList.getSize()) {
+                unmergedSet.add(unmergedList.get(um))
+                um = um + 1
+            }
 
-            // Staged: differences between index and HEAD.
+            // Staged: differences between index and HEAD. Skip unmerged
+            // paths — they're reported separately below.
             var stagedAdded = List<String>.newList<String>()
             var stagedModified = List<String>.newList<String>()
             var stagedDeleted = List<String>.newList<String>()
@@ -72,6 +87,14 @@ namespace Am.Git
             var i = 0
             while (i < indexKeys.getSize()) {
                 var path = indexKeys.get(i)
+                if (unmergedSet.contains(path)) {
+                    // Stage-0 rows are filtered out by pathToSha for
+                    // unmerged paths, but a defensive skip here keeps
+                    // the bucketing exclusive even if that contract
+                    // changes.
+                    i = i + 1
+                    continue
+                }
                 if (!headPaths.containsKey(path)) {
                     stagedAdded.add(path)
                 } else if (headPaths.get(path) != indexPaths.get(path)) {
@@ -83,6 +106,10 @@ namespace Am.Git
             var hi = 0
             while (hi < headKeys.getSize()) {
                 var path = headKeys.get(hi)
+                if (unmergedSet.contains(path)) {
+                    hi = hi + 1
+                    continue
+                }
                 if (!indexPaths.containsKey(path)) {
                     stagedDeleted.add(path)
                 }
@@ -90,13 +117,20 @@ namespace Am.Git
             }
 
             // Unstaged: differences between worktree and index. Files
-            // in worktree but not the index land in `untracked`.
+            // in worktree but not the index land in `untracked`. Skip
+            // unmerged paths — the workdir version is the
+            // conflict-markered file, comparing it to "the index"
+            // makes no sense.
             var unstagedModified = List<String>.newList<String>()
             var unstagedDeleted = List<String>.newList<String>()
             var untracked = List<String>.newList<String>()
             var ii = 0
             while (ii < indexKeys.getSize()) {
                 var path = indexKeys.get(ii)
+                if (unmergedSet.contains(path)) {
+                    ii = ii + 1
+                    continue
+                }
                 if (!diskPaths.containsKey(path)) {
                     unstagedDeleted.add(path)
                 } else if (diskPaths.get(path) != indexPaths.get(path)) {
@@ -108,6 +142,10 @@ namespace Am.Git
             var di = 0
             while (di < diskKeys.getSize()) {
                 var path = diskKeys.get(di)
+                if (unmergedSet.contains(path)) {
+                    di = di + 1
+                    continue
+                }
                 if (!indexPaths.containsKey(path)) {
                     untracked.add(path)
                 }
@@ -115,10 +153,22 @@ namespace Am.Git
             }
 
             var changed = stagedAdded.getSize() + stagedModified.getSize() + stagedDeleted.getSize() +
-                          unstagedModified.getSize() + unstagedDeleted.getSize() + untracked.getSize()
+                          unstagedModified.getSize() + unstagedDeleted.getSize() + untracked.getSize() +
+                          unmergedList.getSize()
             if (changed == 0) {
                 "nothing to commit, working tree clean".println()
                 return 0
+            }
+            // Print unmerged first — they're the most urgent and
+            // real git lists them at the top of `git status` output
+            // for the same reason. XY code per path comes from
+            // GitIndex.unmergedXY (UU / AA / DU / UD).
+            var ui = 0
+            while (ui < unmergedList.getSize()) {
+                var path = unmergedList.get(ui)
+                var xy = idx.unmergedXY(path)
+                (xy + " " + path).println()
+                ui = ui + 1
             }
             // First column = staged status, second = unstaged status,
             // matching `git status --short`'s "XY <path>" layout.
@@ -256,11 +306,13 @@ namespace Am.Git
             }
         }
 
-        // Walk the working tree (excluding `.git`), hashing each file
-        // as a blob so we can compare SHAs against the HEAD tree / index.
+        // Walk the working tree (excluding `.git` and anything
+        // matched by `.gitignore`), hashing each file as a blob so we
+        // can compare SHAs against the HEAD tree / index.
         private static fun collectDiskPaths(workTreePath: String,
                                              relPrefix: String,
-                                             out: HashMap<String, String>) {
+                                             out: HashMap<String, String>,
+                                             ignore: GitIgnore) {
             var dirPath: String
             if (relPrefix.length() == 0) {
                 dirPath = workTreePath
@@ -286,8 +338,17 @@ namespace Am.Git
                 } else {
                     relPath = relPrefix + "/" + name
                 }
-                if (f.isDirectory()) {
-                    StatusReport.collectDiskPaths(workTreePath, relPath, out)
+                var isDir = f.isDirectory()
+                // Skip ignored entries. For directories the check
+                // prunes the whole subtree (we don't descend), which
+                // matches real git's behaviour and saves us from
+                // hashing every blob under `builds/` etc.
+                if (ignore.isIgnored(relPath, isDir)) {
+                    i = i + 1
+                    continue
+                }
+                if (isDir) {
+                    StatusReport.collectDiskPaths(workTreePath, relPath, out, ignore)
                 } else {
                     var bytes = StatusReport.readFileBytes(f.toString())
                     var sha = PackObject.computeSha("blob", bytes)
