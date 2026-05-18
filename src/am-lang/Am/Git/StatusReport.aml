@@ -275,10 +275,12 @@ namespace Am.Git
 
         // Recursively walk HEAD's tree, building a map of relative
         // path → blob SHA for every file (skipping submodules).
-        private static fun collectTreePaths(treeSha: String,
-                                             prefix: String,
-                                             out: HashMap<String, String>,
-                                             store: ObjectStore) {
+        // Public so `DiffCommand` and other path-vs-tree comparers
+        // can reuse the same recursion + skip rules.
+        static fun collectTreePaths(treeSha: String,
+                                     prefix: String,
+                                     out: HashMap<String, String>,
+                                     store: ObjectStore) {
             if (!store.has(treeSha)) {
                 return
             }
@@ -308,11 +310,12 @@ namespace Am.Git
 
         // Walk the working tree (excluding `.git` and anything
         // matched by `.gitignore`), hashing each file as a blob so we
-        // can compare SHAs against the HEAD tree / index.
-        private static fun collectDiskPaths(workTreePath: String,
-                                             relPrefix: String,
-                                             out: HashMap<String, String>,
-                                             ignore: GitIgnore) {
+        // can compare SHAs against the HEAD tree / index. Public so
+        // `DiffCommand` shares the same walk + skip rules.
+        static fun collectDiskPaths(workTreePath: String,
+                                     relPrefix: String,
+                                     out: HashMap<String, String>,
+                                     ignore: GitIgnore) {
             var dirPath: String
             if (relPrefix.length() == 0) {
                 dirPath = workTreePath

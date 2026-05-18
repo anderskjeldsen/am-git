@@ -1,0 +1,110 @@
+namespace Am.Git.Tests {
+
+    // DiffCommand — path-level diff. The interesting logic lives in
+    // `compute(left, right)`: it takes two `path → blob-SHA` maps
+    // and produces `A`/`M`/`D` entries. We can exercise that
+    // directly with synthetic maps, no on-disk fixtures needed.
+    //
+    // Snapshot helpers (`snapshotCommit` / `snapshotIndex` /
+    // `snapshotWorkTree`) are exercised end-to-end by the CLI
+    // tests in `/tmp/diff-test`; the unit tests here pin down the
+    // classifier itself.
+    class DiffCommandTest {
+        import Am.Lang
+        import Am.Collections
+        import Am.Git
+        import Am.Tests
+
+        // Both sides empty → no entries.
+        test emptyEqualsEmpty() {
+            var entries = DiffCommand.compute(
+                new HashMap<String, String>(),
+                new HashMap<String, String>())
+            Assert.assertEquals(0, entries.getSize())
+        }
+
+        // Identical content on both sides → unchanged, no entries.
+        test identicalSnapshotsProduceNothing() {
+            var left = new HashMap<String, String>()
+            left.set("a", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            left.set("b", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+            var right = new HashMap<String, String>()
+            right.set("a", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            right.set("b", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+            var entries = DiffCommand.compute(left, right)
+            Assert.assertEquals(0, entries.getSize())
+        }
+
+        // Added: missing from left, present in right.
+        test addedOnlyInRight() {
+            var left = new HashMap<String, String>()
+            var right = new HashMap<String, String>()
+            right.set("new.txt", "1111111111111111111111111111111111111111")
+            var entries = DiffCommand.compute(left, right)
+            Assert.assertEquals(1, entries.getSize())
+            Assert.assertEquals("new.txt", entries.get(0).path)
+            Assert.assertEquals("A", entries.get(0).status)
+        }
+
+        // Deleted: present in left, missing from right.
+        test deletedOnlyInLeft() {
+            var left = new HashMap<String, String>()
+            left.set("gone.txt", "1111111111111111111111111111111111111111")
+            var right = new HashMap<String, String>()
+            var entries = DiffCommand.compute(left, right)
+            Assert.assertEquals(1, entries.getSize())
+            Assert.assertEquals("gone.txt", entries.get(0).path)
+            Assert.assertEquals("D", entries.get(0).status)
+        }
+
+        // Modified: present in both with different SHAs.
+        test modifiedDifferingSha() {
+            var left = new HashMap<String, String>()
+            left.set("f.txt", "1111111111111111111111111111111111111111")
+            var right = new HashMap<String, String>()
+            right.set("f.txt", "2222222222222222222222222222222222222222")
+            var entries = DiffCommand.compute(left, right)
+            Assert.assertEquals(1, entries.getSize())
+            Assert.assertEquals("f.txt", entries.get(0).path)
+            Assert.assertEquals("M", entries.get(0).status)
+        }
+
+        // Mixed: every classification in one go. Output should be
+        // sorted by path for determinism.
+        test mixedClassifiedAndSorted() {
+            var left = new HashMap<String, String>()
+            left.set("a-keep",     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            left.set("b-mod",      "1111111111111111111111111111111111111111")
+            left.set("c-deleted",  "3333333333333333333333333333333333333333")
+            var right = new HashMap<String, String>()
+            right.set("a-keep",    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            right.set("b-mod",     "2222222222222222222222222222222222222222")
+            right.set("d-added",   "4444444444444444444444444444444444444444")
+
+            var entries = DiffCommand.compute(left, right)
+            Assert.assertEquals(3, entries.getSize())
+            // Sorted: b-mod, c-deleted, d-added (a-keep is unchanged
+            // and filtered out).
+            Assert.assertEquals("b-mod",     entries.get(0).path)
+            Assert.assertEquals("M",         entries.get(0).status)
+            Assert.assertEquals("c-deleted", entries.get(1).path)
+            Assert.assertEquals("D",         entries.get(1).status)
+            Assert.assertEquals("d-added",   entries.get(2).path)
+            Assert.assertEquals("A",         entries.get(2).status)
+        }
+
+        // render(): nameOnly=true suppresses the status prefix;
+        // default emits "<status>\t<path>\n".
+        test renderFormats() {
+            var entries = List<DiffEntry>.newList<DiffEntry>()
+            entries.add(new DiffEntry("a", "M"))
+            entries.add(new DiffEntry("b", "A"))
+
+            var withStatus = DiffCommand.render(entries, false)
+            Assert.assertEquals("M\ta\nA\tb\n", withStatus)
+
+            var nameOnly = DiffCommand.render(entries, true)
+            Assert.assertEquals("a\nb\n", nameOnly)
+        }
+    }
+}

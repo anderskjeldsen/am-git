@@ -1,0 +1,198 @@
+namespace Am.Git
+{
+    // Path-level diff. We don't have an LCS-based line differ yet,
+    // so the output is restricted to the two subsets that don't need
+    // one:
+    //
+    //   `am-git diff --name-only`     — paths that changed, one per line
+    //   `am-git diff --name-status`   — paths that changed, prefixed
+    //                                    with a one-letter code
+    //                                    (A added, M modified, D deleted)
+    //
+    // Plain `am-git diff` (no flag) defaults to `--name-status` and
+    // prints a one-line reminder that full hunk-level diff isn't
+    // implemented. Scripts get useful output; humans get directed to
+    // the right flag.
+    //
+    // Snapshot selection mirrors real git's diff modes:
+    //
+    //   am-git diff                 worktree vs index    (unstaged)
+    //   am-git diff --staged        index    vs HEAD     (staged)
+    //   am-git diff HEAD            worktree vs HEAD     (all unc.)
+    //   am-git diff <commit>        worktree vs <commit>
+    //   am-git diff <a> <b>         tree     vs tree
+    // One file's diff classification.
+    //
+    // `status` is one of:
+    //   "A"   added   — absent from `left`, present in `right`
+    //   "M"   modified — present in both, different SHAs
+    //   "D"   deleted  — present in `left`, absent from `right`
+    //
+    // Convention used throughout DiffCommand: `left` is the "old" /
+    // "base" snapshot, `right` is the "new" / "current" one. For
+    // `am-git diff` (worktree vs index), `left` is the index and
+    // `right` is the working tree — so a path on disk but not in
+    // the index is "A" (newly tracked), and a path in the index
+    // but not on disk is "D" (deleted from worktree).
+    class DiffEntry(var path: String, var status: String)
+    {
+        import Am.Lang
+    }
+
+    class DiffCommand
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        // Produce the entry list. Sorted by path for deterministic
+        // output. `left` and `right` may share entries; unchanged
+        // paths are filtered out.
+        static fun compute(left: HashMap<String, String>,
+                           right: HashMap<String, String>): List<DiffEntry> {
+            var seen = new HashSet<String>()
+            DiffCommand.addKeys(left, seen)
+            DiffCommand.addKeys(right, seen)
+            var paths = DiffCommand.sorted(seen)
+
+            var out = List<DiffEntry>.newList<DiffEntry>()
+            var i = 0
+            while (i < paths.getSize()) {
+                var p = paths.get(i)
+                var inLeft = left.containsKey(p)
+                var inRight = right.containsKey(p)
+                if (inLeft && inRight) {
+                    if (left.get(p) != right.get(p)) {
+                        out.add(new DiffEntry(p, "M"))
+                    }
+                    // Same SHA → unchanged, skip.
+                } else if (!inLeft && inRight) {
+                    out.add(new DiffEntry(p, "A"))
+                } else if (inLeft && !inRight) {
+                    out.add(new DiffEntry(p, "D"))
+                }
+                i = i + 1
+            }
+            return out
+        }
+
+        // Snapshot of HEAD's tree (or any commit's tree) as
+        // path → blob SHA. Reuses StatusReport's tree walker.
+        static fun snapshotCommit(commitSha: String, store: ObjectStore): HashMap<String, String> {
+            var out = new HashMap<String, String>()
+            if (commitSha == null) {
+                return out  // unborn — empty snapshot
+            }
+            if (!store.has(commitSha)) {
+                throw new Exception("diff: commit " + commitSha + " not in object store")
+            }
+            var obj = store.read(commitSha)
+            if (obj.typeCode != 1) {
+                throw new Exception("diff: " + commitSha + " is not a commit")
+            }
+            var rootTreeSha = WorkTree.extractRootTreeSha(obj.content)
+            StatusReport.collectTreePaths(rootTreeSha, "", out, store)
+            return out
+        }
+
+        // Snapshot of the index's resolved (stage-0) entries.
+        // Conflict-stage rows aren't included — a diff against an
+        // unmerged index doesn't have a sensible "current" SHA
+        // anyway, and `am-git status` already shows the conflict
+        // shape.
+        static fun snapshotIndex(gitDir: String): HashMap<String, String> {
+            var indexFile = new File(gitDir + "/index")
+            if (!indexFile.exists()) {
+                return new HashMap<String, String>()
+            }
+            var idx = GitIndex.read(gitDir)
+            return idx.pathToSha()
+        }
+
+        // Snapshot of the working tree, .gitignore-respecting.
+        // Skips `.git` and matches against the same ignore rules
+        // status uses.
+        static fun snapshotWorkTree(workTreePath: String, gitDir: String): HashMap<String, String> {
+            var resolved = workTreePath
+            if (resolved == null || resolved.length() == 0 || resolved == ".") {
+                resolved = File.getCurrentDirectory()
+            }
+            var ignore = GitIgnore.load(resolved, gitDir)
+            var out = new HashMap<String, String>()
+            StatusReport.collectDiskPaths(resolved, "", out, ignore)
+            return out
+        }
+
+        // Render a List<DiffEntry> as text. `nameOnly` suppresses the
+        // status prefix (paths only); the default includes it.
+        static fun render(entries: List<DiffEntry>, nameOnly: Bool): String {
+            var sb = new StringBuilder()
+            var i = 0
+            while (i < entries.getSize()) {
+                var e = entries.get(i)
+                if (!nameOnly) {
+                    sb.add(e.status).add("\t")
+                }
+                sb.add(e.path).add("\n")
+                i = i + 1
+            }
+            return sb.toString()
+        }
+
+        // ---- small helpers ----------------------------------------
+
+        private static fun addKeys(m: HashMap<String, String>, into: HashSet<String>) {
+            var keys = m.buildKeys()
+            var i = 0
+            while (i < keys.getSize()) {
+                into.add(keys.get(i))
+                i = i + 1
+            }
+        }
+
+        private static fun sorted(set: HashSet<String>): List<String> {
+            var raw = List<String>.newList<String>()
+            var it = set.iterator()
+            loop {
+                if (!it.hasNext()) {
+                    break
+                }
+                raw.add(it.next())
+            }
+            var n = raw.getSize()
+            var i = 0
+            while (i < n - 1) {
+                var j = 0
+                while (j < n - 1 - i) {
+                    if (DiffCommand.compareBytewise(raw.get(j), raw.get(j + 1)) > 0) {
+                        var tmp = raw.get(j)
+                        raw.set(j, raw.get(j + 1))
+                        raw.set(j + 1, tmp)
+                    }
+                    j = j + 1
+                }
+                i = i + 1
+            }
+            return raw
+        }
+
+        private static fun compareBytewise(a: String, b: String): Int {
+            var la = a.length()
+            var lb = b.length()
+            var min = la
+            if (lb < min) {
+                min = lb
+            }
+            var i: UInt = 0UI
+            while (i.toInt() < min) {
+                var ca = a.characterAt(i).toInt()
+                var cb = b.characterAt(i).toInt()
+                if (ca != cb) {
+                    return ca - cb
+                }
+                i++
+            }
+            return la - lb
+        }
+    }
+}
