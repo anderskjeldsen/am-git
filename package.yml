@@ -95,11 +95,11 @@ platforms:
     # function/data sections + linker gc.
     gccAdditionalOptions:
       - -noixemul
-      - -ffunction-sections
-      - -fdata-sections
+#      - -ffunction-sections
+#      - -fdata-sections
     additionalLinkerFlags:
-      - -noixemul
-      - -Wl,--gc-sections
+#      - -noixemul
+#      - -Wl,--gc-sections
 
 buildTargets:
   - id: amigaos_docker
@@ -115,5 +115,6 @@ buildTargets:
     platform: linux-x64
   - id: morphos-ppc_docker
     platform: morphos-ppc
-    commands:
-      - docker run --rm -v "${build_dir}":/work -e USER=$( id -u ) -e GROUP=$( id -g ) -it amigadev/crosstools:ppc-morphos make -f morphos_ppc.makefile -C /work all
+    dockerBuild:
+      image: amigadev/crosstools:ppc-morphos
+      buildPath: /work

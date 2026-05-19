@@ -37,7 +37,12 @@ namespace Am.Git
             var i = 0
             while (i < lines.length().toInt()) {
                 var line = lines[i.toUInt()]
-                if (line.endsWith("\r")) {
+                // Strip a trailing CR for CRLF-line-ended files, but
+                // only when there's actually a character to look at —
+                // `endsWith("\r")` on an empty line could trigger the
+                // substring underflow if the runtime ever evaluates
+                // it eagerly.
+                if (line.length() > 0 && line.endsWith("\r")) {
                     line = line.substring(0UI, (line.length() - 1).toUInt())
                 }
                 var trimmed = line.trim()
@@ -118,6 +123,127 @@ namespace Am.Git
         // to "origin"). Returns null when the remote isn't configured.
         fun getRemoteUrl(remoteName: String): String {
             return this.getValue("remote." + remoteName + ".url")
+        }
+
+        // Insert or overwrite a key's value. The key form mirrors the
+        // read side — `section.key` or `section.subsection.key`.
+        // Persisted by `write()`.
+        fun setValue(key: String, value: String) {
+            this.entries.set(key, value)
+        }
+
+        // Remove a key. Returns true if anything was removed.
+        // Matches `git config --unset`'s semantics.
+        fun unsetValue(key: String): Bool {
+            return this.entries.remove(key)
+        }
+
+        // Every key currently configured, in arbitrary order. Caller
+        // sorts if it cares.
+        fun keys(): List<String> {
+            return this.entries.buildKeys()
+        }
+
+        // Serialise back to `.git/config`. The output is canonical
+        // INI — sections sorted, keys sorted within each section.
+        // Comments and original formatting from a hand-edited file
+        // are lost; users who care should edit the file directly
+        // instead of going through `am-git config`.
+        fun write(gitDir: String) {
+            // Group keys by their "section" prefix (everything
+            // before the final `.`). For a key like
+            // `remote.origin.url` the section prefix is
+            // `remote.origin`; the field name is `url`.
+            var keyList = this.entries.buildKeys()
+            // Sort keys bytewise for deterministic output.
+            GitConfig.sortBytewise(keyList)
+
+            // Walk in order, switching section headers as the
+            // prefix changes.
+            var sb = new StringBuilder()
+            var currentSection = ""
+            var i = 0
+            while (i < keyList.getSize()) {
+                var k = keyList.get(i)
+                var lastDot = k.lastIndexOf(".")
+                if (lastDot < 0) {
+                    // Malformed key (no section) — skip rather than
+                    // crash. Users should never see this from the
+                    // CLI since we validate keys before storing.
+                    i = i + 1
+                    continue
+                }
+                var sectionKey = k.substring(0UI, lastDot.toUInt())
+                var field = k.substringToEnd((lastDot + 1).toUInt())
+
+                if (sectionKey != currentSection) {
+                    if (sb.getLength() > 0UI) {
+                        sb.add("\n")
+                    }
+                    sb.add(GitConfig.formatSectionHeader(sectionKey))
+                    sb.add("\n")
+                    currentSection = sectionKey
+                }
+                sb.add("\t").add(field).add(" = ").add(this.entries.get(k)).add("\n")
+                i = i + 1
+            }
+
+            Repository.ensureParentDir(gitDir + "/config")
+            sb.toString().writeToFile(gitDir + "/config")
+        }
+
+        // Render a sectionKey ("core" or "remote.origin") as an INI
+        // section header. The `.` between section name and
+        // subsection becomes `["section" "subsection"]`-style
+        // quoting on the way out.
+        private static fun formatSectionHeader(sectionKey: String): String {
+            var firstDot = sectionKey.indexOf(".")
+            if (firstDot < 0) {
+                return "[" + sectionKey + "]"
+            }
+            var section = sectionKey.substring(0UI, firstDot.toUInt())
+            var sub = sectionKey.substringToEnd((firstDot + 1).toUInt())
+            return "[" + section + " \"" + sub + "\"]"
+        }
+
+        // Bubble sort — keys lists are short (handful of sections
+        // each with a handful of fields), this stays self-contained.
+        // AmLang's String `<` isn't bytewise (see GitIndex's
+        // compareBytewise), so we walk code units ourselves.
+        private static fun sortBytewise(list: List<String>) {
+            var n = list.getSize()
+            var i = 0
+            while (i < n - 1) {
+                var j = i + 1
+                while (j < n) {
+                    if (GitConfig.compareBytewise(list.get(j), list.get(i)) < 0) {
+                        var tmp = list.get(i)
+                        list.set(i, list.get(j))
+                        list.set(j, tmp)
+                    }
+                    j = j + 1
+                }
+                i = i + 1
+            }
+        }
+
+        private static fun compareBytewise(a: String, b: String): Int {
+            var la = a.length()
+            var lb = b.length()
+            var min = la
+            if (lb < min) {
+                min = lb
+            }
+            var i: UInt = 0UI
+            while (i.toInt() < min) {
+                var ca = a.characterAt(i).toInt()
+                var cb = b.characterAt(i).toInt()
+                if (ca != cb) {
+                    return ca - cb
+                }
+                i++
+            }
+            return la - lb
         }
     }
 }

@@ -35,6 +35,9 @@ build-linux-x64:
 build-amigaos:
 	$(CMD) build . -bt amigaos_docker -ll5 $(LPP)
 
+build-morphos:
+	$(CMD) build . -bt morphos-ppc_docker -ll5 $(LPP)
+
 build-macos:
 	$(CMD) build . -bt macos -ll5 -maxOneError $(LPP)
 

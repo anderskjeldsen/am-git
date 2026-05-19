@@ -18,7 +18,7 @@ should also link the source file once implemented.
 | Init a repo            | ✅     | `am-git init [<dir>]`                              | Scaffolds the full `.git/` skeleton (objects/, objects/pack/, refs/heads/, refs/tags/, info/), writes HEAD pointing at `refs/heads/main`, writes a minimal `[core]` config. Reinit-safe: HEAD and config aren't overwritten if they already exist. Default branch is hardcoded to `main`; no `-b <name>` yet (needs `am-git config` plumbing). |
 | Add files              | ✅     | `am-git add <path>...` / `add .`                   | Honours `.gitignore` and `.git/info/exclude`. Clears conflict stages on resolve-then-add. Bypass with explicit paths is not supported — naming an ignored file does not stage it. |
 | Remove files           | ✅     | `am-git rm [--cached] <path>...`                   | `--cached` keeps the on-disk file. No `--force`. |
-| Rename files           | ❌     | `am-git mv <from> <to>`                            | ~50 lines — move on disk + index update. No rename detection (real git infers them at diff time). |
+| Rename files           | 🚧     | `am-git mv <source> <destination>`                 | Single file only — directory renames need recursion. Refuses if destination exists or is already tracked (no `-f`). Source must already be tracked. Trailing `/` on destination means "move into directory". |
 | Commit                 | ✅     | `am-git commit -m <msg>`                           | Index-based when `.git/index` exists, walks worktree otherwise. Refuses while index has unmerged stages or a rebase is in progress. Auto-creates merge commits when `.git/MERGE_HEAD` is present. |
 | Status                 | ✅     | `am-git status`                                    | `XY <path>` format matching `git status --short`. Unmerged paths shown as `UU`/`AA`/`DU`/`UD`. `.gitignore`-aware. |
 | `.gitignore`           | ✅     | (file convention)                                  | Multi-level (`.gitignore` per dir + `.git/info/exclude`). Patterns: `#` comments, blank lines, `!` negation, leading `/` anchor, trailing `/` dir-only, glob `*` and `?`. No `**`, no `[abc]` ranges. |
@@ -46,7 +46,7 @@ should also link the source file once implemented.
 | Pull (ff-only)         | ✅     | `am-git pull [<url>] [<branch>]`                   | Refuses non-ff. Use `am-git fetch` + `am-git merge` for divergent histories. |
 | Push                   | ✅     | `am-git push [<url>] [<branch>]`                   | Defaults from `.git/config`. |
 | Remote management      | ❌     | `am-git remote add/remove/-v`                      | Currently you edit `.git/config` by hand. |
-| `.git/config` editing  | ❌     | `am-git config <key> [<value>]`                    | ~100 lines for INI read/write. |
+| `.git/config` editing  | ✅     | `am-git config [--list \| --unset <key> \| <key> [<value>]]` | Read / write `.git/config`. Section + subsection + key flattened to dotted names (`remote.origin.url`). Writes are canonical INI (sections sorted, comments not preserved — hand-editing and `am-git config` shouldn't be mixed in the same file). No `--global` / `--system` / `--worktree` scope yet. |
 | Authentication         | 🚧     |                                                    | Basic auth via env vars. No credential helpers, no SSH transport. |
 
 ## Merge & rebase
@@ -70,7 +70,7 @@ should also link the source file once implemented.
 | Feature                | Status | Command / API                                      | Notes |
 |------------------------|:------:|----------------------------------------------------|-------|
 | Log                    | ✅     | `am-git log [-n N]`                                | First-parent walk from HEAD. No `--graph`, no `--all`, no path filter. |
-| Show commit            | ❌     | `am-git show <commit>`                             | ~50 lines for metadata + name-status; needs diff library for full hunk output. |
+| Show commit            | 🚧     | `am-git show [<commit>]`                           | Header (sha, parents, author, committer) + indented message + path-level name-status. Defaults to HEAD. Root commits show every path as "A" (diffed against the empty tree). Full hunk-level diff awaits the diff library. |
 | Path-level diff        | ✅     | `am-git diff [--staged] [--name-only\|--name-status] [<a> [<b>]]` | A/M/D classification. No hunks — see below. |
 | Hunk-level diff        | ❌     | `am-git diff` (default output)                     | Needs a Myers/Patience diff library. Should live in a separate `am-diff` package (parallel to `am-z`) so other AmLang projects can use it. ~400-600 lines. |
 | Blame                  | ❌     | `am-git blame <file>`                              | Per-line history. Needs hunk-level diff applied iteratively along history. Big. |

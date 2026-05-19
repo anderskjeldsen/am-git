@@ -63,6 +63,8 @@ namespace AmGit
                 Program.runAdd(args)
             } else if (command == "rm") {
                 Program.runRm(args)
+            } else if (command == "mv") {
+                Program.runMv(args)
             } else if (command == "pull") {
                 Program.runPull(args)
             } else if (command == "merge-base") {
@@ -77,6 +79,8 @@ namespace AmGit
                 Program.runReset(args)
             } else if (command == "diff") {
                 Program.runDiff(args)
+            } else if (command == "show") {
+                Program.runShow(args)
             } else if (command == "rebase") {
                 Program.runRebase(args)
             } else if (command == "cherry-pick") {
@@ -85,6 +89,8 @@ namespace AmGit
                 Program.runRevert(args)
             } else if (command == "init") {
                 Program.runInit(args)
+            } else if (command == "config") {
+                Program.runConfig(args)
             } else if (command == "help" || command == "--help" || command == "-h") {
                 Program.printUsage()
             } else if (command == "version" || command == "--version") {
@@ -117,6 +123,111 @@ namespace AmGit
         // Default branch is hardcoded to `main` for v1 — no
         // `init.defaultBranch` config plumbing yet. Pass `-b <name>`
         // later when we wire `am-git config`.
+        // `am-git config`                                     — list everything
+        // `am-git config --list`                              — list everything (explicit)
+        // `am-git config <key>`                               — print value (empty exit on miss)
+        // `am-git config <key> <value>`                       — set / overwrite
+        // `am-git config --unset <key>`                       — remove
+        //
+        // Operates on `.git/config` only — no user / system / `--global`
+        // scope yet. Output of `--list` is `<key>=<value>` per line,
+        // matching the column-less form `git config --list` emits.
+        //
+        // Writes go through `GitConfig.write`, which rewrites the
+        // file in canonical layout (sections sorted alphabetically,
+        // comments / original ordering not preserved). Hand-editing
+        // and `am-git config` aren't recommended in the same file
+        // unless you're fine with losing your formatting.
+        private static fun runConfig(args: String[]) {
+            try {
+                if (args.length() == 1UI) {
+                    Program.configList()
+                    return
+                }
+                var first = args[1UI]
+                if (first == "--list") {
+                    Program.configList()
+                    return
+                }
+                if (first == "--unset") {
+                    if (args.length() != 3UI) {
+                        "usage: am-git config --unset <key>".println()
+                        return
+                    }
+                    Program.configUnset(args[2UI])
+                    return
+                }
+                // Reject any other flag — keeps the door open for
+                // `--global` etc. without silently accepting them.
+                if (first.startsWith("--")) {
+                    ("config: unrecognised flag '" + first + "'").println()
+                    return
+                }
+                if (args.length() == 2UI) {
+                    Program.configGet(first)
+                    return
+                }
+                if (args.length() == 3UI) {
+                    Program.configSet(first, args[2UI])
+                    return
+                }
+                "usage: am-git config [--list | --unset <key> | <key> [<value>]]".println()
+            } catch (ex: Exception) {
+                ("config: " + ex.message).println()
+            }
+        }
+
+        private static fun configList() {
+            var cfg = GitConfig.read(".git")
+            var keys = cfg.keys()
+            // Sort bytewise for stable output — same rule as
+            // GitConfig.write uses internally.
+            Program.sortStringsBytewise(keys)
+            var i = 0
+            while (i < keys.getSize()) {
+                var k = keys.get(i)
+                (k + "=" + cfg.getValue(k)).println()
+                i = i + 1
+            }
+        }
+
+        private static fun configGet(key: String) {
+            var cfg = GitConfig.read(".git")
+            var v = cfg.getValue(key)
+            if (v != null) {
+                v.println()
+            }
+            // No value = silent + empty exit, same as `git config`.
+        }
+
+        private static fun configSet(key: String, value: String) {
+            if (!Program.isValidConfigKey(key)) {
+                ("config: invalid key '" + key +
+                    "' — keys must be `<section>.<key>` or `<section>.<sub>.<key>`").println()
+                return
+            }
+            var cfg = GitConfig.read(".git")
+            cfg.setValue(key, value)
+            cfg.write(".git")
+        }
+
+        private static fun configUnset(key: String) {
+            var cfg = GitConfig.read(".git")
+            if (!cfg.unsetValue(key)) {
+                ("config: key '" + key + "' not set").println()
+                return
+            }
+            cfg.write(".git")
+        }
+
+        // A key needs at least one `.` (separating section from field
+        // name). We don't enforce the alnum + `-` restriction on the
+        // section name yet — real git is strict here, but for v1 we
+        // trust the user.
+        private static fun isValidConfigKey(key: String): Bool {
+            return key != null && key.length() > 0 && key.indexOf(".") > 0
+        }
+
         private static fun runInit(args: String[]) {
             try {
                 var target = "."
@@ -2256,6 +2367,105 @@ namespace AmGit
             }
         }
 
+        // `am-git show [<commit>]` — print a commit's metadata
+        // (SHA, parents, author, committer, message) plus a
+        // path-level name-status of what it changed. With no
+        // arg, defaults to HEAD.
+        //
+        // Once we have a real hunk-level diff library, this becomes
+        // the obvious place to emit full unified diffs per file.
+        // Until then, name-status is enough to answer "what did
+        // this commit touch?" from the command line.
+        private static fun runShow(args: String[]) {
+            try {
+                if (args.length() > 2UI) {
+                    "usage: am-git show [<commit>]".println()
+                    return
+                }
+                var commitish = "HEAD"
+                if (args.length() == 2UI) {
+                    commitish = args[1UI]
+                }
+                var sha = Program.resolveCommitish(commitish)
+                if (sha == null) {
+                    ("show: cannot resolve '" + commitish + "'").println()
+                    return
+                }
+                var store = new ObjectStore(".git")
+                if (!store.has(sha)) {
+                    ("show: " + sha + " not in object store").println()
+                    return
+                }
+                var obj = store.read(sha)
+                if (obj.typeCode != 1) {
+                    ("show: " + sha + " is not a commit").println()
+                    return
+                }
+                var commit = Commit.parse(sha, obj.content)
+
+                // Header — same shape as `git show`'s default text.
+                ("commit " + commit.sha).println()
+                var pi = 0
+                while (pi < commit.parents.getSize()) {
+                    ("parent " + commit.parents.get(pi)).println()
+                    pi = pi + 1
+                }
+                ("Author: " + commit.author).println()
+                ("Commit: " + commit.committer).println()
+                "".println()
+
+                // Message — indent every line by 4 spaces, matching
+                // real git. We don't try to detect "merge"-style
+                // boilerplate or trailers, just print as-is.
+                var msg = commit.message
+                if (msg == null) {
+                    msg = ""
+                }
+                var msgLines = msg.split(10US)
+                var mi = 0
+                while (mi < msgLines.length().toInt()) {
+                    var line = msgLines[mi.toUInt()]
+                    if (line.length() == 0 && mi == msgLines.length().toInt() - 1) {
+                        // Skip the synthetic trailing empty line that
+                        // split() produces when the message ends with
+                        // `\n` — otherwise we'd emit an extra blank
+                        // line at the end.
+                        mi = mi + 1
+                        continue
+                    }
+                    ("    " + line).println()
+                    mi = mi + 1
+                }
+                "".println()
+
+                // Path-level diff: parent tree → this commit's tree.
+                // For root commits (no parent), the implicit "base"
+                // is the empty tree, so every file shows up as Added.
+                var thisTree = commit.treeSha
+                var parentTree: String = null
+                if (commit.parents.getSize() > 0) {
+                    var p0 = store.read(commit.parents.get(0))
+                    parentTree = WorkTree.extractRootTreeSha(p0.content)
+                }
+                var left = new HashMap<String, String>()
+                var right = new HashMap<String, String>()
+                if (parentTree != null) {
+                    StatusReport.collectTreePaths(parentTree, "", left, store)
+                }
+                StatusReport.collectTreePaths(thisTree, "", right, store)
+
+                var entries = DiffCommand.compute(left, right)
+                if (entries.getSize() == 0) {
+                    "(no files changed)".println()
+                    return
+                }
+                var text = DiffCommand.render(entries, false)
+                Program.printNoNewline(text)
+            } catch (ex: Exception) {
+                ("show: " + ex.message).println()
+            }
+        }
+
         // `am-git ls-stages` — print every index entry as
         // `<mode> <sha> <stage>\t<path>`, mirroring
         // `git ls-files --stage`. Useful when debugging conflict
@@ -2445,6 +2655,123 @@ namespace AmGit
             } catch (ex: Exception) {
                 ("rm: " + ex.message).println()
             }
+        }
+
+        // `am-git mv <src> <dst>` — rename a tracked file on disk and
+        // in the index. Same blob SHA is preserved (we're not
+        // re-hashing); the index entry's path changes.
+        //
+        // Path semantics:
+        //   * If <dst> ends with `/`, it's treated as a target
+        //     directory and <src>'s basename is appended.
+        //   * Both <src> and <dst> are interpreted relative to the
+        //     work tree root.
+        //
+        // v1 limitations:
+        //   * Single source only — `git mv a b c target/` (multi-source
+        //     into a dir) isn't supported.
+        //   * Files only — directory renames need recursion.
+        //   * No `-f` (force overwrite). Refuses if <dst> already
+        //     exists in the workdir or is tracked in the index.
+        //   * <src> must be tracked. Renaming an untracked file
+        //     should use plain `mv` from the shell.
+        private static fun runMv(args: String[]) {
+            try {
+                if (args.length() != 3UI) {
+                    "usage: am-git mv <source> <destination>".println()
+                    return
+                }
+                var src = Program.normaliseRel(args[1UI])
+                var dst = args[2UI]
+                if (dst.endsWith("/")) {
+                    // Target is a directory — append source basename.
+                    dst = dst + Program.basename(src)
+                }
+                dst = Program.normaliseRel(dst)
+                if (src == dst) {
+                    ("mv: source and destination are the same: " + src).println()
+                    return
+                }
+
+                var srcFile = new File(src)
+                if (!srcFile.exists()) {
+                    ("mv: source '" + src + "' does not exist").println()
+                    return
+                }
+                if (srcFile.isDirectory()) {
+                    "mv: directory renames not supported yet (v1: single files only)".println()
+                    return
+                }
+
+                var idx = GitIndex.read(".git")
+                var srcEntry = idx.findByPath(src)
+                if (srcEntry == null) {
+                    ("mv: '" + src + "' is not tracked").println()
+                    return
+                }
+
+                // Don't clobber an existing destination — real git
+                // requires `-f` for that, we don't support it yet.
+                var dstFile = new File(dst)
+                if (dstFile.exists()) {
+                    ("mv: destination '" + dst + "' already exists").println()
+                    return
+                }
+                if (idx.findByPath(dst) != null) {
+                    ("mv: destination '" + dst + "' is already tracked in the index").println()
+                    return
+                }
+
+                // Move on disk first — if rename fails, leave the
+                // index alone so we don't end up with an inconsistent
+                // state.
+                Repository.ensureParentDir(dst)
+                if (!srcFile.move(dst)) {
+                    ("mv: failed to move '" + src + "' to '" + dst + "'").println()
+                    return
+                }
+
+                // Index update: drop old entry, insert new one with
+                // the same blob SHA / mode but the new path.
+                idx.removeByPath(src)
+                var moved = new IndexEntry(
+                    dst, srcEntry.sha, srcEntry.mode, srcEntry.size,
+                    srcEntry.mtimeSeconds, srcEntry.mtimeNanos,
+                    srcEntry.ctimeSeconds, srcEntry.ctimeNanos,
+                    srcEntry.dev, srcEntry.ino,
+                    srcEntry.uid, srcEntry.gid,
+                    0US)  // flags reset — namelen is set on write
+                idx.upsert(moved)
+                idx.write(".git")
+                ("Renamed " + src + " → " + dst).println()
+            } catch (ex: Exception) {
+                ("mv: " + ex.message).println()
+            }
+        }
+
+        // Strip a leading "./" and a single trailing "/" from a
+        // user-supplied path so the rest of am-git compares paths
+        // consistently (HEAD trees, index entries, status lines all
+        // omit those).
+        private static fun normaliseRel(p: String): String {
+            var s = p
+            if (s.startsWith("./")) {
+                s = s.substringToEnd(2UI)
+            }
+            while (s.length() > 1 && s.endsWith("/")) {
+                s = s.substring(0UI, (s.length() - 1).toUInt())
+            }
+            return s
+        }
+
+        // Basename — everything after the last `/`. Returns the
+        // whole string if there's no slash.
+        private static fun basename(p: String): String {
+            var slash = p.lastIndexOf("/")
+            if (slash < 0) {
+                return p
+            }
+            return p.substringToEnd((slash + 1).toUInt())
         }
 
         // Compare the working tree to HEAD's tree and print changed
@@ -2902,12 +3229,15 @@ namespace AmGit
             "".println()
             "Commands:".println()
             "  init [<dir>]                        Scaffold an empty .git/ at <dir> (default cwd)".println()
+            "  config [--list | --unset <key> |    Read / write .git/config (INI)".println()
+            "    <key> [<value>]]".println()
             "  clone <url> [target-dir]            Clone a remote repository over smart-HTTP".println()
             "  fetch [<url>|<remote-name>]         Fetch refs + objects (defaults from .git/config)".println()
             "  pull [<url>] [<branch>]             Fast-forward-only pull (fetch + advance HEAD)".println()
             "  push [<url>] [<branch>]             Push HEAD or named branch (defaults from .git/config)".println()
             "  add <path>...                       Stage path(s) into .git/index (file or dir)".println()
             "  rm [--cached] <path>...             Unstage; without --cached also delete from disk".println()
+            "  mv <source> <destination>           Rename a tracked file (single file only)".println()
             "  status                              Show staged / unstaged / untracked changes".println()
             "  log [-n N]                          Walk commit ancestry from HEAD".println()
             "  branch [<name> | -d <name>]         List / create / delete local branches".println()
@@ -2922,6 +3252,7 @@ namespace AmGit
             "  revert <commit>                     Create a new commit that undoes <commit>".println()
             "  diff [--staged] [--name-only |      Path-level diff (worktree/index/HEAD/two commits)".println()
             "    --name-status] [<a> [<b>]]".println()
+            "  show [<commit>]                     Print a commit's metadata + path-level changes".println()
             "  commit -m <message>                 Commit the cwd working tree against HEAD".println()
             "  commit-tree <tree>                  Write a commit object pointing at the given tree".println()
             "    [-p <parent>] -m <msg>".println()
