@@ -39,11 +39,6 @@ namespace Am.Git
 
         var entries: List<IndexEntry> = List<IndexEntry>.newList<IndexEntry>()
 
-        // Default constructor → empty index. Use `read()` to load from
-        // disk, or just start populating `entries` directly.
-        fun constructor() {
-        }
-
         // Build a fresh index whose entries mirror every blob in a
         // commit's tree. This is what `git clone` and `git checkout`
         // do internally — they seed the index so it matches HEAD's

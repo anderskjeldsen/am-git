@@ -1,0 +1,160 @@
+namespace Am.Git.Tests {
+
+    // CommitWriter — tests focused on the rebase-critical path:
+    // `writeRawAuthor` must preserve the original commit's
+    // `author <name> <email> <ts> <tz>` line verbatim. If we ever
+    // round-trip-then-reformat the author line (a tempting
+    // simplification), `git log --author=<name>` and
+    // `--author-date-order` start drifting silently on rebased
+    // commits.
+    //
+    // We can't easily inspect the commit-on-disk bytes without
+    // peeking through LooseObjectReader, so the test goes the
+    // honest route: write, read back via the reader, parse the
+    // commit, assert the `author` line came back unchanged.
+    class CommitWriterTest {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+        import Am.Git
+        import Am.Tests
+
+        // The contract: an `authorLine` argument lands in the commit
+        // object as `author <authorLine>\n`, byte-for-byte. The
+        // committer line is independent (uses the `committer`
+        // identity passed in).
+        test writeRawAuthorPreservesLineVerbatim() {
+            CommitWriterTest.cleanup()
+            try {
+                var writer = new LooseObjectWriter("./testcw/.git")
+                var cw = new CommitWriter(writer)
+
+                // Build a known-good tree (empty tree's well-known SHA).
+                var emptyTreeSha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+                // We need the tree object to actually exist on disk so
+                // PackObject.computeSha can be cross-checked, but for
+                // CommitWriter itself the tree SHA is just a string.
+                // We don't validate that the tree exists, so we can
+                // pass any 40-hex string.
+
+                var origAuthor = "Original Author <orig@example.com> 1700000000 +0900"
+                var committer = new Identity("Rebaser", "rebase@example.com")
+                var committerTime = new DateTime()
+                committerTime.setEpochMillis(1700000001000UL)
+                committerTime.setTimezoneOffset(0)
+
+                var sha = cw.writeRawAuthor(
+                    emptyTreeSha,
+                    "0000000000000000000000000000000000000000",   // parent SHA
+                    origAuthor,
+                    committer, committerTime,
+                    "rebased commit message\n")
+
+                // Read the commit back via LooseObjectReader, parse,
+                // confirm author + tree + parent survived.
+                var reader = new LooseObjectReader("./testcw/.git")
+                var obj = reader.read(sha)
+                Assert.assertEquals(1, obj.typeCode)
+                var parsed = Commit.parse(sha, obj.content)
+                Assert.assertEquals(emptyTreeSha, parsed.treeSha)
+                Assert.assertEquals(1, parsed.parents.getSize())
+                Assert.assertEquals("0000000000000000000000000000000000000000", parsed.parents.get(0))
+                // The crucial assertion: author line round-tripped
+                // verbatim, no reformatting of the timestamp / tz.
+                Assert.assertEquals(origAuthor, parsed.author)
+            } catch (ex: Exception) {
+                CommitWriterTest.cleanup()
+                throw ex
+            }
+            CommitWriterTest.cleanup()
+        }
+
+        // No-parent variant — writeRawAuthor with `parentSha = null`
+        // produces a root commit (no `parent` line). Edge case for
+        // rebasing the first commit of a branch.
+        test writeRawAuthorWithNullParentProducesRootCommit() {
+            CommitWriterTest.cleanup()
+            try {
+                var writer = new LooseObjectWriter("./testcw/.git")
+                var cw = new CommitWriter(writer)
+
+                var origAuthor = "Root Author <root@example.com> 1700000000 +0000"
+                var committer = new Identity("X", "x@x")
+                var committerTime = new DateTime()
+                committerTime.setEpochMillis(1700000000000UL)
+                committerTime.setTimezoneOffset(0)
+
+                var sha = cw.writeRawAuthor(
+                    "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+                    null,                          // root commit
+                    origAuthor,
+                    committer, committerTime,
+                    "root\n")
+
+                var reader = new LooseObjectReader("./testcw/.git")
+                var obj = reader.read(sha)
+                var parsed = Commit.parse(sha, obj.content)
+                Assert.assertEquals(0, parsed.parents.getSize())
+                Assert.assertEquals(origAuthor, parsed.author)
+            } catch (ex: Exception) {
+                CommitWriterTest.cleanup()
+                throw ex
+            }
+            CommitWriterTest.cleanup()
+        }
+
+        // Message-without-trailing-newline gets one appended (matches
+        // `git commit`'s output). Without this, `git log` shows a
+        // commit whose message bleeds into the next commit header.
+        test writeRawAuthorAppendsTrailingNewlineIfMissing() {
+            CommitWriterTest.cleanup()
+            try {
+                var writer = new LooseObjectWriter("./testcw/.git")
+                var cw = new CommitWriter(writer)
+
+                var committer = new Identity("X", "x@x")
+                var committerTime = new DateTime()
+                committerTime.setEpochMillis(1700000000000UL)
+                committerTime.setTimezoneOffset(0)
+
+                var sha = cw.writeRawAuthor(
+                    "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+                    null,
+                    "A <a@x> 1700000000 +0000",
+                    committer, committerTime,
+                    "no trailing newline")          // <- intentionally
+
+                var reader = new LooseObjectReader("./testcw/.git")
+                var obj = reader.read(sha)
+                var parsed = Commit.parse(sha, obj.content)
+                Assert.assertEquals("no trailing newline\n", parsed.message)
+            } catch (ex: Exception) {
+                CommitWriterTest.cleanup()
+                throw ex
+            }
+            CommitWriterTest.cleanup()
+        }
+
+        // ---- helpers --------------------------------------------------
+
+        private static fun cleanup() {
+            CommitWriterTest.deleteRecursive("./testcw")
+        }
+
+        private static fun deleteRecursive(path: String) {
+            var f = new File(path)
+            if (!f.exists()) {
+                return
+            }
+            if (f.isDirectory()) {
+                var children = f.listFiles()
+                var i = 0
+                while (i < children.length().toInt()) {
+                    CommitWriterTest.deleteRecursive(children[i.toUInt()].toString())
+                    i = i + 1
+                }
+            }
+            f.delete()
+        }
+    }
+}

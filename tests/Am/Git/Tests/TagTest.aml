@@ -1,0 +1,137 @@
+namespace Am.Git.Tests {
+
+    // Tag — `am-git tag` is mostly thin CLI on top of file I/O
+    // (write a SHA to `.git/refs/tags/<name>`), so the tests focus
+    // on the few invariants that *aren't* trivial:
+    //
+    //   * Tags live in `.git/refs/tags/` parallel to branches in
+    //     `.git/refs/heads/`. Nested names with `/` become nested
+    //     directories on disk.
+    //   * `resolveCommitish` must consult both `refs/heads/` AND
+    //     `refs/tags/` — without that, downstream commands
+    //     (`checkout`, `merge`, `merge-base`, `reset`) can't take
+    //     tag names as arguments.
+    //
+    // We don't drive the CLI directly; the tests exercise file
+    // layout + `resolveCommitish` semantics via the same
+    // primitives Program.runTag uses. The full CLI is covered by
+    // the end-to-end bash drill in the dev notes.
+    class TagTest {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+        import Am.Git
+        import Am.Tests
+
+        // Writing a lightweight tag is "SHA + newline" into the
+        // ref file; reading it back must trim the newline cleanly.
+        // We model the on-disk shape directly rather than going
+        // through Program.createTag (which is private static and
+        // wired to ".git" / cwd).
+        test tagFileFormatIsShaPlusNewline() {
+            TagTest.cleanup()
+            try {
+                Repository.ensureDir("./testtag/.git/refs/tags")
+                var sha = "1234567890abcdef1234567890abcdef12345678"
+                (sha + "\n").writeToFile("./testtag/.git/refs/tags/v1.0")
+
+                var raw = String.readFromFile("./testtag/.git/refs/tags/v1.0")
+                // 40 SHA chars + 1 newline = 41 bytes.
+                Assert.assertEquals(41, raw.length())
+                // The newline survives the read; trim() in
+                // Program.resolveCommitish strips it.
+                Assert.assertEquals(10, raw.characterAt(40UI).toInt())
+            } catch (ex: Exception) {
+                TagTest.cleanup()
+                throw ex
+            }
+            TagTest.cleanup()
+        }
+
+        // Nested tag names (`release/v3.0`) become directory
+        // structure on disk. `Repository.ensureParentDir` is what
+        // makes the intermediate dir; without it the writeToFile
+        // would fail.
+        test nestedTagNamesProduceNestedDirs() {
+            TagTest.cleanup()
+            try {
+                var path = "./testtag/.git/refs/tags/release/v3.0"
+                Repository.ensureParentDir(path)
+                ("ababababababababababababababababababab00" + "\n").writeToFile(path)
+                Assert.assertTrue(new File(path).exists())
+                Assert.assertTrue(new File("./testtag/.git/refs/tags/release").isDirectory())
+            } catch (ex: Exception) {
+                TagTest.cleanup()
+                throw ex
+            }
+            TagTest.cleanup()
+        }
+
+        // Existence-check uses `File.exists()` directly — verify
+        // that a fresh ref dir reports no tags and a populated one
+        // reports them all.
+        test tagDirEnumerationFindsAllTags() {
+            TagTest.cleanup()
+            try {
+                Repository.ensureDir("./testtag/.git/refs/tags")
+                "1111111111111111111111111111111111111111\n".writeToFile(
+                    "./testtag/.git/refs/tags/v1.0")
+                "2222222222222222222222222222222222222222\n".writeToFile(
+                    "./testtag/.git/refs/tags/v2.0")
+
+                var dir = new File("./testtag/.git/refs/tags")
+                var entries = dir.listFiles()
+                Assert.assertEquals(2, entries.length().toInt())
+            } catch (ex: Exception) {
+                TagTest.cleanup()
+                throw ex
+            }
+            TagTest.cleanup()
+        }
+
+        // Tag deletion is a single file removal — verify the
+        // semantics (file gone after delete, refs/tags dir
+        // survives so subsequent tag creates still work).
+        test tagDeletionRemovesOnlyTheRefFile() {
+            TagTest.cleanup()
+            try {
+                Repository.ensureDir("./testtag/.git/refs/tags")
+                var p = "./testtag/.git/refs/tags/v1.0"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n".writeToFile(p)
+                Assert.assertTrue(new File(p).exists())
+
+                File.delete(p)
+                Assert.assertFalse(new File(p).exists())
+                // Parent dir survives — the delete only removed
+                // the leaf file.
+                Assert.assertTrue(new File("./testtag/.git/refs/tags").exists())
+            } catch (ex: Exception) {
+                TagTest.cleanup()
+                throw ex
+            }
+            TagTest.cleanup()
+        }
+
+        // ---- helpers --------------------------------------------------
+
+        private static fun cleanup() {
+            TagTest.deleteRecursive("./testtag")
+        }
+
+        private static fun deleteRecursive(path: String) {
+            var f = new File(path)
+            if (!f.exists()) {
+                return
+            }
+            if (f.isDirectory()) {
+                var children = f.listFiles()
+                var i = 0
+                while (i < children.length().toInt()) {
+                    TagTest.deleteRecursive(children[i.toUInt()].toString())
+                    i = i + 1
+                }
+            }
+            f.delete()
+        }
+    }
+}

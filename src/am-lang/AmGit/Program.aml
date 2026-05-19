@@ -53,6 +53,8 @@ namespace AmGit
                 Program.runLog(args)
             } else if (command == "branch") {
                 Program.runBranch(args)
+            } else if (command == "tag") {
+                Program.runTag(args)
             } else if (command == "checkout") {
                 Program.runCheckout(args)
             } else if (command == "status") {
@@ -77,6 +79,12 @@ namespace AmGit
                 Program.runDiff(args)
             } else if (command == "rebase") {
                 Program.runRebase(args)
+            } else if (command == "cherry-pick") {
+                Program.runCherryPick(args)
+            } else if (command == "revert") {
+                Program.runRevert(args)
+            } else if (command == "init") {
+                Program.runInit(args)
             } else if (command == "help" || command == "--help" || command == "-h") {
                 Program.printUsage()
             } else if (command == "version" || command == "--version") {
@@ -84,6 +92,79 @@ namespace AmGit
             } else {
                 ("am-git: unknown command '" + command + "'").println()
                 Program.printUsage()
+            }
+        }
+
+        // `am-git init [<directory>]` — scaffold a fresh `.git/`
+        // skeleton at the given path (defaults to cwd). Reinit-safe:
+        // if `.git/` already exists, ensures the standard subdirs
+        // are present without touching anything that's already there
+        // — same behaviour as real `git init`.
+        //
+        // Minimal layout we lay down:
+        //
+        //   .git/HEAD             "ref: refs/heads/main\n"
+        //                         (only written if missing — don't
+        //                         clobber an existing branch)
+        //   .git/config           tiny [core] section
+        //                         (only written if missing)
+        //   .git/objects/         empty
+        //   .git/objects/pack/    empty
+        //   .git/refs/heads/      empty
+        //   .git/refs/tags/       empty
+        //   .git/info/            empty
+        //
+        // Default branch is hardcoded to `main` for v1 — no
+        // `init.defaultBranch` config plumbing yet. Pass `-b <name>`
+        // later when we wire `am-git config`.
+        private static fun runInit(args: String[]) {
+            try {
+                var target = "."
+                if (args.length() >= 2UI) {
+                    target = args[1UI]
+                }
+                Repository.ensureDir(target)
+                var gitDir = target + "/.git"
+                var alreadyExisted = new File(gitDir).exists()
+
+                // Idempotent dir creation. ensureDir is a no-op when
+                // the path already exists, so re-running init is
+                // safe even on a non-fresh repo.
+                Repository.ensureDir(gitDir)
+                Repository.ensureDir(gitDir + "/objects")
+                Repository.ensureDir(gitDir + "/objects/pack")
+                Repository.ensureDir(gitDir + "/refs")
+                Repository.ensureDir(gitDir + "/refs/heads")
+                Repository.ensureDir(gitDir + "/refs/tags")
+                Repository.ensureDir(gitDir + "/info")
+
+                // HEAD: only write when missing. Otherwise we'd
+                // silently move someone's checked-out branch to
+                // `main` on a re-init, which is the kind of papercut
+                // real git is careful to avoid.
+                var headPath = gitDir + "/HEAD"
+                if (!new File(headPath).exists()) {
+                    "ref: refs/heads/main\n".writeToFile(headPath)
+                }
+
+                // Config: same "only if missing" rule. The minimal
+                // INI is enough that `git fsck` is happy; user-level
+                // settings get added later via `am-git config`.
+                var configPath = gitDir + "/config"
+                if (!new File(configPath).exists()) {
+                    ("[core]\n" +
+                     "\trepositoryformatversion = 0\n" +
+                     "\tfilemode = false\n" +
+                     "\tbare = false\n").writeToFile(configPath)
+                }
+
+                var verb = "Initialized"
+                if (alreadyExisted) {
+                    verb = "Reinitialized existing"
+                }
+                ("" + verb + " empty am-git repository in " + gitDir).println()
+            } catch (ex: Exception) {
+                ("init: " + ex.message).println()
             }
         }
 
@@ -302,6 +383,27 @@ namespace AmGit
                 }
                 if (message == null) {
                     "usage: am-git commit -m <message>".println()
+                    return
+                }
+
+                // Refuse to commit while a rebase is in flight —
+                // a plain commit would put a commit at HEAD without
+                // advancing the rebase's todo, leaving a half-rebased
+                // state. The user should `am-git rebase --continue`
+                // or `--abort`.
+                if (RebaseState.isInProgress(".git")) {
+                    "commit: rebase in progress — use `am-git rebase --continue` or `--abort`".println()
+                    return
+                }
+                // Same shape for cherry-pick: a plain commit would
+                // bypass the author + message preservation that
+                // --continue does for us.
+                if (Program.cherryPickInProgress()) {
+                    "commit: cherry-pick in progress — use `am-git cherry-pick --continue` or `--abort`".println()
+                    return
+                }
+                if (Program.revertInProgress()) {
+                    "commit: revert in progress — use `am-git revert --continue` or `--abort`".println()
                     return
                 }
 
@@ -958,11 +1060,9 @@ namespace AmGit
             }
         }
 
-        // `am-git rebase <upstream>` — phase A (clean path only).
-        //
-        // Replays every commit on the current branch that's NOT on
-        // <upstream>, on top of <upstream>, producing N new commits
-        // with new SHAs.
+        // `am-git rebase <upstream>` — replays current-branch
+        // commits on top of <upstream>, one at a time, producing N
+        // new commits with new SHAs.
         //
         //     before:         upstream                 after:        upstream
         //                        |                                       |
@@ -976,110 +1076,793 @@ namespace AmGit
         // with the original commit's author + author-date + message
         // (committer is updated to "now" by `loadCommitter`).
         //
+        // Conflict resolution flow:
+        //   1. `am-git rebase <upstream>` starts the rebase. On
+        //       conflict, it writes `.git/rebase-merge/` state files
+        //       (`onto`, `orig-head`, `head-name`, `stopped-sha`,
+        //       `git-rebase-todo`) and exits with the conflict list.
+        //   2. The user fixes the conflicted files, runs
+        //       `am-git add <file>...` to clear the conflict stages.
+        //   3. `am-git rebase --continue` finalises the stopped
+        //       commit from the resolved index, then processes the
+        //       remaining todo. If another conflict comes up the
+        //       cycle repeats.
+        //   4. At any time `am-git rebase --abort` rolls HEAD,
+        //       worktree, and index back to `orig-head` and clears
+        //       the state.
+        //
         // v1 limitations:
         //   * Linear histories only — if any commit in the range is
         //     a merge commit (multiple parents), we bail before
         //     touching anything.
-        //   * No `--continue` / `--abort` yet (phase B). If the
-        //     reapply hits a conflict, we ROLL BACK fully — reset
-        //     HEAD + worktree + index to ORIG_HEAD — and tell the
-        //     user. So a failed rebase leaves you exactly where you
-        //     started, not partway through.
         //   * No `--onto X` yet — always rebases onto <upstream>.
+        //   * No `-i` interactive rebase, no squash / fixup / drop.
         private static fun runRebase(args: String[]) {
             try {
+                if (args.length() < 2UI) {
+                    "usage: am-git rebase <upstream> | --continue | --abort".println()
+                    return
+                }
+                var first = args[1UI]
+                if (first == "--continue") {
+                    Program.runRebaseContinue()
+                    return
+                }
+                if (first == "--abort") {
+                    Program.runRebaseAbort()
+                    return
+                }
+                // Starting a fresh rebase. Refuse if one's already
+                // in progress — the user should --continue or --abort.
+                if (RebaseState.isInProgress(".git")) {
+                    "rebase: a rebase is already in progress. Use `--continue` or `--abort`.".println()
+                    return
+                }
                 if (args.length() != 2UI) {
-                    "usage: am-git rebase <upstream>".println()
+                    "usage: am-git rebase <upstream> | --continue | --abort".println()
                     return
                 }
-                var head = HeadReader.read(".git")
-                if (head.detached) {
-                    "rebase: cannot rebase from detached HEAD".println()
-                    return
-                }
-                if (head.commitSha == null) {
-                    "rebase: current branch has no commits yet".println()
-                    return
-                }
-                var upstreamName = args[1UI]
-                var upstreamSha = Program.resolveCommitish(upstreamName)
-                if (upstreamSha == null) {
-                    ("rebase: cannot resolve '" + upstreamName + "'").println()
-                    return
-                }
-
-                var store = new ObjectStore(".git")
-                var baseSha = MergeBase.find(head.commitSha, upstreamSha, store)
-                if (baseSha == null) {
-                    "rebase: refusing to rebase on unrelated history".println()
-                    return
-                }
-
-                // Already at / past upstream → nothing to do.
-                if (head.commitSha == upstreamSha) {
-                    "Current branch already at upstream.".println()
-                    return
-                }
-                // We are an ancestor of upstream → fast-forward.
-                if (baseSha == head.commitSha) {
-                    Program.rebaseFastForward(head, upstreamSha)
-                    return
-                }
-                // Upstream is an ancestor of HEAD → already rebased.
-                if (baseSha == upstreamSha) {
-                    "Current branch is up to date with upstream.".println()
-                    return
-                }
-
-                // Real rebase. Collect ahead-of-upstream commits in
-                // order from base (exclusive) to HEAD (inclusive),
-                // oldest-first. Linearity check happens inside.
-                var commits = Program.collectLinearAhead(head.commitSha, baseSha, store)
-                if (commits == null) {
-                    // collectLinearAhead already printed the reason.
-                    return
-                }
-
-                ("Rebasing " + commits.getSize().toString() + " commit(s) onto " +
-                    upstreamSha.substring(0UI, 7UI)).println()
-
-                // Save ORIG_HEAD so phase-B `--abort` (and the rollback
-                // path below) has somewhere to point at.
-                (head.commitSha + "\n").writeToFile(".git/ORIG_HEAD")
-                var origHead = head.commitSha
-
-                // Reset to upstream — both ref and workdir + index.
-                Program.moveBranchRef(head.branch, upstreamSha)
-                CheckoutClient.applyCommitToWorkTree(".git", ".", upstreamSha)
-
-                // Replay each commit onto the moving HEAD.
-                var currentHeadSha = upstreamSha
-                var i = 0
-                while (i < commits.getSize()) {
-                    var commit = commits.get(i)
-                    var replayed = Program.replayCommit(commit, currentHeadSha, head.branch, store)
-                    if (replayed == null) {
-                        // Conflict — phase A has no resume; roll back.
-                        ("rebase: conflict re-applying " + commit.sha.substring(0UI, 7UI) +
-                            " '" + Program.firstLine(commit.message) + "'").println()
-                        "  rolling back to ORIG_HEAD (phase-B `--continue` not yet wired)".println()
-                        Program.moveBranchRef(head.branch, origHead)
-                        CheckoutClient.applyCommitToWorkTree(".git", ".", origHead)
-                        return
-                    }
-                    currentHeadSha = replayed
-                    ("  applied " + commit.sha.substring(0UI, 7UI) + " → " +
-                        replayed.substring(0UI, 7UI) + " '" +
-                        Program.firstLine(commit.message) + "'").println()
-                    i = i + 1
-                }
-
-                ("Successfully rebased " + head.branch + " onto " +
-                    upstreamSha.substring(0UI, 7UI)).println()
+                Program.runRebaseStart(first)
             } catch (ex: Exception) {
                 "rebase: failed".println()
                 ex.printWithStackTrace()
             }
+        }
+
+        // Initial rebase. Resolves <upstream>, finds merge-base,
+        // handles the three trivial paths (already-at / ff /
+        // already-rebased), then for a real rebase: saves
+        // ORIG_HEAD, resets the branch to upstream, and dispatches
+        // the commit-replay loop.
+        private static fun runRebaseStart(upstreamName: String) {
+            var head = HeadReader.read(".git")
+            if (head.detached) {
+                "rebase: cannot rebase from detached HEAD".println()
+                return
+            }
+            if (head.commitSha == null) {
+                "rebase: current branch has no commits yet".println()
+                return
+            }
+            var upstreamSha = Program.resolveCommitish(upstreamName)
+            if (upstreamSha == null) {
+                ("rebase: cannot resolve '" + upstreamName + "'").println()
+                return
+            }
+
+            var store = new ObjectStore(".git")
+            var baseSha = MergeBase.find(head.commitSha, upstreamSha, store)
+            if (baseSha == null) {
+                "rebase: refusing to rebase on unrelated history".println()
+                return
+            }
+
+            // Already at / past upstream → nothing to do.
+            if (head.commitSha == upstreamSha) {
+                "Current branch already at upstream.".println()
+                return
+            }
+            // We are an ancestor of upstream → fast-forward.
+            if (baseSha == head.commitSha) {
+                Program.rebaseFastForward(head, upstreamSha)
+                return
+            }
+            // Upstream is an ancestor of HEAD → already rebased.
+            if (baseSha == upstreamSha) {
+                "Current branch is up to date with upstream.".println()
+                return
+            }
+
+            // Collect ahead-of-upstream commits oldest-first. Linear
+            // histories only — `collectLinearAhead` refuses merge
+            // commits in the range and returns null in that case.
+            var commits = Program.collectLinearAhead(head.commitSha, baseSha, store)
+            if (commits == null) {
+                return
+            }
+
+            ("Rebasing " + commits.getSize().toString() + " commit(s) onto " +
+                upstreamSha.substring(0UI, 7UI)).println()
+
+            // Save ORIG_HEAD (real git's convention) so the user can
+            // do their own `am-git reset --hard ORIG_HEAD` even
+            // outside the rebase machinery if they want.
+            (head.commitSha + "\n").writeToFile(".git/ORIG_HEAD")
+
+            // Reset the branch to upstream — both ref and worktree
+            // + index. From here, every successful apply moves the
+            // ref forward; a conflict freezes state for --continue.
+            Program.moveBranchRef(head.branch, upstreamSha)
+            CheckoutClient.applyCommitToWorkTree(".git", ".", upstreamSha)
+
+            // Build the initial state — no stoppedSha yet, full todo
+            // queue. The processing loop pops commits off the front
+            // of todo until either the queue is empty (success) or
+            // a replay hits a conflict (state written to disk).
+            var state = new RebaseState()
+            state.onto = upstreamSha
+            state.origHead = head.commitSha
+            state.headName = "refs/heads/" + head.branch
+            state.stoppedSha = null
+            var ti = 0
+            while (ti < commits.getSize()) {
+                state.todo.add(commits.get(ti).sha)
+                ti = ti + 1
+            }
+
+            Program.processRebaseTodo(state, upstreamSha, store)
+        }
+
+        // Inner loop shared by `runRebaseStart` and `runRebaseContinue`.
+        // Pops commits off `state.todo` one at a time, replays each
+        // onto `currentHeadSha`. On conflict, saves the state (with
+        // stoppedSha = the conflicting SHA) and returns. On empty
+        // todo, clears state and prints success.
+        private static fun processRebaseTodo(state: RebaseState,
+                                              currentHeadSha: String,
+                                              store: ObjectStore) {
+            var head = currentHeadSha
+            loop {
+                if (state.todo.getSize() == 0) {
+                    break
+                }
+                var nextSha = state.todo.get(0)
+                state.todo.removeAt(0)
+                if (!store.has(nextSha)) {
+                    ("rebase: commit " + nextSha + " not in object store").println()
+                    state.stoppedSha = nextSha
+                    state.save(".git")
+                    return
+                }
+                var obj = store.read(nextSha)
+                if (obj.typeCode != 1) {
+                    ("rebase: " + nextSha + " is not a commit").println()
+                    return
+                }
+                var commit = Commit.parse(nextSha, obj.content)
+
+                // Use the branch portion of head-name for moveBranchRef
+                // — head-name is the full ref path "refs/heads/<branch>".
+                var branch = Program.stripRefsHeads(state.headName)
+                var replayed = Program.replayCommit(commit, head, branch, store)
+                if (replayed == null) {
+                    // Conflict. Persist state so `--continue` can pick
+                    // up after the user resolves.
+                    state.stoppedSha = nextSha
+                    state.save(".git")
+                    ("rebase: conflict re-applying " + nextSha.substring(0UI, 7UI) +
+                        " '" + Program.firstLine(commit.message) + "'").println()
+                    "  Resolve the conflicts, run `am-git add <file>...`, then `am-git rebase --continue`.".println()
+                    "  Or `am-git rebase --abort` to roll back.".println()
+                    return
+                }
+                head = replayed
+                ("  applied " + nextSha.substring(0UI, 7UI) + " → " +
+                    replayed.substring(0UI, 7UI) + " '" +
+                    Program.firstLine(commit.message) + "'").println()
+            }
+
+            // Drained the todo cleanly. Tidy up.
+            RebaseState.clear(".git")
+            var branch = Program.stripRefsHeads(state.headName)
+            ("Successfully rebased " + branch + " onto " +
+                state.onto.substring(0UI, 7UI)).println()
+        }
+
+        // `am-git rebase --continue` — after the user has resolved
+        // conflicts and `am-git add`ed the resolved files, finalise
+        // the stopped commit from the index, then drain the rest of
+        // the todo.
+        private static fun runRebaseContinue() {
+            if (!RebaseState.isInProgress(".git")) {
+                "rebase: no rebase in progress".println()
+                return
+            }
+            var state = RebaseState.load(".git")
+            if (state.stoppedSha == null) {
+                "rebase: state file has no stopped-sha — corrupted rebase, try --abort".println()
+                return
+            }
+
+            // Index must be clean (no stage > 0 rows). The user is
+            // expected to have `am-git add`ed every resolved file.
+            var idx = GitIndex.read(".git")
+            if (idx.hasUnmerged()) {
+                "rebase: unresolved merge conflicts in the index — `am-git add` the resolved paths first".println()
+                var i = 0
+                while (i < idx.entries.getSize()) {
+                    var e = idx.entries.get(i)
+                    if (e.stage() != 0) {
+                        ("  " + e.path + " (stage " + e.stage().toString() + ")").println()
+                    }
+                    i = i + 1
+                }
+                return
+            }
+
+            // Resolve the head ref. We re-read HEAD rather than
+            // trusting state, so that any manual ref edits the user
+            // made aren't silently clobbered.
+            var head = HeadReader.read(".git")
+            if (head.commitSha == null) {
+                "rebase: HEAD has no commit — corrupted state, try --abort".println()
+                return
+            }
+
+            var store = new ObjectStore(".git")
+            // Re-fetch the stopped commit's metadata.
+            if (!store.has(state.stoppedSha)) {
+                ("rebase: stopped commit " + state.stoppedSha + " not in object store").println()
+                return
+            }
+            var obj = store.read(state.stoppedSha)
+            if (obj.typeCode != 1) {
+                ("rebase: stopped " + state.stoppedSha + " is not a commit").println()
+                return
+            }
+            var stoppedCommit = Commit.parse(state.stoppedSha, obj.content)
+
+            // Build a new tree from the resolved index and commit it
+            // with the stopped commit's author + message.
+            var committer = Identity.loadCommitter()
+            if (committer == null) {
+                "rebase: identity not configured (set AM_GIT_USER_NAME and AM_GIT_USER_EMAIL)".println()
+                return
+            }
+            var committerTime = Identity.loadCommitterDate()
+            if (committerTime == null) {
+                committerTime = new DateTime()
+            }
+            var writer = new LooseObjectWriter(".git")
+            var newTreeSha = IndexTreeBuilder.build(idx, writer)
+            var newCommitSha = new CommitWriter(writer).writeRawAuthor(
+                newTreeSha, head.commitSha,
+                stoppedCommit.author,
+                committer, committerTime,
+                stoppedCommit.message)
+
+            var branch = Program.stripRefsHeads(state.headName)
+            Program.moveBranchRef(branch, newCommitSha)
+
+            ("  applied " + state.stoppedSha.substring(0UI, 7UI) + " → " +
+                newCommitSha.substring(0UI, 7UI) + " '" +
+                Program.firstLine(stoppedCommit.message) + "' (continued)").println()
+
+            // Hand off to the shared loop with the rest of todo.
+            state.stoppedSha = null
+            Program.processRebaseTodo(state, newCommitSha, store)
+        }
+
+        // `am-git rebase --abort` — read orig-head, reset --hard to
+        // it, clear the state dir.
+        private static fun runRebaseAbort() {
+            if (!RebaseState.isInProgress(".git")) {
+                "rebase: no rebase in progress".println()
+                return
+            }
+            var state = RebaseState.load(".git")
+            if (state.origHead == null) {
+                "rebase: state file missing orig-head — can't abort cleanly. Inspect .git/rebase-merge/.".println()
+                return
+            }
+            var branch = Program.stripRefsHeads(state.headName)
+            Program.moveBranchRef(branch, state.origHead)
+            CheckoutClient.applyCommitToWorkTree(".git", ".", state.origHead)
+            RebaseState.clear(".git")
+            ("Rebase aborted; " + branch + " restored to " +
+                state.origHead.substring(0UI, 7UI)).println()
+        }
+
+        // "refs/heads/<branch>" → "<branch>". The head-name file
+        // stores the full ref path (real git's format); the rest of
+        // am-git wants just the branch name.
+        private static fun stripRefsHeads(headName: String): String {
+            var prefix = "refs/heads/"
+            if (headName != null && headName.startsWith(prefix)) {
+                return headName.substringToEnd(prefix.length().toUInt())
+            }
+            return headName
+        }
+
+        // `am-git cherry-pick <commit>` — apply one commit's
+        // changes onto the current HEAD as a new commit. Reuses
+        // `replayCommit` (the per-commit step of rebase) directly —
+        // 3-way merge with base=<commit>'s parent, ours=HEAD,
+        // theirs=<commit>. On clean apply, a new commit is made
+        // with the picked commit's author + message preserved.
+        //
+        // Resume flow:
+        //   start: `am-git cherry-pick <commit>`. On conflict,
+        //          `.git/CHERRY_PICK_HEAD` is written with the
+        //          picked SHA; workdir has markers, index has
+        //          stages 1/2/3.
+        //   user fixes files, runs `am-git add <file>...`.
+        //   `am-git cherry-pick --continue` finalises the commit
+        //   using the picked SHA's original author + message, then
+        //   clears state.
+        //   `am-git cherry-pick --abort` resets the workdir + index
+        //   back to HEAD (HEAD hasn't moved since the pick started)
+        //   and clears state.
+        //
+        // v1 limitations:
+        //   * Single commit only — no `am-git cherry-pick A B C`.
+        //   * Refuses merge commits (would need `-m <parent>` to
+        //     pick which side to bring in).
+        //   * Refuses detached HEAD (same as rebase — reuses
+        //     `moveBranchRef`).
+        private static fun runCherryPick(args: String[]) {
+            try {
+                if (args.length() < 2UI) {
+                    "usage: am-git cherry-pick <commit> | --continue | --abort".println()
+                    return
+                }
+                var first = args[1UI]
+                if (first == "--continue") {
+                    Program.runCherryPickContinue()
+                    return
+                }
+                if (first == "--abort") {
+                    Program.runCherryPickAbort()
+                    return
+                }
+                if (Program.cherryPickInProgress()) {
+                    "cherry-pick: a cherry-pick is already in progress. Use `--continue` or `--abort`.".println()
+                    return
+                }
+                if (Program.revertInProgress()) {
+                    "cherry-pick: revert in progress — finish or abort that first".println()
+                    return
+                }
+                if (RebaseState.isInProgress(".git")) {
+                    "cherry-pick: rebase in progress — finish or abort that first".println()
+                    return
+                }
+                Program.runCherryPickStart(first)
+            } catch (ex: Exception) {
+                "cherry-pick: failed".println()
+                ex.printWithStackTrace()
+            }
+        }
+
+        // Initial pick. Resolves <commit>, refuses merge commits
+        // (multi-parent), runs replayCommit on the current HEAD.
+        // On conflict, persists `.git/CHERRY_PICK_HEAD` so
+        // `--continue` knows which commit's metadata to finalise
+        // with.
+        private static fun runCherryPickStart(commitish: String) {
+            var head = HeadReader.read(".git")
+            if (head.detached) {
+                "cherry-pick: cannot cherry-pick onto detached HEAD".println()
+                return
+            }
+            if (head.commitSha == null) {
+                "cherry-pick: current branch has no commits yet — cannot pick onto an unborn branch".println()
+                return
+            }
+            var pickedSha = Program.resolveCommitish(commitish)
+            if (pickedSha == null) {
+                ("cherry-pick: cannot resolve '" + commitish + "'").println()
+                return
+            }
+            var store = new ObjectStore(".git")
+            if (!store.has(pickedSha)) {
+                ("cherry-pick: " + pickedSha + " not in object store").println()
+                return
+            }
+            var obj = store.read(pickedSha)
+            if (obj.typeCode != 1) {
+                ("cherry-pick: " + pickedSha + " is not a commit").println()
+                return
+            }
+            var commit = Commit.parse(pickedSha, obj.content)
+            if (commit.parents.getSize() > 1) {
+                ("cherry-pick: " + pickedSha.substring(0UI, 7UI) +
+                    " is a merge commit — v1 doesn't support `-m <parent-number>` yet.").println()
+                return
+            }
+            if (commit.parents.getSize() == 0) {
+                ("cherry-pick: " + pickedSha.substring(0UI, 7UI) +
+                    " is a root commit — no parent to diff against.").println()
+                return
+            }
+
+            var newSha = Program.replayCommit(commit, head.commitSha, head.branch, store)
+            if (newSha == null) {
+                // Conflict. Persist the picked SHA so --continue can
+                // pull author + message back out of the object store.
+                (pickedSha + "\n").writeToFile(".git/CHERRY_PICK_HEAD")
+                ("cherry-pick: conflict applying " + pickedSha.substring(0UI, 7UI) +
+                    " '" + Program.firstLine(commit.message) + "'").println()
+                "  Resolve the conflicts, run `am-git add <file>...`, then `am-git cherry-pick --continue`.".println()
+                "  Or `am-git cherry-pick --abort` to roll back.".println()
+                return
+            }
+
+            ("Cherry-picked " + pickedSha.substring(0UI, 7UI) + " → " +
+                newSha.substring(0UI, 7UI) + " '" +
+                Program.firstLine(commit.message) + "'").println()
+        }
+
+        // `--continue`: index must be clean (user `add`ed the
+        // resolved paths), then finalise the commit using the
+        // picked SHA's original author + message.
+        private static fun runCherryPickContinue() {
+            if (!Program.cherryPickInProgress()) {
+                "cherry-pick: no cherry-pick in progress".println()
+                return
+            }
+            var pickedSha = Program.trim(String.readFromFile(".git/CHERRY_PICK_HEAD"))
+            if (pickedSha == null || pickedSha.length() != 40) {
+                "cherry-pick: .git/CHERRY_PICK_HEAD is corrupted; use --abort".println()
+                return
+            }
+
+            var idx = GitIndex.read(".git")
+            if (idx.hasUnmerged()) {
+                "cherry-pick: unresolved merge conflicts in the index — `am-git add` the resolved paths first".println()
+                var ci = 0
+                while (ci < idx.entries.getSize()) {
+                    var e = idx.entries.get(ci)
+                    if (e.stage() != 0) {
+                        ("  " + e.path + " (stage " + e.stage().toString() + ")").println()
+                    }
+                    ci = ci + 1
+                }
+                return
+            }
+
+            var head = HeadReader.read(".git")
+            if (head.commitSha == null) {
+                "cherry-pick: HEAD has no commit — corrupted state, use --abort".println()
+                return
+            }
+
+            var store = new ObjectStore(".git")
+            if (!store.has(pickedSha)) {
+                ("cherry-pick: picked commit " + pickedSha + " not in object store").println()
+                return
+            }
+            var obj = store.read(pickedSha)
+            var pickedCommit = Commit.parse(pickedSha, obj.content)
+
+            var committer = Identity.loadCommitter()
+            if (committer == null) {
+                "cherry-pick: identity not configured (set AM_GIT_USER_NAME and AM_GIT_USER_EMAIL)".println()
+                return
+            }
+            var committerTime = Identity.loadCommitterDate()
+            if (committerTime == null) {
+                committerTime = new DateTime()
+            }
+            var writer = new LooseObjectWriter(".git")
+            var newTreeSha = IndexTreeBuilder.build(idx, writer)
+            var newCommitSha = new CommitWriter(writer).writeRawAuthor(
+                newTreeSha, head.commitSha,
+                pickedCommit.author,
+                committer, committerTime,
+                pickedCommit.message)
+
+            Program.moveBranchRef(head.branch, newCommitSha)
+            Program.deleteIfExists(".git/CHERRY_PICK_HEAD")
+            ("Cherry-picked " + pickedSha.substring(0UI, 7UI) + " → " +
+                newCommitSha.substring(0UI, 7UI) + " '" +
+                Program.firstLine(pickedCommit.message) + "' (continued)").println()
+        }
+
+        // `--abort`: HEAD hasn't moved since the pick started (we
+        // only commit after the conflict is resolved), so all we
+        // need is `reset --hard HEAD` semantics: re-materialise the
+        // current commit's tree and clear the index of conflict
+        // stages.
+        private static fun runCherryPickAbort() {
+            if (!Program.cherryPickInProgress()) {
+                "cherry-pick: no cherry-pick in progress".println()
+                return
+            }
+            var head = HeadReader.read(".git")
+            if (head.commitSha == null) {
+                "cherry-pick: HEAD has no commit to restore to".println()
+                return
+            }
+            CheckoutClient.applyCommitToWorkTree(".git", ".", head.commitSha)
+            Program.deleteIfExists(".git/CHERRY_PICK_HEAD")
+            "Cherry-pick aborted; workdir restored.".println()
+        }
+
+        // True iff `.git/CHERRY_PICK_HEAD` exists.
+        private static fun cherryPickInProgress(): Bool {
+            return new File(".git/CHERRY_PICK_HEAD").exists()
+        }
+
+        // `am-git revert <commit>` — produce a new commit that undoes
+        // the changes introduced by <commit>. The mirror image of
+        // cherry-pick: same three-way merge, but with base and theirs
+        // swapped. Where cherry-pick says "given the diff from
+        // commit's parent → commit, apply it onto HEAD", revert says
+        // "given the diff from commit → commit's parent, apply it
+        // onto HEAD" — exactly the same machinery in reverse.
+        //
+        // Two real differences from cherry-pick at finalisation time:
+        //
+        //   * **Author**: a revert commit was authored by *you*,
+        //     not by the original commit's author. We call
+        //     `Identity.loadAuthor` like a regular commit instead of
+        //     preserving the picked commit's author line.
+        //   * **Message**: defaults to
+        //       Revert "<first line of original message>"
+        //
+        //       This reverts commit <full SHA>.
+        //     — matches real git's default.
+        //
+        // Resume flow uses `.git/REVERT_HEAD` (real git's filename)
+        // so an interrupted revert can in principle be aborted by
+        // hand with real git.
+        //
+        // v1 limitations: single-commit only, refuses merge commits
+        // (would need `-m <parent-number>`), refuses root commits
+        // (no parent to diff against), refuses detached HEAD.
+        private static fun runRevert(args: String[]) {
+            try {
+                if (args.length() < 2UI) {
+                    "usage: am-git revert <commit> | --continue | --abort".println()
+                    return
+                }
+                var first = args[1UI]
+                if (first == "--continue") {
+                    Program.runRevertContinue()
+                    return
+                }
+                if (first == "--abort") {
+                    Program.runRevertAbort()
+                    return
+                }
+                if (Program.revertInProgress()) {
+                    "revert: a revert is already in progress. Use `--continue` or `--abort`.".println()
+                    return
+                }
+                if (Program.cherryPickInProgress()) {
+                    "revert: cherry-pick in progress — finish or abort that first".println()
+                    return
+                }
+                if (RebaseState.isInProgress(".git")) {
+                    "revert: rebase in progress — finish or abort that first".println()
+                    return
+                }
+                Program.runRevertStart(first)
+            } catch (ex: Exception) {
+                "revert: failed".println()
+                ex.printWithStackTrace()
+            }
+        }
+
+        // Initial revert. Same shape as cherry-pick start, but the
+        // 3-way merge has base=commit's tree, theirs=parent's tree —
+        // i.e. the inverse-diff direction.
+        private static fun runRevertStart(commitish: String) {
+            var head = HeadReader.read(".git")
+            if (head.detached) {
+                "revert: cannot revert onto detached HEAD".println()
+                return
+            }
+            if (head.commitSha == null) {
+                "revert: current branch has no commits — nothing to revert into".println()
+                return
+            }
+            var pickedSha = Program.resolveCommitish(commitish)
+            if (pickedSha == null) {
+                ("revert: cannot resolve '" + commitish + "'").println()
+                return
+            }
+            var store = new ObjectStore(".git")
+            if (!store.has(pickedSha)) {
+                ("revert: " + pickedSha + " not in object store").println()
+                return
+            }
+            var obj = store.read(pickedSha)
+            if (obj.typeCode != 1) {
+                ("revert: " + pickedSha + " is not a commit").println()
+                return
+            }
+            var commit = Commit.parse(pickedSha, obj.content)
+            if (commit.parents.getSize() > 1) {
+                ("revert: " + pickedSha.substring(0UI, 7UI) +
+                    " is a merge commit — v1 doesn't support `-m <parent-number>` yet.").println()
+                return
+            }
+            if (commit.parents.getSize() == 0) {
+                ("revert: " + pickedSha.substring(0UI, 7UI) +
+                    " is a root commit — nothing to revert (no parent to diff against).").println()
+                return
+            }
+
+            var newSha = Program.invertedReplayCommit(commit, head.commitSha, head.branch, store)
+            if (newSha == null) {
+                (pickedSha + "\n").writeToFile(".git/REVERT_HEAD")
+                ("revert: conflict reverting " + pickedSha.substring(0UI, 7UI) +
+                    " '" + Program.firstLine(commit.message) + "'").println()
+                "  Resolve the conflicts, run `am-git add <file>...`, then `am-git revert --continue`.".println()
+                "  Or `am-git revert --abort` to roll back.".println()
+                return
+            }
+
+            ("Reverted " + pickedSha.substring(0UI, 7UI) + " → " +
+                newSha.substring(0UI, 7UI)).println()
+        }
+
+        // Three-way merge with base/theirs swapped relative to
+        // `replayCommit`. base = the commit being reverted; theirs =
+        // its parent. On clean apply, builds a new commit with the
+        // current user as author and a "Revert ..." message.
+        //
+        // Returns the new commit SHA on success, or null on conflict.
+        // On success, advances the branch ref.
+        private static fun invertedReplayCommit(commit: Commit, currentHeadSha: String,
+                                                  branch: String, store: ObjectStore): String {
+            var parentSha = commit.parents.get(0)
+            var parentCommit = store.read(parentSha)
+            // INVERTED vs replayCommit: base = commit, theirs = parent
+            var baseTree = commit.treeSha
+            var currentHeadCommit = store.read(currentHeadSha)
+            var oursTree = WorkTree.extractRootTreeSha(currentHeadCommit.content)
+            var theirsTree = WorkTree.extractRootTreeSha(parentCommit.content)
+
+            var plan = MergePlan.compute(baseTree, oursTree, theirsTree, store)
+
+            var idx = GitIndex.read(".git")
+            var applier = new MergeApplier(".", store, idx)
+            var conflicts = applier.apply(plan)
+            idx.write(".git")
+            if (conflicts.getSize() > 0) {
+                return null
+            }
+
+            // Build a new commit. Author = the user doing the revert
+            // (not the original commit's author), message =
+            // `Revert "<first line>"\n\nThis reverts commit <SHA>.\n`
+            var idxAfter = GitIndex.read(".git")
+            var writer = new LooseObjectWriter(".git")
+            var newTreeSha = IndexTreeBuilder.build(idxAfter, writer)
+
+            var author = Identity.loadAuthor()
+            var committer = Identity.loadCommitter()
+            if (author == null || committer == null) {
+                throw new Exception("revert: identity not configured (set AM_GIT_USER_NAME and AM_GIT_USER_EMAIL)")
+            }
+            var authorTime = Identity.loadAuthorDate()
+            if (authorTime == null) { authorTime = new DateTime() }
+            var committerTime = Identity.loadCommitterDate()
+            if (committerTime == null) { committerTime = new DateTime() }
+
+            var message = Program.buildRevertMessage(commit)
+            var newCommitSha = new CommitWriter(writer).write(
+                newTreeSha, currentHeadSha,
+                author, authorTime,
+                committer, committerTime,
+                message)
+            Program.moveBranchRef(branch, newCommitSha)
+            return newCommitSha
+        }
+
+        // After conflict resolution + `am-git add`, finalise the
+        // revert commit from the resolved index. Same shape as the
+        // cherry-pick continuation, but with the revert-specific
+        // author + message rules.
+        private static fun runRevertContinue() {
+            if (!Program.revertInProgress()) {
+                "revert: no revert in progress".println()
+                return
+            }
+            var pickedSha = Program.trim(String.readFromFile(".git/REVERT_HEAD"))
+            if (pickedSha == null || pickedSha.length() != 40) {
+                "revert: .git/REVERT_HEAD is corrupted; use --abort".println()
+                return
+            }
+
+            var idx = GitIndex.read(".git")
+            if (idx.hasUnmerged()) {
+                "revert: unresolved merge conflicts in the index — `am-git add` the resolved paths first".println()
+                var ri = 0
+                while (ri < idx.entries.getSize()) {
+                    var e = idx.entries.get(ri)
+                    if (e.stage() != 0) {
+                        ("  " + e.path + " (stage " + e.stage().toString() + ")").println()
+                    }
+                    ri = ri + 1
+                }
+                return
+            }
+
+            var head = HeadReader.read(".git")
+            if (head.commitSha == null) {
+                "revert: HEAD has no commit — corrupted state, use --abort".println()
+                return
+            }
+            var store = new ObjectStore(".git")
+            if (!store.has(pickedSha)) {
+                ("revert: picked commit " + pickedSha + " not in object store").println()
+                return
+            }
+            var obj = store.read(pickedSha)
+            var pickedCommit = Commit.parse(pickedSha, obj.content)
+
+            var author = Identity.loadAuthor()
+            var committer = Identity.loadCommitter()
+            if (author == null || committer == null) {
+                "revert: identity not configured (set AM_GIT_USER_NAME and AM_GIT_USER_EMAIL)".println()
+                return
+            }
+            var authorTime = Identity.loadAuthorDate()
+            if (authorTime == null) { authorTime = new DateTime() }
+            var committerTime = Identity.loadCommitterDate()
+            if (committerTime == null) { committerTime = new DateTime() }
+
+            var writer = new LooseObjectWriter(".git")
+            var newTreeSha = IndexTreeBuilder.build(idx, writer)
+            var message = Program.buildRevertMessage(pickedCommit)
+            var newCommitSha = new CommitWriter(writer).write(
+                newTreeSha, head.commitSha,
+                author, authorTime,
+                committer, committerTime,
+                message)
+
+            Program.moveBranchRef(head.branch, newCommitSha)
+            Program.deleteIfExists(".git/REVERT_HEAD")
+            ("Reverted " + pickedSha.substring(0UI, 7UI) + " → " +
+                newCommitSha.substring(0UI, 7UI) + " (continued)").println()
+        }
+
+        // `--abort`: HEAD hasn't moved (we only commit after
+        // resolution), so reset workdir + index to current HEAD.
+        // Same shape as cherry-pick --abort.
+        private static fun runRevertAbort() {
+            if (!Program.revertInProgress()) {
+                "revert: no revert in progress".println()
+                return
+            }
+            var head = HeadReader.read(".git")
+            if (head.commitSha == null) {
+                "revert: HEAD has no commit to restore to".println()
+                return
+            }
+            CheckoutClient.applyCommitToWorkTree(".git", ".", head.commitSha)
+            Program.deleteIfExists(".git/REVERT_HEAD")
+            "Revert aborted; workdir restored.".println()
+        }
+
+        // True iff `.git/REVERT_HEAD` exists.
+        private static fun revertInProgress(): Bool {
+            return new File(".git/REVERT_HEAD").exists()
+        }
+
+        // Default revert message — matches `git revert`'s template.
+        //   Revert "<first line of original message>"
+        //
+        //   This reverts commit <full-sha>.
+        private static fun buildRevertMessage(picked: Commit): String {
+            var subject = Program.firstLine(picked.message)
+            return "Revert \"" + subject + "\"\n" +
+                   "\n" +
+                   "This reverts commit " + picked.sha + ".\n"
         }
 
         // FF-style "rebase" — HEAD is an ancestor of upstream, so
@@ -1538,13 +2321,25 @@ namespace AmGit
                 var head = HeadReader.read(".git")
                 return head.commitSha
             }
-            var refPath = ".git/refs/heads/" + s
-            var f = new File(refPath)
-            if (!f.exists()) {
-                return null
+            // Try local branches first, then tags. Matches real git's
+            // "loose-ref" search order (heads/, tags/, remotes/), at
+            // least for the two ref classes we support today.
+            // (Annotated tags would point at a tag object; we only
+            // write lightweight tags, so the file contents are
+            // already a commit SHA. If somebody created an annotated
+            // tag with real git in the same repo, downstream commands
+            // would see the tag-object SHA — not a commit — and
+            // refuse. Worth peeling through tag objects when we ship
+            // annotated tags.)
+            var branchPath = ".git/refs/heads/" + s
+            if (new File(branchPath).exists()) {
+                return Program.trim(String.readFromFile(branchPath))
             }
-            var raw = String.readFromFile(refPath)
-            return Program.trim(raw)
+            var tagPath = ".git/refs/tags/" + s
+            if (new File(tagPath).exists()) {
+                return Program.trim(String.readFromFile(tagPath))
+            }
+            return null
         }
 
         private static fun isHex(s: String): Bool {
@@ -1710,21 +2505,7 @@ namespace AmGit
                 currentBranch = head.branch
             }
             var names = Program.collectBranchNames(".git/refs/heads", "")
-            // Sort by simple linear search swap — small N, code stays
-            // self-contained.
-            var i = 0
-            while (i < names.getSize() - 1) {
-                var j = i + 1
-                while (j < names.getSize()) {
-                    if (names.get(j) < names.get(i)) {
-                        var tmp = names.get(i)
-                        names.set(i, names.get(j))
-                        names.set(j, tmp)
-                    }
-                    j = j + 1
-                }
-                i = i + 1
-            }
+            Program.sortStringsBytewise(names)
             var k = 0
             while (k < names.getSize()) {
                 var n = names.get(k)
@@ -1796,6 +2577,150 @@ namespace AmGit
             }
             File.delete(path)
             ("Deleted refs/heads/" + name).println()
+        }
+
+        // `am-git tag`                     — list every tag, sorted.
+        // `am-git tag <name>`              — lightweight tag at HEAD.
+        // `am-git tag <name> <commit>`     — lightweight tag at <commit>.
+        //                                    <commit> goes through
+        //                                    `resolveCommitish`, so
+        //                                    branch names + SHAs +
+        //                                    `HEAD` all work.
+        // `am-git tag -d <name>`           — delete a tag.
+        //
+        // v1 limitations:
+        //   * Lightweight tags only — the ref file contains the commit
+        //     SHA directly. Annotated tags (a separate tag object with
+        //     its own author/date/message) aren't written yet.
+        //   * No `-f` to overwrite an existing tag (real git's safety
+        //     default). Delete and recreate to move a tag.
+        private static fun runTag(args: String[]) {
+            try {
+                if (args.length() == 1UI) {
+                    Program.listTags()
+                    return
+                }
+                if (args.length() == 3UI && args[1UI] == "-d") {
+                    Program.deleteTag(args[2UI])
+                    return
+                }
+                if (args.length() == 2UI) {
+                    Program.createTag(args[1UI], null)
+                    return
+                }
+                if (args.length() == 3UI) {
+                    Program.createTag(args[1UI], args[2UI])
+                    return
+                }
+                "usage: am-git tag [<name> [<commit>]] | tag -d <name>".println()
+            } catch (ex: Exception) {
+                ("tag: " + ex.message).println()
+            }
+        }
+
+        // List tags, one per line, sorted alphabetically. No marker
+        // for "current" — tags don't have a "checked out" concept
+        // the way branches do.
+        private static fun listTags() {
+            // collectBranchNames is name-misleading but
+            // implementation-neutral — it just walks any refs/* dir.
+            var names = Program.collectBranchNames(".git/refs/tags", "")
+            Program.sortStringsBytewise(names)
+            var k = 0
+            while (k < names.getSize()) {
+                names.get(k).println()
+                k = k + 1
+            }
+        }
+
+        // Bytewise lexicographic sort. AmLang's String `<` doesn't
+        // compare contents, so listBranches / listTags both have to
+        // walk the code units themselves — same workaround
+        // GitIndex.compareBytewise uses for its on-disk index sort.
+        private static fun sortStringsBytewise(list: List<String>) {
+            var n = list.getSize()
+            var i = 0
+            while (i < n - 1) {
+                var j = i + 1
+                while (j < n) {
+                    if (Program.compareBytewise(list.get(j), list.get(i)) < 0) {
+                        var tmp = list.get(i)
+                        list.set(i, list.get(j))
+                        list.set(j, tmp)
+                    }
+                    j = j + 1
+                }
+                i = i + 1
+            }
+        }
+
+        private static fun compareBytewise(a: String, b: String): Int {
+            var la = a.length()
+            var lb = b.length()
+            var min = la
+            if (lb < min) {
+                min = lb
+            }
+            var i: UInt = 0UI
+            while (i.toInt() < min) {
+                var ca = a.characterAt(i).toInt()
+                var cb = b.characterAt(i).toInt()
+                if (ca != cb) {
+                    return ca - cb
+                }
+                i++
+            }
+            return la - lb
+        }
+
+        // Create a lightweight tag at the resolved commit. Refuses
+        // to overwrite an existing tag (matches real git's default).
+        // Also refuses if the target SHA isn't actually in the
+        // object store — `resolveCommitish` treats any 40-char hex
+        // as a valid SHA without checking existence, so without
+        // this guard `am-git tag x ffff...` would happily create a
+        // dangling ref.
+        private static fun createTag(name: String, commitish: String) {
+            var targetSha: String = null
+            if (commitish == null) {
+                var head = HeadReader.read(".git")
+                if (head.commitSha == null) {
+                    "tag: HEAD has no commit yet — create one first".println()
+                    return
+                }
+                targetSha = head.commitSha
+            } else {
+                targetSha = Program.resolveCommitish(commitish)
+                if (targetSha == null) {
+                    ("tag: cannot resolve '" + commitish + "'").println()
+                    return
+                }
+                var store = new ObjectStore(".git")
+                if (!store.has(targetSha)) {
+                    ("tag: " + targetSha + " is not in the object store").println()
+                    return
+                }
+            }
+            var path = ".git/refs/tags/" + name
+            var existing = new File(path)
+            if (existing.exists()) {
+                ("tag: refs/tags/" + name + " already exists").println()
+                return
+            }
+            Repository.ensureParentDir(path)
+            (targetSha + "\n").writeToFile(path)
+            ("Created refs/tags/" + name + " at " + targetSha).println()
+        }
+
+        private static fun deleteTag(name: String) {
+            var path = ".git/refs/tags/" + name
+            var f = new File(path)
+            if (!f.exists()) {
+                ("tag: refs/tags/" + name + " does not exist").println()
+                return
+            }
+            File.delete(path)
+            ("Deleted refs/tags/" + name).println()
         }
 
         // Walk commit ancestry from HEAD, printing each commit's sha,
@@ -1976,6 +2901,7 @@ namespace AmGit
             "am-git — a small git client written in AmLang".println()
             "".println()
             "Commands:".println()
+            "  init [<dir>]                        Scaffold an empty .git/ at <dir> (default cwd)".println()
             "  clone <url> [target-dir]            Clone a remote repository over smart-HTTP".println()
             "  fetch [<url>|<remote-name>]         Fetch refs + objects (defaults from .git/config)".println()
             "  pull [<url>] [<branch>]             Fast-forward-only pull (fetch + advance HEAD)".println()
@@ -1985,12 +2911,15 @@ namespace AmGit
             "  status                              Show staged / unstaged / untracked changes".println()
             "  log [-n N]                          Walk commit ancestry from HEAD".println()
             "  branch [<name> | -d <name>]         List / create / delete local branches".println()
+            "  tag [<name> [<commit>]] | -d <name> List / create (lightweight) / delete tags".println()
             "  checkout <branch>                   Switch HEAD and the working tree to a branch".println()
             "  merge <branch>                      Merge <branch> into the current branch".println()
             "  merge-base <a> <b>                  Print the lowest common ancestor of two commits".println()
             "  reset [--soft|--mixed|--hard]       Move HEAD (and optionally index / worktree) to <commit>".println()
             "    [<commit>]".println()
             "  rebase <upstream>                   Replay current-branch commits on top of <upstream>".println()
+            "  cherry-pick <commit>                Apply <commit>'s changes onto HEAD as a new commit".println()
+            "  revert <commit>                     Create a new commit that undoes <commit>".println()
             "  diff [--staged] [--name-only |      Path-level diff (worktree/index/HEAD/two commits)".println()
             "    --name-status] [<a> [<b>]]".println()
             "  commit -m <message>                 Commit the cwd working tree against HEAD".println()

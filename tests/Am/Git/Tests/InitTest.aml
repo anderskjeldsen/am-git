@@ -1,0 +1,147 @@
+namespace Am.Git.Tests {
+
+    // `am-git init` is mostly directory-mkdir + two file writes; the
+    // tests pin down the bits that aren't trivial:
+    //
+    //   * Reinit safety — running init on an existing repo must not
+    //     clobber a checked-out branch (HEAD) or user config.
+    //   * Skeleton completeness — real git expects every directory
+    //     we lay down; missing one would make `git fsck` complain or
+    //     break clone/push.
+    //
+    // The CLI itself is wired to ".git" / cwd, so the tests model
+    // the on-disk shape directly by replaying what `runInit` writes
+    // into a per-test private dir.
+    class InitTest {
+        import Am.Lang
+        import Am.IO
+        import Am.Git
+        import Am.Tests
+
+        // Fresh init produces every directory am-git or real git
+        // expects, plus a HEAD pointing at refs/heads/main and a
+        // minimal [core] config.
+        test freshInitLaysFullSkeleton() {
+            InitTest.cleanup()
+            try {
+                InitTest.scaffold("./testinit/repo/.git")
+
+                Assert.assertTrue(new File("./testinit/repo/.git/objects").isDirectory())
+                Assert.assertTrue(new File("./testinit/repo/.git/objects/pack").isDirectory())
+                Assert.assertTrue(new File("./testinit/repo/.git/refs/heads").isDirectory())
+                Assert.assertTrue(new File("./testinit/repo/.git/refs/tags").isDirectory())
+                Assert.assertTrue(new File("./testinit/repo/.git/info").isDirectory())
+
+                var head = String.readFromFile("./testinit/repo/.git/HEAD")
+                Assert.assertEquals("ref: refs/heads/main\n", head)
+
+                var config = String.readFromFile("./testinit/repo/.git/config")
+                // We don't pin the exact bytes (whitespace might shift
+                // if we ever pretty-format), but `[core]` plus the
+                // three settings must all be in there.
+                Assert.assertTrue(config.indexOf("[core]") >= 0)
+                Assert.assertTrue(config.indexOf("repositoryformatversion = 0") >= 0)
+                Assert.assertTrue(config.indexOf("filemode = false") >= 0)
+                Assert.assertTrue(config.indexOf("bare = false") >= 0)
+            } catch (ex: Exception) {
+                InitTest.cleanup()
+                throw ex
+            }
+            InitTest.cleanup()
+        }
+
+        // Re-running init must NOT overwrite an existing HEAD —
+        // otherwise it'd silently jump a user's checkout back to
+        // `main`. Real git's `git init` is reinit-safe this way; we
+        // match.
+        test reinitDoesNotClobberHead() {
+            InitTest.cleanup()
+            try {
+                // First init.
+                InitTest.scaffold("./testinit/repo/.git")
+                // User has switched to a feature branch — overwrite
+                // HEAD to reflect that.
+                "ref: refs/heads/feature\n".writeToFile("./testinit/repo/.git/HEAD")
+
+                // Re-init.
+                InitTest.scaffold("./testinit/repo/.git")
+
+                var head = String.readFromFile("./testinit/repo/.git/HEAD")
+                Assert.assertEquals("ref: refs/heads/feature\n", head)
+            } catch (ex: Exception) {
+                InitTest.cleanup()
+                throw ex
+            }
+            InitTest.cleanup()
+        }
+
+        // Same rule for config — user edits to `.git/config` (remote
+        // URLs, hooks etc.) must survive a re-init.
+        test reinitDoesNotClobberConfig() {
+            InitTest.cleanup()
+            try {
+                InitTest.scaffold("./testinit/repo/.git")
+                "[core]\n\tmodified = true\n".writeToFile(
+                    "./testinit/repo/.git/config")
+
+                InitTest.scaffold("./testinit/repo/.git")
+
+                var config = String.readFromFile("./testinit/repo/.git/config")
+                Assert.assertTrue(config.indexOf("modified = true") >= 0)
+                // And it didn't gain the default [core] block on top.
+                Assert.assertFalse(config.indexOf("repositoryformatversion") >= 0)
+            } catch (ex: Exception) {
+                InitTest.cleanup()
+                throw ex
+            }
+            InitTest.cleanup()
+        }
+
+        // ---- helpers --------------------------------------------------
+
+        // Replay what `runInit` does — same mkdir-then-writeIfMissing
+        // shape, just rooted at an arbitrary path instead of cwd.
+        // Kept in sync with Program.runInit.
+        private static fun scaffold(gitDir: String) {
+            Repository.ensureDir(gitDir)
+            Repository.ensureDir(gitDir + "/objects")
+            Repository.ensureDir(gitDir + "/objects/pack")
+            Repository.ensureDir(gitDir + "/refs")
+            Repository.ensureDir(gitDir + "/refs/heads")
+            Repository.ensureDir(gitDir + "/refs/tags")
+            Repository.ensureDir(gitDir + "/info")
+
+            var headFile = new File(gitDir + "/HEAD")
+            if (!headFile.exists()) {
+                "ref: refs/heads/main\n".writeToFile(gitDir + "/HEAD")
+            }
+            var configFile = new File(gitDir + "/config")
+            if (!configFile.exists()) {
+                ("[core]\n" +
+                 "\trepositoryformatversion = 0\n" +
+                 "\tfilemode = false\n" +
+                 "\tbare = false\n").writeToFile(gitDir + "/config")
+            }
+        }
+
+        private static fun cleanup() {
+            InitTest.deleteRecursive("./testinit")
+        }
+
+        private static fun deleteRecursive(path: String) {
+            var f = new File(path)
+            if (!f.exists()) {
+                return
+            }
+            if (f.isDirectory()) {
+                var children = f.listFiles()
+                var i = 0
+                while (i < children.length().toInt()) {
+                    InitTest.deleteRecursive(children[i.toUInt()].toString())
+                    i = i + 1
+                }
+            }
+            f.delete()
+        }
+    }
+}

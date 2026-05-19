@@ -1,0 +1,177 @@
+namespace Am.Git
+{
+    // On-disk state for an in-progress `am-git rebase`, mirroring
+    // real git's `.git/rebase-merge/` layout so an interrupted
+    // am-git rebase can in principle be inspected (or aborted by
+    // hand) with real git too.
+    //
+    // Files in `.git/rebase-merge/`:
+    //
+    //   onto             SHA we're rebasing onto (the new base)
+    //   orig-head        SHA we started at (HEAD before the rebase)
+    //   head-name        full ref name being rebased (e.g.
+    //                     "refs/heads/feature")
+    //   stopped-sha      SHA of the commit currently waiting for
+    //                     conflict resolution. Empty / file absent
+    //                     means "no commit is currently mid-replay"
+    //                     — used as a sanity check by --continue.
+    //   git-rebase-todo  remaining commits to apply AFTER stopped-sha,
+    //                     one SHA per line, in oldest-first order.
+    //                     Empty file means stopped-sha was the last
+    //                     one and --continue finishes the rebase.
+    //
+    // Lifecycle:
+    //   Phase A reaches a conflict → `save()` writes all five files.
+    //   `--continue` reads them, makes the commit for stopped-sha
+    //   from the resolved index, then either pops the next from
+    //   todo (more work) or calls `clear()` (done).
+    //   `--abort` reads orig-head, resets to it, then `clear()`s.
+    class RebaseState
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        var onto: String
+        var origHead: String
+        var headName: String
+        var stoppedSha: String
+        // Inline initializer — runs as part of the property's default
+        // setup at `new` time. AmLang's constructor-time hook is an
+        // `init { ... }` block (post-primary-constructor, post-property
+        // defaults); a method called `fun constructor()` looks like a
+        // ctor but is actually just a regular member function that
+        // nobody calls. Same idiom as GitIndex.entries.
+        var todo: List<String> = List<String>.newList<String>()
+
+        // True iff a rebase is currently in progress. Used by other
+        // commands (commit, status) to refuse / report.
+        static fun isInProgress(gitDir: String): Bool {
+            return new File(gitDir + "/rebase-merge").exists()
+        }
+
+        // Read all state files. Throws if the directory doesn't
+        // exist; callers should check `isInProgress` first.
+        static fun load(gitDir: String): RebaseState {
+            var dir = gitDir + "/rebase-merge"
+            if (!new File(dir).exists()) {
+                throw new Exception("no rebase in progress (" + dir + " missing)")
+            }
+            var s = new RebaseState()
+            s.onto      = RebaseState.readLine(dir + "/onto")
+            s.origHead  = RebaseState.readLine(dir + "/orig-head")
+            s.headName  = RebaseState.readLine(dir + "/head-name")
+            s.stoppedSha = RebaseState.readLine(dir + "/stopped-sha")
+            s.todo = RebaseState.readTodoFile(dir + "/git-rebase-todo")
+            return s
+        }
+
+        // Persist every field. Creates `.git/rebase-merge/` if it
+        // doesn't already exist.
+        fun save(gitDir: String) {
+            var dir = gitDir + "/rebase-merge"
+            Repository.ensureDir(dir)
+            (this.onto + "\n").writeToFile(dir + "/onto")
+            (this.origHead + "\n").writeToFile(dir + "/orig-head")
+            (this.headName + "\n").writeToFile(dir + "/head-name")
+            (this.stoppedSha + "\n").writeToFile(dir + "/stopped-sha")
+            RebaseState.writeTodoFile(dir + "/git-rebase-todo", this.todo)
+        }
+
+        // Remove the whole state dir. Called once a rebase completes
+        // or is aborted.
+        static fun clear(gitDir: String) {
+            var dir = gitDir + "/rebase-merge"
+            RebaseState.deleteIfPresent(dir + "/onto")
+            RebaseState.deleteIfPresent(dir + "/orig-head")
+            RebaseState.deleteIfPresent(dir + "/head-name")
+            RebaseState.deleteIfPresent(dir + "/stopped-sha")
+            RebaseState.deleteIfPresent(dir + "/git-rebase-todo")
+            // Empty the dir, then remove. listFiles may catch other
+            // files real git wrote — delete those too so the rmdir
+            // succeeds.
+            var f = new File(dir)
+            if (f.exists() && f.isDirectory()) {
+                var children = f.listFiles()
+                var i = 0
+                while (i < children.length().toInt()) {
+                    children[i.toUInt()].delete()
+                    i = i + 1
+                }
+                f.delete()
+            }
+        }
+
+        // ---- helpers --------------------------------------------------
+
+        // Read a single-line file, stripping the trailing newline.
+        // Returns null if the file doesn't exist (caller decides
+        // whether that's an error).
+        private static fun readLine(path: String): String {
+            var f = new File(path)
+            if (!f.exists()) {
+                return null
+            }
+            var raw = String.readFromFile(path)
+            // Trim a single trailing newline if present. We don't
+            // generic-trim — the stored value may legitimately
+            // contain interior whitespace (head-name = "refs/heads/<x>"
+            // for example, no spaces but defensive nonetheless).
+            if (raw.endsWith("\n")) {
+                return raw.substring(0UI, (raw.length() - 1).toUInt())
+            }
+            return raw
+        }
+
+        // Read a newline-separated SHA list. Empty lines are
+        // dropped so a trailing newline doesn't produce a phantom
+        // empty SHA.
+        private static fun readTodoFile(path: String): List<String> {
+            var out = List<String>.newList<String>()
+            var f = new File(path)
+            if (!f.exists()) {
+                return out
+            }
+            var raw = String.readFromFile(path)
+            var sb = new StringBuilder()
+            var i: UInt = 0UI
+            while (i < raw.length().toUInt()) {
+                var c = raw.characterAt(i).toInt()
+                if (c == 10) {
+                    if (sb.getLength() > 0UI) {
+                        out.add(sb.toString())
+                        sb = new StringBuilder()
+                    }
+                } else if (c != 13) {
+                    sb.addChar(c.toUShort())
+                }
+                i++
+            }
+            if (sb.getLength() > 0UI) {
+                out.add(sb.toString())
+            }
+            return out
+        }
+
+        // Write the todo file as `<sha>\n` per entry. An empty list
+        // produces an empty file (zero bytes) so the file's presence
+        // means "rebase in progress"; presence-with-empty-content is
+        // a valid "no more commits to apply" signal.
+        private static fun writeTodoFile(path: String, todo: List<String>) {
+            var sb = new StringBuilder()
+            var i = 0
+            while (i < todo.getSize()) {
+                sb.add(todo.get(i)).add("\n")
+                i = i + 1
+            }
+            sb.toString().writeToFile(path)
+        }
+
+        private static fun deleteIfPresent(path: String) {
+            var f = new File(path)
+            if (f.exists()) {
+                f.delete()
+            }
+        }
+    }
+}

@@ -1,0 +1,202 @@
+namespace Am.Git.Tests {
+
+    // RebaseState — on-disk persistence of an in-progress rebase.
+    // The file layout mirrors real git's `.git/rebase-merge/` so an
+    // interrupted am-git rebase can be inspected (and worst case
+    // aborted by hand) with real git too. Getting the round-trip
+    // wrong silently corrupts the resume flow.
+    //
+    // Each test uses a private `./testrebase/.git` dir to avoid
+    // clashing with neighbours.
+    class RebaseStateTest {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+        import Am.Git
+        import Am.Tests
+
+        // isInProgress is the predicate every other command uses
+        // ("are we mid-rebase?"). Empty repo → false; after save →
+        // true; after clear → false.
+        test isInProgressTracksDir() {
+            RebaseStateTest.cleanup()
+            try {
+                Assert.assertFalse(RebaseState.isInProgress("./testrebase/.git"))
+
+                var s = new RebaseState()
+                s.onto = "1111111111111111111111111111111111111111"
+                s.origHead = "2222222222222222222222222222222222222222"
+                s.headName = "refs/heads/feature"
+                s.stoppedSha = "3333333333333333333333333333333333333333"
+                s.save("./testrebase/.git")
+                Assert.assertTrue(RebaseState.isInProgress("./testrebase/.git"))
+
+                RebaseState.clear("./testrebase/.git")
+                Assert.assertFalse(RebaseState.isInProgress("./testrebase/.git"))
+            } catch (ex: Exception) {
+                RebaseStateTest.cleanup()
+                throw ex
+            }
+            RebaseStateTest.cleanup()
+        }
+
+        // Full round-trip: every field saved → reloaded → byte-equal.
+        // todo gets exercised with three SHAs to catch off-by-one
+        // line splitting (trailing newline must not produce a phantom
+        // entry).
+        test fullRoundTripWithMultipleTodos() {
+            RebaseStateTest.cleanup()
+            try {
+                var s = new RebaseState()
+                s.onto       = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                s.origHead   = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                s.headName   = "refs/heads/feature"
+                s.stoppedSha = "cccccccccccccccccccccccccccccccccccccccc"
+                s.todo.add("1111111111111111111111111111111111111111")
+                s.todo.add("2222222222222222222222222222222222222222")
+                s.todo.add("3333333333333333333333333333333333333333")
+                s.save("./testrebase/.git")
+
+                var loaded = RebaseState.load("./testrebase/.git")
+                Assert.assertEquals(s.onto,        loaded.onto)
+                Assert.assertEquals(s.origHead,    loaded.origHead)
+                Assert.assertEquals(s.headName,    loaded.headName)
+                Assert.assertEquals(s.stoppedSha,  loaded.stoppedSha)
+                Assert.assertEquals(3, loaded.todo.getSize())
+                Assert.assertEquals("1111111111111111111111111111111111111111", loaded.todo.get(0))
+                Assert.assertEquals("2222222222222222222222222222222222222222", loaded.todo.get(1))
+                Assert.assertEquals("3333333333333333333333333333333333333333", loaded.todo.get(2))
+            } catch (ex: Exception) {
+                RebaseStateTest.cleanup()
+                throw ex
+            }
+            RebaseStateTest.cleanup()
+        }
+
+        // Empty todo round-trips: file is written (zero bytes), no
+        // phantom SHAs come back. This is the "rebase down to the
+        // last commit, conflicted on it" state.
+        test emptyTodoRoundTrip() {
+            RebaseStateTest.cleanup()
+            try {
+                var s = new RebaseState()
+                s.onto       = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                s.origHead   = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                s.headName   = "refs/heads/feature"
+                s.stoppedSha = "cccccccccccccccccccccccccccccccccccccccc"
+                // todo intentionally left empty
+                s.save("./testrebase/.git")
+
+                var loaded = RebaseState.load("./testrebase/.git")
+                Assert.assertEquals(0, loaded.todo.getSize())
+            } catch (ex: Exception) {
+                RebaseStateTest.cleanup()
+                throw ex
+            }
+            RebaseStateTest.cleanup()
+        }
+
+        // No stoppedSha (e.g. the bookkeeping state right before any
+        // conflict has occurred — runRebaseStart writes this when it
+        // hands off to processRebaseTodo). The file would be missing,
+        // not present-but-empty; loader must accept that and return
+        // null rather than throwing or returning a phantom value.
+        //
+        // We exercise it by writing the on-disk shape directly and
+        // then loading.
+        test nullStoppedShaSurfacesAsNull() {
+            RebaseStateTest.cleanup()
+            try {
+                Repository.ensureDir("./testrebase/.git/rebase-merge")
+                "aaaa\n".writeToFile("./testrebase/.git/rebase-merge/onto")
+                "bbbb\n".writeToFile("./testrebase/.git/rebase-merge/orig-head")
+                "refs/heads/x\n".writeToFile("./testrebase/.git/rebase-merge/head-name")
+                "".writeToFile("./testrebase/.git/rebase-merge/git-rebase-todo")
+                // Deliberately don't create stopped-sha.
+
+                var loaded = RebaseState.load("./testrebase/.git")
+                Assert.assertNull(loaded.stoppedSha)
+                Assert.assertEquals("aaaa", loaded.onto)
+            } catch (ex: Exception) {
+                RebaseStateTest.cleanup()
+                throw ex
+            }
+            RebaseStateTest.cleanup()
+        }
+
+        // clear() removes the dir AND any extra files real git might
+        // have left in there (am-git only writes 5, but tolerance
+        // matters if a user switched between tools mid-rebase).
+        test clearRemovesUnexpectedFiles() {
+            RebaseStateTest.cleanup()
+            try {
+                Repository.ensureDir("./testrebase/.git/rebase-merge")
+                // Files am-git writes
+                "x\n".writeToFile("./testrebase/.git/rebase-merge/onto")
+                "x\n".writeToFile("./testrebase/.git/rebase-merge/orig-head")
+                "x\n".writeToFile("./testrebase/.git/rebase-merge/head-name")
+                // A file real git would write that we don't
+                "extra\n".writeToFile("./testrebase/.git/rebase-merge/message")
+                "extra\n".writeToFile("./testrebase/.git/rebase-merge/author-script")
+
+                RebaseState.clear("./testrebase/.git")
+                Assert.assertFalse(new File("./testrebase/.git/rebase-merge").exists())
+            } catch (ex: Exception) {
+                RebaseStateTest.cleanup()
+                throw ex
+            }
+            RebaseStateTest.cleanup()
+        }
+
+        // CRLF-tolerant todo parsing — if a user edited the file in
+        // an editor that wrote CRLF line endings, the SHAs shouldn't
+        // come back with a trailing \r baked in.
+        test todoIgnoresCarriageReturns() {
+            RebaseStateTest.cleanup()
+            try {
+                Repository.ensureDir("./testrebase/.git/rebase-merge")
+                "x\n".writeToFile("./testrebase/.git/rebase-merge/onto")
+                "x\n".writeToFile("./testrebase/.git/rebase-merge/orig-head")
+                "refs/heads/x\n".writeToFile("./testrebase/.git/rebase-merge/head-name")
+                "x\n".writeToFile("./testrebase/.git/rebase-merge/stopped-sha")
+                // SHAs with CRLF endings
+                ("1111111111111111111111111111111111111111\r\n" +
+                 "2222222222222222222222222222222222222222\r\n").writeToFile(
+                    "./testrebase/.git/rebase-merge/git-rebase-todo")
+
+                var loaded = RebaseState.load("./testrebase/.git")
+                Assert.assertEquals(2, loaded.todo.getSize())
+                Assert.assertEquals("1111111111111111111111111111111111111111", loaded.todo.get(0))
+                Assert.assertEquals("2222222222222222222222222222222222222222", loaded.todo.get(1))
+                // Specifically: NO trailing \r on the SHA.
+                Assert.assertEquals(40, loaded.todo.get(0).length())
+            } catch (ex: Exception) {
+                RebaseStateTest.cleanup()
+                throw ex
+            }
+            RebaseStateTest.cleanup()
+        }
+
+        // ---- helpers --------------------------------------------------
+
+        private static fun cleanup() {
+            RebaseStateTest.deleteRecursive("./testrebase")
+        }
+
+        private static fun deleteRecursive(path: String) {
+            var f = new File(path)
+            if (!f.exists()) {
+                return
+            }
+            if (f.isDirectory()) {
+                var children = f.listFiles()
+                var i = 0
+                while (i < children.length().toInt()) {
+                    RebaseStateTest.deleteRecursive(children[i.toUInt()].toString())
+                    i = i + 1
+                }
+            }
+            f.delete()
+        }
+    }
+}
