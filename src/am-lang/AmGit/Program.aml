@@ -2776,9 +2776,33 @@ namespace AmGit
 
         // Compare the working tree to HEAD's tree and print changed
         // paths in `git status --short` style.
+        // `am-git status [--porcelain]`
+        //
+        // Without --porcelain: human-friendly output with the
+        //   "On branch …" header and a "nothing to commit, working
+        //   tree clean" line when there are no changes.
+        // With --porcelain: stable machine-readable output — branch
+        //   header suppressed, clean tree emits nothing at all, and
+        //   each entry stays in the `XY <path>` form (already the
+        //   porcelain v1 shape `StatusReport.printGroup` produces).
+        //
+        // Flag matching is exact ("--porcelain"); we don't yet
+        // accept `--porcelain=v1` / `--porcelain=v2` variants.
         private static fun runStatus(args: String[]) {
             try {
-                StatusReport.run(".git", ".")
+                var porcelain = false
+                var i = 1
+                while (i < args.length().toInt()) {
+                    var a = args[i.toUInt()]
+                    if (a == "--porcelain") {
+                        porcelain = true
+                    } else {
+                        ("status: unknown option '" + a + "'").println()
+                        return
+                    }
+                    i = i + 1
+                }
+                StatusReport.run(".git", ".", porcelain)
             } catch (ex: Exception) {
                 ("status: " + ex.message).println()
             }

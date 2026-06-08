@@ -26,13 +26,28 @@ namespace Am.Git
         import Am.IO
         import Am.Crypto
 
-        static fun run(gitDir: String, workTreePath: String): Int {
+        // When `porcelain == true`:
+        //   - Suppresses the "On branch …" header.
+        //   - Suppresses the "nothing to commit, working tree clean"
+        //     line (clean tree → no output at all).
+        //   - Keeps the XY-prefixed lines exactly as before; the
+        //     prefixes are already the porcelain v1 format
+        //     (`A  path`, ` M path`, `?? path`, etc.).
+        // Matches `git status --porcelain` (v1) closely enough that
+        // scripts written against real git work unchanged.
+        //
+        // No no-arg overload — AmLang's static-function overloading
+        // has produced binder collisions in the past, so every
+        // caller passes the flag explicitly.
+        static fun run(gitDir: String, workTreePath: String, porcelain: Bool): Int {
             // Resolve "." / "" to an absolute path — on AmigaOS without
             // ixemul, opendir(".") isn't reliable; getcwd() is.
             workTreePath = StatusReport.resolveBase(workTreePath)
 
             var head = HeadReader.read(gitDir)
-            StatusReport.printBranchHeader(head)
+            if (!porcelain) {
+                StatusReport.printBranchHeader(head)
+            }
 
             // HEAD's tree as path → blob SHA. Empty for an unborn
             // branch — every indexed / on-disk file then counts as a
@@ -61,7 +76,7 @@ namespace Am.Git
             // don't have one, and we degrade to a worktree-vs-HEAD diff.
             var indexFile = new File(gitDir + "/index")
             if (!indexFile.exists()) {
-                return StatusReport.reportWithoutIndex(headPaths, diskPaths)
+                return StatusReport.reportWithoutIndex(headPaths, diskPaths, porcelain)
             }
 
             var idx = GitIndex.read(gitDir)
@@ -156,7 +171,9 @@ namespace Am.Git
                           unstagedModified.getSize() + unstagedDeleted.getSize() + untracked.getSize() +
                           unmergedList.getSize()
             if (changed == 0) {
-                "nothing to commit, working tree clean".println()
+                if (!porcelain) {
+                    "nothing to commit, working tree clean".println()
+                }
                 return 0
             }
             // Print unmerged first — they're the most urgent and
@@ -182,9 +199,12 @@ namespace Am.Git
         }
 
         // No-index fallback: same shape as the old single-bucket
-        // report — everything is "unstaged".
+        // report — everything is "unstaged". `porcelain` toggles
+        // off the "nothing to commit" line on a clean tree, matching
+        // the indexed path above and real git's --porcelain output.
         private static fun reportWithoutIndex(headPaths: HashMap<String, String>,
-                                               diskPaths: HashMap<String, String>): Int {
+                                               diskPaths: HashMap<String, String>,
+                                               porcelain: Bool): Int {
             var modified = List<String>.newList<String>()
             var deleted = List<String>.newList<String>()
             var untracked = List<String>.newList<String>()
@@ -211,7 +231,9 @@ namespace Am.Git
             }
             var changed = modified.getSize() + deleted.getSize() + untracked.getSize()
             if (changed == 0) {
-                "nothing to commit, working tree clean".println()
+                if (!porcelain) {
+                    "nothing to commit, working tree clean".println()
+                }
                 return 0
             }
             StatusReport.printGroup(" M ", modified)
