@@ -73,7 +73,7 @@ namespace Am.Git
             // this repo against the remote.
             var localRefPath = gitDir + "/refs/heads/" + branch
             var localRef = new File(localRefPath)
-            var localSha: String = null
+            var localSha: String? = null
             if (localRef.exists()) {
                 localSha = String.readFromFile(localRefPath).trim()
             }

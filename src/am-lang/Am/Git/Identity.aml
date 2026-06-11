@@ -48,7 +48,7 @@ namespace Am.Git
             return Identity.parseDate(Environment.get("GIT_COMMITTER_DATE"))
         }
 
-        private static fun parseDate(value: String): DateTime {
+        private static fun parseDate(value: String): DateTime? {
             if (value == null) {
                 return null
             }
@@ -85,7 +85,7 @@ namespace Am.Git
             return sign * (hh * 60 + mm)
         }
 
-        private static fun loadFrom(nameVar: String, emailVar: String): Identity {
+        private static fun loadFrom(nameVar: String, emailVar: String): Identity? {
             var name = Environment.get(nameVar)
             if (name == null) {
                 name = Environment.get("AM_GIT_USER_NAME")

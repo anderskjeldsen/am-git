@@ -34,7 +34,7 @@ namespace Am.Git
         // Walk one node, write child trees recursively, emit our own
         // tree object. Empty subdirs produce no tree object (TreeBuilder
         // does the same) — the root is always emitted, even when empty.
-        private static fun writeNode(node: IndexDirNode, writer: LooseObjectWriter): String {
+        private static fun writeNode(node: IndexDirNode, writer: LooseObjectWriter): String? {
             var entries = List<TreeEntry>.newList<TreeEntry>()
 
             // Files.

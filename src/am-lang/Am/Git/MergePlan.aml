@@ -92,9 +92,9 @@ namespace Am.Git
             var i = 0
             while (i < paths.getSize()) {
                 var p = paths.get(i)
-                var b: MergeFile = null
-                var o: MergeFile = null
-                var t: MergeFile = null
+                var b: MergeFile? = null
+                var o: MergeFile? = null
+                var t: MergeFile? = null
                 if (baseMap.containsKey(p))   { b = baseMap.get(p) }
                 if (oursMap.containsKey(p))   { o = oursMap.get(p) }
                 if (theirsMap.containsKey(p)) { t = theirsMap.get(p) }

@@ -10,7 +10,7 @@ namespace Am.Git
         import Am.Collections
         import Am.IO
 
-        private var gitDirPath: String
+        private var gitDirPath: String? = null
 
         fun getGitDir(): String {
             return this.gitDirPath

@@ -62,7 +62,7 @@ namespace Am.Git
         // .gitignore at every depth, plus `.git/info/exclude`. The
         // walk uses `.git` as the skip dir — same convention as
         // every other tree walk in am-git.
-        static fun load(workTreePath: String, gitDir: String): GitIgnore {
+        static fun load(workTreePath: String, gitDir: String): GitIgnore? {
             var g = new GitIgnore()
             // .git/info/exclude first so file-level .gitignore rules
             // can override it (last match wins).
@@ -124,7 +124,7 @@ namespace Am.Git
         }
 
         // Parse one line. Returns null for blanks / comments.
-        private static fun parseLine(line: String, basePath: String): GitIgnoreRule {
+        private static fun parseLine(line: String, basePath: String): GitIgnoreRule? {
             var trimmed = GitIgnore.trimTrailingWhitespace(line)
             if (trimmed.length() == 0) {
                 return null

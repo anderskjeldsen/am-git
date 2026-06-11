@@ -136,7 +136,7 @@ namespace Am.Git
 
         // Reads the next pkt-line from the buffer. Returns null at EOF.
         // Throws on a malformed length prefix.
-        fun next(): PktLineFrame {
+        fun next(): PktLineFrame? {
             if (this.offset + 4 > this.buffer.length()) {
                 return null
             }

@@ -123,8 +123,8 @@ namespace Am.Git
         private fun writeConflictMarkers(entry: MergeEntry) {
             var fullPath = this.workTreePath + "/" + entry.path
 
-            var oursContent: UByte[] = null
-            var theirsContent: UByte[] = null
+            var oursContent: UByte[]? = null
+            var theirsContent: UByte[]? = null
             if (entry.ours != null)   { oursContent   = this.readBlob(entry.ours.sha) }
             if (entry.theirs != null) { theirsContent = this.readBlob(entry.theirs.sha) }
 

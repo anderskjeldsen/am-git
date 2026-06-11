@@ -90,7 +90,7 @@ namespace Am.Git
 
             // --- step 2: base reference for deltas --------------
             var baseOffset: Long = 0L
-            var baseSha: String = null
+            var baseSha: String? = null
             if (typeCode == 6) {
                 // OFS_DELTA: read negative-offset varint.
                 //

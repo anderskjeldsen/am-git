@@ -406,8 +406,8 @@ namespace AmGit
                     return
                 }
                 var treeSha = args[1UI]
-                var parentSha: String = null
-                var message: String = null
+                var parentSha: String? = null
+                var message: String? = null
                 var i = 2UI
                 while (i < args.length()) {
                     var a = args[i]
@@ -480,7 +480,7 @@ namespace AmGit
         //   `[detached HEAD <shortsha>] <first line>`         (detached)
         private static fun runCommit(args: String[]) {
             try {
-                var message: String = null
+                var message: String? = null
                 var i = 1UI
                 while (i < args.length()) {
                     var a = args[i]
@@ -541,9 +541,9 @@ namespace AmGit
                 // tree, preserving am-git's pre-index "commit
                 // everything" behaviour for repos that haven't run
                 // `am-git add` yet.
-                var treeSha: String = null
+                var treeSha: String? = null
                 var indexFile = new File(".git/index")
-                var idxForUnmergedCheck: GitIndex = null
+                var idxForUnmergedCheck: GitIndex? = null
                 if (indexFile.exists()) {
                     var idx = GitIndex.read(".git")
                     idxForUnmergedCheck = idx
@@ -810,7 +810,7 @@ namespace AmGit
         // explicit `<user> <pass>` pair to avoid relying on env.
         private static fun runAuthHeader(args: String[]) {
             try {
-                var value: String = null
+                var value: String? = null
                 if (args.length() >= 3UI) {
                     value = BasicAuth.headerValue(args[1UI], args[2UI])
                 } else {
@@ -835,8 +835,8 @@ namespace AmGit
         // Bails on non-fast-forward — no merge / rebase machinery yet.
         private static fun runPull(args: String[]) {
             try {
-                var remoteUrl: String = null
-                var branch: String = null
+                var remoteUrl: String? = null
+                var branch: String? = null
                 if (args.length() >= 2UI) {
                     remoteUrl = args[1UI]
                 }
@@ -949,7 +949,7 @@ namespace AmGit
         // Read a commit's root-tree SHA. Throws if the commit isn't in
         // the store — the merge-plan caller bails on that case loud
         // and clear rather than silently merging against an empty tree.
-        private static fun commitTreeSha(commitSha: String, store: ObjectStore): String {
+        private static fun commitTreeSha(commitSha: String, store: ObjectStore): String? {
             if (!store.has(commitSha)) {
                 throw new Exception("commit not found in object store: " + commitSha)
             }
@@ -961,7 +961,7 @@ namespace AmGit
         }
 
         // "(absent)" → "-" so the columnar output stays readable.
-        private static fun shaOrDash(f: MergeFile): String {
+        private static fun shaOrDash(f: MergeFile): String? {
             if (f == null) {
                 return "-"
             }
@@ -1487,7 +1487,7 @@ namespace AmGit
         // "refs/heads/<branch>" → "<branch>". The head-name file
         // stores the full ref path (real git's format); the rest of
         // am-git wants just the branch name.
-        private static fun stripRefsHeads(headName: String): String {
+        private static fun stripRefsHeads(headName: String): String? {
             var prefix = "refs/heads/"
             if (headName != null && headName.startsWith(prefix)) {
                 return headName.substringToEnd(prefix.length().toUInt())
@@ -1828,7 +1828,7 @@ namespace AmGit
         // Returns the new commit SHA on success, or null on conflict.
         // On success, advances the branch ref.
         private static fun invertedReplayCommit(commit: Commit, currentHeadSha: String,
-                                                  branch: String, store: ObjectStore): String {
+                                                  branch: String, store: ObjectStore): String? {
             var parentSha = commit.parents.get(0)
             var parentCommit = store.read(parentSha)
             // INVERTED vs replayCommit: base = commit, theirs = parent
@@ -1969,7 +1969,7 @@ namespace AmGit
         //   Revert "<first line of original message>"
         //
         //   This reverts commit <full-sha>.
-        private static fun buildRevertMessage(picked: Commit): String {
+        private static fun buildRevertMessage(picked: Commit): String? {
             var subject = Program.firstLine(picked.message)
             return "Revert \"" + subject + "\"\n" +
                    "\n" +
@@ -1992,7 +1992,7 @@ namespace AmGit
         // range contains a merge commit (v1 doesn't rebase through
         // them).
         private static fun collectLinearAhead(headSha: String, stopSha: String,
-                                                store: ObjectStore): List<Commit> {
+                                                store: ObjectStore): List<Commit>? {
             var chain = List<Commit>.newList<Commit>()
             var current = headSha
             loop {
@@ -2040,7 +2040,7 @@ namespace AmGit
         // the original commit; the committer line is set fresh from
         // the env (real git does the same).
         private static fun replayCommit(commit: Commit, currentHeadSha: String,
-                                          branch: String, store: ObjectStore): String {
+                                          branch: String, store: ObjectStore): String? {
             // Parent's tree as the merge base. The parent must exist
             // in the store — we walked through it during
             // collectLinearAhead.
@@ -2143,7 +2143,7 @@ namespace AmGit
         private static fun runReset(args: String[]) {
             try {
                 var mode = "mixed"
-                var target: String = null
+                var target: String? = null
                 var i = 1UI
                 while (i < args.length()) {
                     var a = args[i]
@@ -2442,7 +2442,7 @@ namespace AmGit
                 // For root commits (no parent), the implicit "base"
                 // is the empty tree, so every file shows up as Added.
                 var thisTree = commit.treeSha
-                var parentTree: String = null
+                var parentTree: String? = null
                 if (commit.parents.getSize() > 0) {
                     var p0 = store.read(commit.parents.get(0))
                     parentTree = WorkTree.extractRootTreeSha(p0.content)
@@ -2503,7 +2503,7 @@ namespace AmGit
         }
 
         // Mode bits → 6-char octal string (matches `git ls-files --stage`).
-        private static fun modeOctal(mode: UInt): String {
+        private static fun modeOctal(mode: UInt): String? {
             // 33188 = 0o100644, 33261 = 0o100755, 40960 = 0o120000,
             // 57344 = 0o160000, 16384 = 0o040000 (tree).
             if (mode == 33261UI) { return "100755" }
@@ -2517,7 +2517,7 @@ namespace AmGit
         // anything else is treated as a local branch name and looked
         // up under .git/refs/heads/. Returns null if neither path
         // works.
-        private static fun resolveCommitish(s: String): String {
+        private static fun resolveCommitish(s: String): String? {
             if (s == null || s.length() == 0) {
                 return null
             }
@@ -2851,7 +2851,7 @@ namespace AmGit
 
         private static fun listBranches() {
             var head = HeadReader.read(".git")
-            var currentBranch: String = null
+            var currentBranch: String? = null
             if (!head.detached) {
                 currentBranch = head.branch
             }
@@ -3031,8 +3031,8 @@ namespace AmGit
         // as a valid SHA without checking existence, so without
         // this guard `am-git tag x ffff...` would happily create a
         // dangling ref.
-        private static fun createTag(name: String, commitish: String) {
-            var targetSha: String = null
+        private static fun createTag(name: String, commitish: String?) {
+            var targetSha: String? = null
             if (commitish == null) {
                 var head = HeadReader.read(".git")
                 if (head.commitSha == null) {
@@ -3160,7 +3160,7 @@ namespace AmGit
         // for the remote-tracking refs on disk.
         private static fun runFetch(args: String[]) {
             try {
-                var remoteUrl: String = null
+                var remoteUrl: String? = null
                 var remoteName = "origin"
                 if (args.length() >= 2UI) {
                     var arg = args[1UI]
@@ -3208,8 +3208,8 @@ namespace AmGit
         // GitHub these are the login + a personal-access-token.
         private static fun runPush(args: String[]) {
             try {
-                var remoteUrl: String = null
-                var branch: String = null
+                var remoteUrl: String? = null
+                var branch: String? = null
                 if (args.length() >= 2UI) {
                     var arg = args[1UI]
                     if (Program.looksLikeUrl(arg)) {

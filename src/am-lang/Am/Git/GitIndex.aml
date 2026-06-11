@@ -338,7 +338,7 @@ namespace Am.Git
             return false
         }
 
-        fun findByPath(path: String): IndexEntry {
+        fun findByPath(path: String): IndexEntry? {
             var i = 0
             while (i < this.entries.getSize()) {
                 if (this.entries.get(i).path == path) {

@@ -19,7 +19,7 @@ namespace Am.Git
     //   * `branch != null` → write the new SHA into
     //     `.git/refs/heads/<branch>`.
     //   * `detached` → update `.git/HEAD` directly with the new SHA.
-    class HeadInfo(var branch: String, var commitSha: String, var detached: Bool)
+    class HeadInfo(var branch: String?, var commitSha: String?, var detached: Bool)
     {
         import Am.Lang
 

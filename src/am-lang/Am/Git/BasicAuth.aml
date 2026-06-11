@@ -24,7 +24,7 @@ namespace Am.Git
 
         // Returns `"Basic " + base64(user + ":" + pass)`, or null when
         // either env var is missing.
-        static fun fromEnv(): String {
+        static fun fromEnv(): String? {
             var user = Environment.get("AM_GIT_USERNAME")
             var pass = Environment.get("AM_GIT_PASSWORD")
             if (user == null || pass == null) {

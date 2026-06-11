@@ -28,7 +28,7 @@ namespace Am.Git
 
         // Either commit may be `null` (unborn branch) — we return null
         // in that case, matching git's "no merge base" semantics.
-        static fun find(aSha: String, bSha: String, store: ObjectStore): String {
+        static fun find(aSha: String, bSha: String, store: ObjectStore): String? {
             if (aSha == null || bSha == null) {
                 return null
             }

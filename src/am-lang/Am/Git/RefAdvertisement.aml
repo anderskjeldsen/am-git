@@ -7,7 +7,7 @@ namespace Am.Git
     class RefEntry(var sha: String, var name: String)
     {
         import Am.Lang
-        var peeledSha: String = null
+        var peeledSha: String? = null
     }
 
     // Result of parsing the info/refs response.
@@ -94,7 +94,7 @@ namespace Am.Git
             return new RefAdvertisement(capabilities, refs.toArray())
         }
 
-        private static fun parseRefLine(line: String): RefEntry {
+        private static fun parseRefLine(line: String): RefEntry? {
             var sp = line.indexOf(" ")
             if (sp < 0) {
                 return null
@@ -104,7 +104,7 @@ namespace Am.Git
             return new RefEntry(sha, name)
         }
 
-        private static fun findLast(list: List<RefEntry>, name: String): RefEntry {
+        private static fun findLast(list: List<RefEntry>, name: String): RefEntry? {
             var i = list.getSize() - 1
             while (i >= 0) {
                 var r = list.get(i)
@@ -130,7 +130,7 @@ namespace Am.Git
 
         // Find the SHA pointed at by `HEAD`. Servers always advertise
         // HEAD as the first ref; we still scan the list to be safe.
-        fun headSha(): String {
+        fun headSha(): String? {
             var i = 0
             while (i < this.refs.length().toInt()) {
                 if (this.refs[i.toUInt()].name == "HEAD") {
@@ -141,7 +141,7 @@ namespace Am.Git
             return null
         }
 
-        fun findRef(name: String): RefEntry {
+        fun findRef(name: String): RefEntry? {
             var i = 0
             while (i < this.refs.length().toInt()) {
                 if (this.refs[i.toUInt()].name == name) {

@@ -59,7 +59,7 @@ namespace Am.Git
         //
         // Uses an explicit work-list to keep stack depth bounded —
         // recursion bombs on deep history (every commit a frame).
-        private fun walk(startSha: String, seen: HashMap<String, Bool>, toSend: List<String>) {
+        private fun walk(startSha: String, seen: HashMap<String, Bool>, toSend: List<String>?) {
             var queue = List<String>.newList<String>()
             queue.add(startSha)
 

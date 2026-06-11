@@ -32,10 +32,10 @@ namespace Am.Git
         import Am.Collections
         import Am.IO
 
-        var onto: String
-        var origHead: String
-        var headName: String
-        var stoppedSha: String
+        var onto: String? = null
+        var origHead: String? = null
+        var headName: String? = null
+        var stoppedSha: String? = null
         // Inline initializer — runs as part of the property's default
         // setup at `new` time. AmLang's constructor-time hook is an
         // `init { ... }` block (post-primary-constructor, post-property
@@ -107,7 +107,7 @@ namespace Am.Git
         // Read a single-line file, stripping the trailing newline.
         // Returns null if the file doesn't exist (caller decides
         // whether that's an error).
-        private static fun readLine(path: String): String {
+        private static fun readLine(path: String): String? {
             var f = new File(path)
             if (!f.exists()) {
                 return null

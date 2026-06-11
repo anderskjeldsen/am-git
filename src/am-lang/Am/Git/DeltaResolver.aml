@@ -52,7 +52,7 @@ namespace Am.Git
             // Find the base entry. OFS_DELTA points by absolute pack
             // offset; REF_DELTA by SHA. Both lookups go through the
             // maps PackParser populated during step 2.
-            var baseObj: PackObject = null
+            var baseObj: PackObject? = null
             if (delta.typeCode == 6) {
                 if (!this.result.byOffset.containsKey(delta.baseOffset)) {
                     throw new Exception("OFS_DELTA base at offset " +

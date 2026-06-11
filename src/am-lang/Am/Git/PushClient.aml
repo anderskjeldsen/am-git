@@ -192,7 +192,7 @@ namespace Am.Git
         }
 
         // Read refs/heads/<branch>'s SHA from the on-disk ref file.
-        private static fun readLocalBranch(gitDir: String, branch: String): String {
+        private static fun readLocalBranch(gitDir: String, branch: String): String? {
             var path = gitDir + "/refs/heads/" + branch
             var file = new File(path)
             if (!file.exists()) {

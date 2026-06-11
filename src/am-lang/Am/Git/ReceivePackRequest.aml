@@ -107,7 +107,7 @@ namespace Am.Git
             var head = u.oldSha + " " + u.newSha + " " + u.refName
             var headBytes = head.toBytes("UTF-8")
 
-            var tailBytes: UByte[] = null
+            var tailBytes: UByte[]? = null
             if (withCaps) {
                 var capStr = ReceivePackRequest.capabilities
                 var capBytes = capStr.toBytes("UTF-8")

@@ -153,7 +153,7 @@ namespace Am.Git
             var i = 0
             while (i < ad.refs.length().toInt()) {
                 var r = ad.refs[i.toUInt()]
-                var refPath: String = null
+                var refPath: String? = null
                 if (r.name.startsWith("refs/heads/")) {
                     var branch = r.name.substringToEnd(11UI)
                     refPath = gitDir + "/refs/remotes/" + remoteName + "/" + branch
@@ -173,7 +173,7 @@ namespace Am.Git
         // Returns true when the on-disk SHA actually changed — lets us
         // print a sensible "updated N refs" summary.
         private static fun writeRefIfChanged(refPath: String, sha: String): Bool {
-            var existing: String = null
+            var existing: String? = null
             var f = new File(refPath)
             if (f.exists()) {
                 existing = String.readFromFile(refPath).trim()

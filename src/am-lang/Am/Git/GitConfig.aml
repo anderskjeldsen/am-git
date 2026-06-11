@@ -112,7 +112,7 @@ namespace Am.Git
             return section + "." + sub
         }
 
-        fun getValue(key: String): String {
+        fun getValue(key: String): String? {
             if (!this.entries.containsKey(key)) {
                 return null
             }

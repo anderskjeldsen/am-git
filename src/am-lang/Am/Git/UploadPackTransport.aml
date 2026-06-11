@@ -106,7 +106,7 @@ namespace Am.Git
             var i = 0
             while (i < wants.getSize()) {
                 var sha = wants.get(i)
-                var line: String = null
+                var line: String? = null
                 if (i == 0) {
                     line = "want " + sha + " " + capabilities + "\n"
                 } else {

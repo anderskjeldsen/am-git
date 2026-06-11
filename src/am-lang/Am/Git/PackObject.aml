@@ -20,7 +20,7 @@ namespace Am.Git
         // SHA-1 hex (40 lowercase chars). Set for full objects after
         // the parser hashes the wrapped form. Stays null for delta
         // entries until step 3 (delta resolution) fills it in.
-        var sha: String = null
+        var sha: String? = null
 
         // Absolute byte offset of this entry's start inside the pack
         // body. Needed so an OFS_DELTA can resolve its negative-offset
@@ -32,7 +32,7 @@ namespace Am.Git
         var baseOffset: Long = 0L
 
         // REF_DELTA: hex SHA-1 of the base object.
-        var baseSha: String = null
+        var baseSha: String? = null
 
         fun isDelta(): Bool {
             return this.typeCode == 6 || this.typeCode == 7

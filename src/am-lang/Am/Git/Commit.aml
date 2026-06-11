@@ -30,10 +30,10 @@ namespace Am.Git
         // — no SHA wrapper, no zlib framing). `sha` is the caller-known
         // SHA-1 hex of the same bytes; we trust it rather than recomputing.
         static fun parse(sha: String, bytes: UByte[]): Commit {
-            var treeSha: String = null
+            var treeSha: String? = null
             var parents = List<String>.newList<String>()
-            var author: String = null
-            var committer: String = null
+            var author: String? = null
+            var committer: String? = null
 
             var total = bytes.length().toInt()
             var pos = 0

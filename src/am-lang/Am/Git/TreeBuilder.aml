@@ -61,7 +61,7 @@ namespace Am.Git
         // subdirs we return null and the caller skips the parent
         // reference, matching git's "don't record empty subdirs"
         // behaviour.
-        private fun buildDir(dirPath: String, isRoot: Bool): String {
+        private fun buildDir(dirPath: String, isRoot: Bool): String? {
             var dir = new File(dirPath)
             var children = dir.listFiles()
             var entries = List<TreeEntry>.newList<TreeEntry>()
