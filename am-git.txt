@@ -1,0 +1,141 @@
+am-git - a native git client for AmigaOS
+========================================
+
+am-git talks to git servers directly over the network. It can clone,
+commit, push, fetch and pull against HTTPS git remotes such as GitHub -
+no separate git program needed. Local commands (log, status, branch,
+checkout) work offline.
+
+HTTPS remotes need AmiSSL installed (amissl.library).
+
+
+-------------------------------------------------------------------------
+1. SETUP
+-------------------------------------------------------------------------
+
+Tell am-git who you are (used when you commit):
+
+  setenv AM_GIT_USER_NAME  "Your Name"
+  setenv AM_GIT_USER_EMAIL "you@example.com"
+
+To push, or to clone a private repo, set your login and token:
+
+  setenv AM_GIT_USERNAME "your-login"
+  setenv AM_GIT_PASSWORD "ghp_yourAccessToken"
+
+GitHub no longer accepts plain passwords - use a personal access token
+in AM_GIT_PASSWORD.
+
+`setenv` stores each variable in ENV:, which lasts until reboot. To make
+them permanent, copy them from ENV: to ENVARC: (ENVARC: is restored into
+ENV: at every boot):
+
+  copy ENV:AM_GIT_#? ENVARC:
+
+
+-------------------------------------------------------------------------
+2. A TYPICAL SESSION
+-------------------------------------------------------------------------
+
+  am-git clone https://github.com/youruser/myrepo.git
+  cd myrepo
+
+  am-git log -n 5                 ; recent history
+  am-git branch                   ; list branches
+  am-git status                   ; what has changed
+
+  am-git pull                     ; get the latest from the server
+
+  ; edit a file, then:
+  am-git add NOTES.txt            ; stage it
+  am-git status                   ; confirm it is staged
+  am-git commit -m "Add NOTES.txt"
+
+  am-git push                     ; send it back to the server
+
+
+-------------------------------------------------------------------------
+3. COMMANDS
+-------------------------------------------------------------------------
+
+Run `am-git help` for the full list. The everyday ones:
+
+clone <url> [<dir>]
+    Download a repository and check it out. <dir> defaults to the repo
+    name.
+      am-git clone https://github.com/youruser/myrepo.git
+      am-git clone https://github.com/youruser/myrepo.git work
+
+fetch [<name>]
+    Get new commits from the server without changing your files.
+      am-git fetch
+
+pull [<url>] [<branch>]
+    Fetch, then update your branch to match the server. Only works when
+    you have not made diverging commits.
+      am-git pull
+
+push [<url>] [<branch>]
+    Send your commits to the server.
+      am-git push
+      am-git push origin main
+
+add <path>...
+    Stage files for the next commit. Use "." to add everything.
+      am-git add NOTES.txt
+      am-git add .
+
+rm [--cached] <path>...
+    Stop tracking a file. Without --cached the file is also deleted;
+    with --cached it stays on disk.
+      am-git rm oldfile.txt
+      am-git rm --cached secret.key
+
+status
+    Show what is staged, what is changed but unstaged, and what is
+    untracked.
+      am-git status
+
+log [-n <N>]
+    Show commit history. -n limits how many are shown.
+      am-git log
+      am-git log -n 10
+
+branch [<name> | -d <name>]
+    No argument lists branches. A name creates one; -d deletes one.
+      am-git branch
+      am-git branch feature-x
+      am-git branch -d feature-x
+
+checkout <branch>
+    Switch to another branch.
+      am-git checkout main
+
+commit -m <msg>
+    Record the staged files as a new commit.
+      am-git commit -m "Fix the parser crash"
+
+head
+    Show which branch or commit you are currently on.
+      am-git head
+
+whoami
+    Show the name and email your commits will use.
+      am-git whoami
+
+
+-------------------------------------------------------------------------
+4. GOOD TO KNOW
+-------------------------------------------------------------------------
+
+- pull only works for straightforward updates. If your branch and the
+  server's have both changed, am-git stops and tells you - merging or
+  rebasing still needs a desktop git.
+- Only HTTPS/HTTP remotes are supported (no SSH, no git:// URLs).
+- Your name, email, login and token come from the environment
+  variables shown in section 1.
+
+
+-------------------------------------------------------------------------
+am-git is written in AmLang.  https://github.com/anderskjeldsen/am-git
+-------------------------------------------------------------------------

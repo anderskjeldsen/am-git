@@ -1,5 +1,5 @@
 id: am-git
-version: 0.1.0
+version: 0.11.0
 type: application
 dependencies:
   - id: am-lang-core

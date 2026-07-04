@@ -1,0 +1,20 @@
+Short:        Native git client for AmigaOS (clone/commit/push/pull)
+Author:       Anders Kjeldsen <kjeldsenanders@gmail.com>
+Uploader:     Anders Kjeldsen <kjeldsenanders@gmail.com>
+Type:         dev/misc
+Version:      0.1.0
+Requires:     AmiSSL 4+ (for https:// remotes)
+Architecture: m68k-amigaos
+Distribution: Aminet
+
+am-git is a native git client for AmigaOS, written in AmLang.
+It speaks git smart-HTTP directly over TCP/TLS - there is no
+shelling out to a real git binary at runtime.
+
+Working commands: clone, commit, push, fetch, pull (ff-only),
+log, status, branch, checkout. Clone/fetch/push/pull run
+against real HTTPS remotes (validated byte-for-byte against
+reference git output on GitHub and a local git http-backend).
+
+Requires AmiSSL for https:// URLs. See am-git.txt in the
+archive for full usage and the current command set.
