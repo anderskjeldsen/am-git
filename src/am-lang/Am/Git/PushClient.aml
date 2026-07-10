@@ -44,8 +44,12 @@ namespace Am.Git
             }
             ("Local refs/heads/" + branch + " = " + localSha).println()
 
-            // Ask the server what it currently has.
-            var ad = PushClient.fetchReceivePackAdvertisement(url)
+            // Ask the server what it currently has. One client instance
+            // carries the ssh channel from advertisement through delivery
+            // (a stateless holder for http, where each call is its own
+            // request).
+            var client = new ReceivePackClient(url)
+            var ad = client.getAdvertisement()
             ("Remote advertised " + ad.refs.length().toString() + " refs").println()
 
             var remoteRefName = "refs/heads/" + branch
@@ -56,6 +60,7 @@ namespace Am.Git
             }
 
             if (oldSha == localSha) {
+                client.close()
                 ("Already up-to-date: " + remoteRefName + " = " + localSha).println()
                 return true
             }
@@ -86,69 +91,22 @@ namespace Am.Git
             updates.add(new RefUpdate(oldSha, localSha, remoteRefName))
             var body = ReceivePackRequest.build(updates, pack)
 
-            // POST to receive-pack and parse the report-status reply.
-            return PushClient.deliver(url, body, remoteRefName)
+            // Deliver over the same client (http POST or ssh stdin) and
+            // parse the report-status reply.
+            var report = client.sendReport(body)
+            client.close()
+            return PushClient.parseReport(report, remoteRefName)
         }
 
-        // GET /info/refs?service=git-receive-pack and parse the
-        // advertisement. The capabilities reported here are the
-        // server's — we don't currently negotiate any (we only ask
-        // for `report-status` in the POST body).
-        private static fun fetchReceivePackAdvertisement(url: GitUrl): RefAdvertisement {
-            var client = new WebClient()
-            var headers = new HashMap<String, String>()
-            headers.set("Accept", "application/x-git-receive-pack-advertisement")
-            headers.set("Git-Protocol", "version=1")
-            PushClient.addAuthHeader(headers)
-
-            var response = client.getBytesWithHeaders(
-                url.toString() + "/info/refs?service=git-receive-pack", headers)
-            if (response.getStatusCode() == 401) {
-                throw new Exception("Remote rejected credentials (HTTP 401). " +
-                                     "Check AM_GIT_USERNAME / AM_GIT_PASSWORD.")
-            }
-            if (!response.isSuccess()) {
-                throw new Exception("info/refs (receive-pack) returned HTTP " +
-                                     response.getStatusCode().toString() + " " +
-                                     response.getStatusMessage())
-            }
-            var ct = response.getHeader("content-type")
-            if (ct == null || ct.indexOf("application/x-git-receive-pack-advertisement") < 0) {
-                throw new Exception("Server is not smart-HTTP capable (Content-Type: " + ct + ")")
-            }
-            return RefAdvertisement.parse(response.getBodyAsBytes())
-        }
-
-        // POST the precomposed body and parse the per-ref status. The
-        // response body is a stream of pkt-lines:
+        // Parse the per-ref report-status reply — a stream of pkt-lines:
         //
         //   "unpack ok\n"                or  "unpack <error-msg>\n"
         //   "ok <refname>\n"             or  "ng <refname> <reason>\n"
         //   ...
         //   flush
         //
-        // We only push one ref so we look for one `ok/ng` line.
-        private static fun deliver(url: GitUrl, body: UByte[], refName: String): Bool {
-            var client = new WebClient()
-            var headers = new HashMap<String, String>()
-            headers.set("Accept", "application/x-git-receive-pack-result")
-            headers.set("Content-Type", "application/x-git-receive-pack-request")
-            headers.set("Git-Protocol", "version=1")
-            PushClient.addAuthHeader(headers)
-
-            var response = client.postBytesWithHeaders(
-                url.toString() + "/git-receive-pack", body, headers)
-            if (response.getStatusCode() == 401) {
-                throw new Exception("Remote rejected credentials on POST (HTTP 401)")
-            }
-            if (!response.isSuccess()) {
-                throw new Exception("git-receive-pack returned HTTP " +
-                                     response.getStatusCode().toString() + " " +
-                                     response.getStatusMessage())
-            }
-            return PushClient.parseReport(response.getBodyAsBytes(), refName)
-        }
-
+        // Same bytes whether the report came back over http or ssh. We
+        // only push one ref, so we look for one matching `ok/ng` line.
         private static fun parseReport(body: UByte[], refName: String): Bool {
             var reader = new PktLineReader(body)
             var unpackOk = false
@@ -199,13 +157,6 @@ namespace Am.Git
                 return null
             }
             return String.readFromFile(path).trim()
-        }
-
-        private static fun addAuthHeader(headers: HashMap<String, String>) {
-            var auth = BasicAuth.fromEnv()
-            if (auth != null) {
-                headers.set("Authorization", auth)
-            }
         }
     }
 }

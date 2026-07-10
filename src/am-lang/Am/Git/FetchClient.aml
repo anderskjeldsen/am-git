@@ -37,12 +37,16 @@ namespace Am.Git
             var url = GitUrl.parse(remoteUrl)
             ("Fetching from " + url.toString()).println()
 
-            var ad = UploadPackTransport.fetchAdvertisement(url)
+            var client = new UploadPackClient(url)
+            var ad = client.getAdvertisement()
             ("Remote advertised " + ad.refs.length().toString() + " refs").println()
 
             var store = new ObjectStore(gitDir)
             var wants = FetchClient.computeWants(ad, store)
             if (wants.getSize() == 0) {
+                // Nothing to pull — release the ssh channel (if any) so we
+                // don't leave the child ssh/git-upload-pack process hanging.
+                client.close()
                 "Already up-to-date.".println()
                 return 0
             }
@@ -51,8 +55,9 @@ namespace Am.Git
             var haves = FetchClient.collectHaves(gitDir, remoteName)
             ("Sending " + haves.getSize().toString() + " have(s) for negotiation").println()
 
-            var pack = UploadPackTransport.requestPack(
-                url, wants, haves, UploadPackTransport.defaultCapabilities)
+            var pack = client.getPack(
+                wants, haves, UploadPackTransport.defaultCapabilities)
+            client.close()
             ("Received packfile: " + pack.length().toString() + " bytes").println()
 
             // Parse + resolve deltas. PackParser indexes by SHA; the

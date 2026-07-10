@@ -14,6 +14,7 @@ namespace AmGit
         import Am.IO
         import Am.Git
         import Am.Collections
+        import Am.Threading
 
         static fun main(args: String[]) {
             if (args.length() == 0UI) {
@@ -93,12 +94,97 @@ namespace AmGit
                 Program.runConfig(args)
             } else if (command == "help" || command == "--help" || command == "-h") {
                 Program.printUsage()
+            } else if (command == "__chan-test") {
+                Program.runChanTest(args)
+            } else if (command == "__rp-test") {
+                Program.runRpTest(args)
+            } else if (command == "__netrc-test") {
+                if (args.length() < 2UI) {
+                    "usage: __netrc-test <url>".println()
+                } else {
+                    var u = GitUrl.parse(args[1UI])
+                    var e = Netrc.load().find(u.host, u.userInfo)
+                    if (e != null) {
+                        ("netrc: host=" + u.host + " -> login=" + e.login +
+                         " (password " + e.password.length().toString() + " chars)").println()
+                    } else {
+                        ("netrc: no match for host=" + u.host).println()
+                    }
+                    var hdr = BasicAuth.forUrl(u)
+                    if (hdr != null) {
+                        "forUrl: Authorization resolved".println()
+                    } else {
+                        "forUrl: no credential".println()
+                    }
+                }
             } else if (command == "version" || command == "--version") {
                 "am-git 0.1.0".println()
             } else {
                 ("am-git: unknown command '" + command + "'").println()
                 Program.printUsage()
             }
+        }
+
+        // Hidden self-test for the native CommandChannel binding: spawn
+        // `cat`, push bytes through its stdin, and read them back off its
+        // stdout. Proves the socketpair round-trips binary-clean before we
+        // point it at ssh. `am-git __chan-test`
+        private static fun runChanTest(args: String[]) {
+            var ch = CommandChannel.spawn("cat")
+            var msg = "hello from CommandChannel\n"
+            ch.writeAll(msg.toBytes("UTF-8"))
+            ch.closeWrite()
+            var out = ch.readToEnd()
+            var code = ch.close()
+            ("channel echoed: " + String.fromBytes(out, "UTF-8").trim()).println()
+            ("exit code: " + code.toString()).println()
+        }
+
+        // Binary round-trip test for the new RunningProcess binary API
+        // (Process.startBinary + tryReadOutputBytes/writeInputBytes):
+        // pushes all 256 byte values — including NUL and high bytes —
+        // through `cat` and checks every byte survives. Proves the
+        // channel carries "anything", not just strings. `am-git __rp-test`
+        private static fun runRpTest(args: String[]) {
+            var proc = Process.startBinary("cat", "")
+            var payload = new UByte[256UI]
+            var i = 0
+            while (i < 256) {
+                payload[i.toUInt()] = i.toUByte()
+                i = i + 1
+            }
+            proc.writeInputBytes(payload, 0L, 256UI)
+
+            var got = List<UByte>.newList<UByte>()
+            var tries = 0
+            while (got.getSize() < 256 && tries < 300) {
+                var chunk = proc.tryReadOutputBytes()
+                if (chunk.length() > 0) {
+                    var j = 0
+                    while (j < chunk.length()) {
+                        got.add(chunk[j.toUInt()])
+                        j = j + 1
+                    }
+                } else {
+                    Thread.sleep(10L)
+                }
+                tries = tries + 1
+            }
+            proc.close()
+
+            var ok = got.getSize() == 256
+            var k = 0
+            while (ok && k < 256) {
+                if (got.get(k).toInt() != k) {
+                    ok = false
+                }
+                k = k + 1
+            }
+            var verdict = "MISMATCH"
+            if (ok) {
+                verdict = "OK (all 256 byte values survived)"
+            }
+            ("rp-test: received " + got.getSize().toString() + " bytes, roundtrip " + verdict).println()
         }
 
         // `am-git init [<directory>]` — scaffold a fresh `.git/`
@@ -3189,7 +3275,21 @@ namespace AmGit
         // Heuristic — pull's first arg might be a URL or a remote
         // name. A URL contains "://"; a remote name doesn't.
         private static fun looksLikeUrl(s: String): Bool {
-            return s.indexOf("://") > 0
+            // Explicit scheme: http://, https://, ssh://
+            if (s.indexOf("://") > 0) {
+                return true
+            }
+            // git's scp-like ssh shorthand: `[user@]host:path` — a colon
+            // that appears before any slash. Distinguishes an ssh remote
+            // from a plain branch name or a local path.
+            var colon = s.indexOf(":")
+            if (colon > 0) {
+                var slash = s.indexOf("/")
+                if (slash < 0 || colon < slash) {
+                    return true
+                }
+            }
+            return false
         }
 
         private static fun urlFromConfig(remoteName: String): String {

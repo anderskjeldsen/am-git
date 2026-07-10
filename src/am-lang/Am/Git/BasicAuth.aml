@@ -22,8 +22,44 @@ namespace Am.Git
         import Am.Lang
         import Am.Util
 
+        // Resolve the Authorization header for a specific remote, so one
+        // am-git install can hold DIFFERENT credentials per host. Order:
+        //
+        //   1. Credentials embedded in the URL (https://user:token@host).
+        //   2. A .netrc-style store matched by host (AM_GIT_NETRC env
+        //      content, or ~/.netrc on libc) — the multi-credential path.
+        //   3. AM_GIT_USERNAME / AM_GIT_PASSWORD (the single global
+        //      credential — kept as the simple / CI fallback).
+        //
+        // Returns null when nothing applies (send the request unauthed).
+        static fun forUrl(url: GitUrl): String? {
+            // 1. URL-embedded user[:pass].
+            var ui = url.userInfo
+            if (ui.length() > 0) {
+                var colon = ui.indexOf(":")
+                if (colon >= 0) {
+                    var u = ui.substring(0UI, colon.toUInt())
+                    var p = ui.substringToEnd((colon + 1).toUInt())
+                    return BasicAuth.headerValue(u, p)
+                }
+            }
+
+            // 2. .netrc, matched by host (and login, if the URL named one).
+            var wantLogin = ""
+            if (ui.length() > 0) {
+                wantLogin = ui
+            }
+            var entry = Netrc.load().find(url.host, wantLogin)
+            if (entry != null && entry.login.length() > 0 && entry.password.length() > 0) {
+                return BasicAuth.headerValue(entry.login, entry.password)
+            }
+
+            // 3. Single global env credential.
+            return BasicAuth.fromEnv()
+        }
+
         // Returns `"Basic " + base64(user + ":" + pass)`, or null when
-        // either env var is missing.
+        // either env var is missing. Kept as the fallback used by forUrl.
         static fun fromEnv(): String? {
             var user = Environment.get("AM_GIT_USERNAME")
             var pass = Environment.get("AM_GIT_PASSWORD")

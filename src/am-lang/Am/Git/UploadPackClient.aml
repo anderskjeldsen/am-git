@@ -1,0 +1,191 @@
+namespace Am.Git
+{
+    // Front door for the upload-pack (clone / fetch) side of the git
+    // protocol, hiding whether the carrier is smart-HTTP or ssh. Clone
+    // and fetch build one of these from the parsed URL, pull the ref
+    // advertisement, then request the pack — over the SAME connection
+    // for ssh, or as two independent HTTP requests for http(s).
+    //
+    // The pkt-line negotiation (want/have/done, side-band demux) is
+    // identical either way; only how the bytes move differs. For ssh we
+    // run `ssh <host> git-upload-pack '<path>'` and stream the protocol
+    // over a binary-clean CommandChannel — exactly how real git does it.
+    class UploadPackClient(private var url: GitUrl)
+    {
+        import Am.Lang
+        import Am.Collections
+
+        // Only set on the ssh path: the advertisement and the pack share
+        // one channel, so we hold it open between getAdvertisement() and
+        // getPack(). null for http(s) (each call is its own request).
+        private var channel: SshChannel? = null
+
+        // ssh: did we actually send a want/have body? If not, close()
+        // sends a flush-pkt so the remote git-upload-pack exits cleanly.
+        private var negotiated: Bool = false
+
+        // Step 1: ref advertisement + server capabilities.
+        fun getAdvertisement(): RefAdvertisement {
+            if (this.url.isSsh()) {
+                return this.sshAdvertisement()
+            }
+            return UploadPackTransport.fetchAdvertisement(this.url)
+        }
+
+        // Step 2: the packfile covering `wants` minus `haves`.
+        fun getPack(wants: List<String>, haves: List<String>, capabilities: String): UByte[] {
+            if (this.url.isSsh()) {
+                return this.sshPack(wants, haves, capabilities)
+            }
+            return UploadPackTransport.requestPack(this.url, wants, haves, capabilities)
+        }
+
+        // Release the ssh channel and reap the child (no-op for http).
+        // Safe to call more than once.
+        fun close() {
+            var ch = this.channel
+            if (ch != null) {
+                if (!this.negotiated) {
+                    // We read the ref advertisement but decided we want
+                    // nothing (e.g. already up-to-date). Send a flush-pkt
+                    // to end the exchange politely, so git-upload-pack
+                    // exits 0 instead of logging "the remote end hung up
+                    // unexpectedly". Best-effort — the pipe may be gone.
+                    try {
+                        ch.writeAll(PktLine.flushPacket())
+                    } catch (e: Exception) {
+                    }
+                }
+                ch.close()
+                this.channel = null
+            }
+        }
+
+        // ---- ssh carrier ----
+
+        private fun sshAdvertisement(): RefAdvertisement {
+            try {
+                return this.sshAdvertisementOnce()
+            } catch (e: Exception) {
+                if (e.message != null && e.message == "SSH_HOSTKEY_UNTRUSTED") {
+                    // First connect to an untrusted host. Forward the trust
+                    // question to the terminal / CLI, then retry once.
+                    UploadPackClient.forwardHostKeyTrust(this.url)
+                    try {
+                        return this.sshAdvertisementOnce()
+                    } catch (e2: Exception) {
+                        if (e2.message != null && e2.message == "SSH_HOSTKEY_UNTRUSTED") {
+                            throw new Exception("ssh: host key for " + this.url.host +
+                                " is still not trusted. Add it to ENVARC:.ssh/known_hosts and retry.")
+                        }
+                        throw e2
+                    }
+                }
+                throw e
+            }
+        }
+
+        private fun sshAdvertisementOnce(): RefAdvertisement {
+            var ch = SshChannel.spawn(this.url.sshCommandLine("git-upload-pack"))
+            this.channel = ch
+            var advBytes = UploadPackClient.readAdvertisementBytes(ch)
+            // No "# service=" banner over ssh — the ref list starts at
+            // the very first pkt-line.
+            return RefAdvertisement.parseNoBanner(advBytes)
+        }
+
+        // Run the ssh helper (bebbossh / ssh) interactively — inheriting
+        // this program's terminal, which is the amStudio CLI when am-git
+        // runs there — purely so the user can accept the host key. The
+        // helper writes its "do you trust host ...?" prompt to that
+        // terminal and reads the answer from it, saving the key to
+        // ENVARC:.ssh/known_hosts. The caller then retries the real
+        // operation. On libc `ssh` already handles first-connect on its
+        // own /dev/tty, so this mainly matters for bebbossh on AmigaOS.
+        static fun forwardHostKeyTrust(url: GitUrl) {
+            ("The ssh host key for " + url.host + " is not trusted yet.").println()
+            "Answer the prompt below to trust it (needed once per host):".println()
+            var code = Process.run(url.sshTrustCommand())
+            ("(host-key trust step finished, exit " + code.toString() + ")").println()
+        }
+
+        private fun sshPack(wants: List<String>, haves: List<String>, capabilities: String): UByte[] {
+            var ch = this.channel
+            if (ch == null) {
+                throw new Exception("UploadPackClient: ssh channel not open — call getAdvertisement() first")
+            }
+            var body = UploadPackTransport.buildBody(wants, haves, capabilities)
+            this.negotiated = true
+            ch.writeAll(body)
+            // git-upload-pack replies with NAK + the side-band packfile +
+            // a flush, then exits, closing its stdout → channel EOF. Slurp
+            // the whole reply and hand it to the shared side-band demux.
+            var reply = ch.readToEnd()
+            return UploadPackTransport.extractPack(reply)
+        }
+
+        // Read pkt-lines off the channel up to (and including) the flush
+        // that terminates the ref advertisement, returning the raw bytes
+        // for RefAdvertisement.parseNoBanner. We can't slurp-to-EOF here:
+        // the server is waiting for our wants before it sends anything
+        // more, so we must stop exactly at the advertisement's flush.
+        // Shared with ReceivePackClient (git-receive-pack advertises the
+        // same bannerless way over ssh).
+        static fun readAdvertisementBytes(ch: SshChannel): UByte[] {
+            var out = List<UByte>.newList<UByte>()
+            loop {
+                var hdr = ch.readFully(4)
+                if (hdr == null) {
+                    // Clean EOF before a flush — server closed early
+                    // (e.g. ssh auth failed). Return what we have; the
+                    // parser will report an empty / malformed ad.
+                    break
+                }
+                UploadPackClient.appendAll(out, hdr)
+                var len = PktLine.parseHex(hdr, 0, 4)
+                if (len < 0) {
+                    // Non-hex where a 4-char pkt-line length should be means
+                    // the ssh helper wrote plain text to stdout instead of
+                    // the git protocol. The common cause is the host key not
+                    // being trusted yet: bebbossh prints "do you trust host
+                    // ...? Then enter: yes" in-band and reads the answer from
+                    // this stdin (which carries the git protocol, not your
+                    // keyboard). Signal that with a sentinel so the caller
+                    // can forward the question to the terminal / CLI.
+                    var head = String.fromBytes(hdr, "UTF-8")
+                    if (head.startsWith("do ") || head.startsWith("Do ")) {
+                        throw new Exception("SSH_HOSTKEY_UNTRUSTED")
+                    }
+                    throw new Exception(
+                        "ssh: expected the git protocol but the remote helper sent " +
+                        "text (starting \"" + head + "\"). Check the ssh command / " +
+                        "host key / auth.")
+                }
+                if (len == 0) {
+                    break
+                }
+                if (len == 1 || len == 2) {
+                    // delim / response-end framing packets carry no payload.
+                    continue
+                }
+                if (len < 4) {
+                    throw new Exception("ssh upload-pack: pkt-line length below minimum")
+                }
+                var payload = ch.readFully(len - 4)
+                if (payload == null) {
+                    throw new Exception("ssh upload-pack: truncated advertisement pkt-line")
+                }
+                UploadPackClient.appendAll(out, payload)
+            }
+            return out.toArray()
+        }
+
+        private static fun appendAll(list: List<UByte>, bytes: UByte[]) {
+            var i = 0
+            while (i < bytes.length()) {
+                list.add(bytes[i.toUInt()])
+                i = i + 1
+            }
+        }
+    }
+}

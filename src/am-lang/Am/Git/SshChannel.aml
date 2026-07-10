@@ -1,0 +1,203 @@
+namespace Am.Git
+{
+    // A binary-clean bidirectional channel to a spawned ssh process,
+    // abstracting the two platform backends behind one API:
+    //
+    //   * libc (macOS / Linux): Am.Git.CommandChannel — a socketpair +
+    //     execvp of the system `ssh`. Blocking reads.
+    //
+    //   * AmigaOS: Am.Lang.RunningProcess in binary mode — spawns
+    //     `bebbossh -T ...` through the dos-handler pipe and moves raw
+    //     bytes with tryReadOutputBytes()/writeInputBytes() (which,
+    //     unlike the String tryReadOutput/writeInput, don't NUL-truncate).
+    //     Reads are non-blocking, so we poll + sleep and use isAlive()
+    //     to detect end-of-stream.
+    //
+    // The pkt-line clients (UploadPackClient / ReceivePackClient) only
+    // ever see this class, so they're transport-and-platform agnostic.
+    class SshChannel
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.Threading
+
+        // Exactly one backend is set, chosen by platform at spawn().
+        private var posix: CommandChannel? = null   // libc
+        private var proc: RunningProcess? = null     // amigaos
+
+        // AmigaOS read buffering: tryReadOutputBytes() hands back
+        // whatever's queued, which can overshoot a fixed-size read(), so
+        // we stash the leftover here and serve it first next time.
+        private var pending: UByte[] = new UByte[0UI]
+        private var pendingPos: Int = 0
+
+        // `command` is a '\n'-joined argv from GitUrl.sshCommandLine(),
+        // e.g. "ssh\n-T\nuser@host\ngit-upload-pack 'path'". The libc
+        // execvp backend takes it verbatim; the AmigaOS RunningProcess
+        // backend wants a single shell command line, so we flatten the
+        // newlines to spaces (the ssh helper re-tokenises them).
+        static fun spawn(command: String): SshChannel {
+            var c = new SshChannel()
+            if (Runtime.getPlatform() == "amigaos") {
+                c.proc = Process.startBinary(SshChannel.argvToShell(command), "")
+            } else {
+                c.posix = CommandChannel.spawn(command)
+            }
+            return c
+        }
+
+        // Flatten a '\n'-joined argv into a space-joined shell command line.
+        private static fun argvToShell(argvLine: String): String {
+            var sb = new StringBuilder()
+            var i = 0UI
+            var len = argvLine.length().toUInt()
+            while (i < len) {
+                var ch = argvLine.characterAt(i)
+                if (ch == 10US) {
+                    sb.addChar(32US)
+                } else {
+                    sb.addChar(ch)
+                }
+                i = i + 1UI
+            }
+            return sb.toString()
+        }
+
+        // Read up to `length` bytes into data[offset..]. Returns the
+        // count read; 0 means end-of-stream.
+        fun read(data: UByte[], offset: Long, length: UInt): UInt {
+            var p = this.posix
+            if (p != null) {
+                return p.read(data, offset, length)
+            }
+            var rp = this.proc
+            if (rp == null) {
+                return 0UI
+            }
+            // Refill the pending buffer if drained: poll the ring until
+            // bytes arrive or the child exits (EOF).
+            if (this.pendingPos >= this.pending.length()) {
+                loop {
+                    var got = rp.tryReadOutputBytes()
+                    if (got.length() > 0) {
+                        this.pending = got
+                        this.pendingPos = 0
+                        break
+                    }
+                    if (!rp.isAlive()) {
+                        return 0UI
+                    }
+                    Thread.sleep(5L)
+                }
+            }
+            var avail = this.pending.length() - this.pendingPos
+            var n = length.toInt()
+            if (n > avail) {
+                n = avail
+            }
+            var i = 0
+            while (i < n) {
+                data[(offset + i.toLong()).toUInt()] = this.pending[(this.pendingPos + i).toUInt()]
+                i = i + 1
+            }
+            this.pendingPos = this.pendingPos + n
+            return n.toUInt()
+        }
+
+        // Write up to `length` bytes. Returns the count accepted; blocks
+        // (on amigaos) until at least one byte lands or the child exits.
+        fun write(data: UByte[], offset: Long, length: UInt): UInt {
+            var p = this.posix
+            if (p != null) {
+                return p.write(data, offset, length)
+            }
+            var rp = this.proc
+            if (rp == null) {
+                return 0UI
+            }
+            loop {
+                var n = rp.writeInputBytes(data, offset, length)
+                if (n > 0UI) {
+                    return n
+                }
+                if (!rp.isAlive()) {
+                    return 0UI
+                }
+                Thread.sleep(2L)
+            }
+            return 0UI
+        }
+
+        // Half-close our write side (libc only — the AmigaOS handler has
+        // no half-close; bebbossh -T + a command doesn't need stdin EOF
+        // for upload-pack).
+        fun closeWrite() {
+            var p = this.posix
+            if (p != null) {
+                p.closeWrite()
+            }
+        }
+
+        // Close the channel and reap the child. Returns the exit code
+        // (0 on the amigaos path, which doesn't surface one here).
+        fun close(): Int {
+            var p = this.posix
+            if (p != null) {
+                return p.close()
+            }
+            var rp = this.proc
+            if (rp != null) {
+                rp.close()
+                this.proc = null
+            }
+            return 0
+        }
+
+        // ---- byte-stream helpers (built on read/write) ----
+
+        fun writeAll(bytes: UByte[]) {
+            var total = bytes.length()
+            var sent = 0
+            while (sent < total) {
+                var n = this.write(bytes, sent.toLong(), (total - sent).toUInt())
+                if (n == 0UI) {
+                    throw new Exception("SshChannel.writeAll: pipe closed early")
+                }
+                sent = sent + n.toInt()
+            }
+        }
+
+        // Read exactly `count` bytes. Returns null on clean EOF before
+        // `count` bytes arrive.
+        fun readFully(count: Int): UByte[]? {
+            var buf = new UByte[count.toUInt()]
+            var got = 0
+            while (got < count) {
+                var n = this.read(buf, got.toLong(), (count - got).toUInt())
+                if (n == 0UI) {
+                    return null
+                }
+                got = got + n.toInt()
+            }
+            return buf
+        }
+
+        // Drain the channel to EOF.
+        fun readToEnd(): UByte[] {
+            var out = List<UByte>.newList<UByte>()
+            var chunk = new UByte[8192UI]
+            loop {
+                var n = this.read(chunk, 0L, 8192UI)
+                if (n == 0UI) {
+                    break
+                }
+                var i = 0
+                while (i < n.toInt()) {
+                    out.add(chunk[i.toUInt()])
+                    i = i + 1
+                }
+            }
+            return out.toArray()
+        }
+    }
+}

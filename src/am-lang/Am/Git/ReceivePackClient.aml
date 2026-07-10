@@ -1,0 +1,162 @@
+namespace Am.Git
+{
+    // Front door for the receive-pack (push) side of the git protocol,
+    // hiding whether the carrier is smart-HTTP or ssh. PushClient builds
+    // the ref-update + pack body (ReceivePackRequest.build) and hands it
+    // here; we deliver it and return the raw report-status reply.
+    //
+    // The body is identical for both carriers — over HTTP it's the POST
+    // body, over ssh it's written straight to git-receive-pack's stdin.
+    // For ssh we run `ssh <host> git-receive-pack '<path>'` on a binary-
+    // clean CommandChannel, read the (bannerless) advertisement, send the
+    // body, then read the report.
+    class ReceivePackClient(private var url: GitUrl)
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.Web.Client
+
+        // ssh only: advertisement + delivery share one channel.
+        private var channel: SshChannel? = null
+
+        // ssh: did we send the ref-update/pack body? If not, close()
+        // sends a flush-pkt so git-receive-pack exits cleanly.
+        private var negotiated: Bool = false
+
+        // Step 1: the receive-pack ref advertisement (what the remote
+        // currently has, so PushClient can compute old→new updates).
+        fun getAdvertisement(): RefAdvertisement {
+            if (this.url.isSsh()) {
+                return this.sshAdvertisement()
+            }
+            return this.httpAdvertisement()
+        }
+
+        // Step 2: deliver the ref-update + pack body, return the raw
+        // report-status reply bytes for PushClient.parseReport.
+        fun sendReport(body: UByte[]): UByte[] {
+            if (this.url.isSsh()) {
+                return this.sshDeliver(body)
+            }
+            return this.httpDeliver(body)
+        }
+
+        // Release the ssh channel and reap the child (no-op for http).
+        fun close() {
+            var ch = this.channel
+            if (ch != null) {
+                if (!this.negotiated) {
+                    // Read the advertisement but nothing to push (already
+                    // up-to-date) — flush-pkt so git-receive-pack exits 0
+                    // instead of logging "the remote end hung up".
+                    try {
+                        ch.writeAll(PktLine.flushPacket())
+                    } catch (e: Exception) {
+                    }
+                }
+                ch.close()
+                this.channel = null
+            }
+        }
+
+        // ---- ssh carrier ----
+
+        private fun sshAdvertisement(): RefAdvertisement {
+            try {
+                return this.sshAdvertisementOnce()
+            } catch (e: Exception) {
+                if (e.message != null && e.message == "SSH_HOSTKEY_UNTRUSTED") {
+                    // Forward the trust question to the terminal / CLI, retry once.
+                    UploadPackClient.forwardHostKeyTrust(this.url)
+                    try {
+                        return this.sshAdvertisementOnce()
+                    } catch (e2: Exception) {
+                        if (e2.message != null && e2.message == "SSH_HOSTKEY_UNTRUSTED") {
+                            throw new Exception("ssh: host key for " + this.url.host +
+                                " is still not trusted. Add it to ENVARC:.ssh/known_hosts and retry.")
+                        }
+                        throw e2
+                    }
+                }
+                throw e
+            }
+        }
+
+        private fun sshAdvertisementOnce(): RefAdvertisement {
+            var ch = SshChannel.spawn(this.url.sshCommandLine("git-receive-pack"))
+            this.channel = ch
+            // Same bannerless advertisement as upload-pack over ssh.
+            var advBytes = UploadPackClient.readAdvertisementBytes(ch)
+            return RefAdvertisement.parseNoBanner(advBytes)
+        }
+
+        private fun sshDeliver(body: UByte[]): UByte[] {
+            var ch = this.channel
+            if (ch == null) {
+                throw new Exception("ReceivePackClient: ssh channel not open — call getAdvertisement() first")
+            }
+            this.negotiated = true
+            ch.writeAll(body)
+            // Signal end-of-input so git-receive-pack stops reading,
+            // processes the pack, writes the report to stdout and exits
+            // (closing its stdout → our readToEnd() sees EOF).
+            ch.closeWrite()
+            return ch.readToEnd()
+        }
+
+        // ---- http carrier (moved from PushClient) ----
+
+        private fun httpAdvertisement(): RefAdvertisement {
+            var client = new WebClient()
+            var headers = new HashMap<String, String>()
+            headers.set("Accept", "application/x-git-receive-pack-advertisement")
+            headers.set("Git-Protocol", "version=1")
+            ReceivePackClient.addAuthHeader(this.url, headers)
+
+            var response = client.getBytesWithHeaders(
+                this.url.toString() + "/info/refs?service=git-receive-pack", headers)
+            if (response.getStatusCode() == 401) {
+                throw new Exception("Remote rejected credentials (HTTP 401). " +
+                                     "Check AM_GIT_USERNAME / AM_GIT_PASSWORD.")
+            }
+            if (!response.isSuccess()) {
+                throw new Exception("info/refs (receive-pack) returned HTTP " +
+                                     response.getStatusCode().toString() + " " +
+                                     response.getStatusMessage())
+            }
+            var ct = response.getHeader("content-type")
+            if (ct == null || ct.indexOf("application/x-git-receive-pack-advertisement") < 0) {
+                throw new Exception("Server is not smart-HTTP capable (Content-Type: " + ct + ")")
+            }
+            return RefAdvertisement.parse(response.getBodyAsBytes())
+        }
+
+        private fun httpDeliver(body: UByte[]): UByte[] {
+            var client = new WebClient()
+            var headers = new HashMap<String, String>()
+            headers.set("Accept", "application/x-git-receive-pack-result")
+            headers.set("Content-Type", "application/x-git-receive-pack-request")
+            headers.set("Git-Protocol", "version=1")
+            ReceivePackClient.addAuthHeader(this.url, headers)
+
+            var response = client.postBytesWithHeaders(
+                this.url.toString() + "/git-receive-pack", body, headers)
+            if (response.getStatusCode() == 401) {
+                throw new Exception("Remote rejected credentials on POST (HTTP 401)")
+            }
+            if (!response.isSuccess()) {
+                throw new Exception("git-receive-pack returned HTTP " +
+                                     response.getStatusCode().toString() + " " +
+                                     response.getStatusMessage())
+            }
+            return response.getBodyAsBytes()
+        }
+
+        private static fun addAuthHeader(url: GitUrl, headers: HashMap<String, String>) {
+            var auth = BasicAuth.forUrl(url)
+            if (auth != null) {
+                headers.set("Authorization", auth)
+            }
+        }
+    }
+}

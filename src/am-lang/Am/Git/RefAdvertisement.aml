@@ -21,21 +21,35 @@ namespace Am.Git
         // service name in the leading "# service=..." line differs.
         // Layout: Documentation/technical/http-protocol.txt.
         static fun parse(body: UByte[]): RefAdvertisement {
+            return RefAdvertisement.parseInternal(body, true)
+        }
+
+        // Same, but for advertisements that DON'T carry the smart-HTTP
+        // "# service=..." banner + flush — i.e. what git-upload-pack
+        // writes directly over ssh / git:// (the ref list starts at the
+        // very first pkt-line).
+        static fun parseNoBanner(body: UByte[]): RefAdvertisement {
+            return RefAdvertisement.parseInternal(body, false)
+        }
+
+        private static fun parseInternal(body: UByte[], hasBanner: Bool): RefAdvertisement {
             var reader = new PktLineReader(body)
 
-            var first = reader.next()
-            if (first == null) {
-                throw new Exception("Empty ref advertisement")
-            }
-            var firstText = first.textPayload()
-            if (!firstText.startsWith("# service=")) {
-                throw new Exception("Expected service header, got: " + firstText)
-            }
+            if (hasBanner) {
+                var first = reader.next()
+                if (first == null) {
+                    throw new Exception("Empty ref advertisement")
+                }
+                var firstText = first.textPayload()
+                if (!firstText.startsWith("# service=")) {
+                    throw new Exception("Expected service header, got: " + firstText)
+                }
 
-            // Expect a flush after the service line.
-            var flush = reader.next()
-            if (flush == null || !flush.isFlush()) {
-                throw new Exception("Expected flush packet after service header")
+                // Expect a flush after the service line.
+                var flush = reader.next()
+                if (flush == null || !flush.isFlush()) {
+                    throw new Exception("Expected flush packet after service header")
+                }
             }
 
             var refs = List<RefEntry>.newList<RefEntry>()

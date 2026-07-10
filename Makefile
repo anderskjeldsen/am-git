@@ -112,8 +112,21 @@ AMINET_RDM  := $(AMINET_DIR)/$(AMINET_NAME).readme
 # amlang-amiberry:latest image already built (see that repo's build.sh).
 AMIBERRY_HEADLESS ?= ../amiberry-headless
 
+# Aminet anonymous-FTP endpoint (used only by the publish step). Password
+# is your email address, per Aminet's rules.
+AMINET_FTP_HOST := main.aminet.net
+AMINET_FTP_DIR  := new
+AMINET_FTP_USER := anonymous
+AMINET_FTP_PASS := kjeldsenanders@gmail.com
+# Publishing is a DRY RUN by default so nothing ships by accident. Flip it
+# with `make aminet-publish AMINET_DRYRUN=0` when you actually want to send.
+AMINET_DRYRUN   ?= 1
+
 # Build fresh, then package.
 aminet: build-amigaos aminet-package
+
+# Full pipeline: build + package + publish (publish is dry-run by default).
+aminet-release: aminet aminet-publish
 
 # Package an already-built binary (skip the slow docker build).
 aminet-package: aminet-readme
@@ -162,27 +175,31 @@ aminet-readme:
 	@sed 's/^Version:.*/Version:      $(AMINET_VERSION)/' $(AMINET_RDM_SRC) > $(AMINET_RDM)
 	@echo "wrote $(AMINET_RDM) (from $(AMINET_RDM_SRC), version $(AMINET_VERSION))"
 
-# For now: just show the FTP session we WOULD run. Nothing is uploaded.
-# Depends on aminet-package (re-archives the current binary) rather than a
-# full `aminet` so eyeballing the upload doesn't force a slow docker build.
-aminet-upload: aminet-package
-	@echo ""
-	@echo "=== Aminet upload (DRY RUN — nothing sent) ==="
-	@echo "Would connect to: ftp://main.aminet.net/new"
-	@echo "  user:     anonymous"
-	@echo "  password: kjeldsenanders@gmail.com   (your email, per Aminet rules)"
-	@echo ""
-	@echo "Would upload these two files (binary mode):"
-	@echo "  put $(AMINET_LHA)   -> /new/$(AMINET_NAME).lha"
-	@echo "  put $(AMINET_RDM)   -> /new/$(AMINET_NAME).readme"
-	@echo ""
-	@echo "Equivalent ftp script:"
-	@echo "  open main.aminet.net"
-	@echo "  user anonymous kjeldsenanders@gmail.com"
-	@echo "  binary"
-	@echo "  cd new"
-	@echo "  put $(AMINET_LHA) $(AMINET_NAME).lha"
-	@echo "  put $(AMINET_RDM) $(AMINET_NAME).readme"
-	@echo "  bye"
+# Publish step — decoupled from packaging. Operates on the artifacts that
+# aminet-package already produced (it does NOT rebuild or repackage), so
+# you can inspect them first, then publish without re-running the emulator.
+# Dry-run by default: prints exactly what it would send. Set AMINET_DRYRUN=0
+# to actually upload over anonymous FTP (via curl; /usr/bin/ftp is gone on
+# modern macOS).
+aminet-publish:
+	@test -f $(AMINET_LHA) || { echo "error: $(AMINET_LHA) not found — run 'make aminet-package' first"; exit 1; }
+	@test -f $(AMINET_RDM) || { echo "error: $(AMINET_RDM) not found — run 'make aminet-package' first"; exit 1; }
+	@echo "publish target: ftp://$(AMINET_FTP_HOST)/$(AMINET_FTP_DIR)  (user: $(AMINET_FTP_USER))"
+	@echo "  $(AMINET_LHA)  ->  $(AMINET_NAME).lha"
+	@echo "  $(AMINET_RDM)  ->  $(AMINET_NAME).readme"
+	@if [ "$(AMINET_DRYRUN)" = "0" ]; then \
+	  echo "uploading over anonymous FTP ..."; \
+	  curl -sS --ftp-create-dirs -T $(AMINET_LHA) "ftp://$(AMINET_FTP_HOST)/$(AMINET_FTP_DIR)/$(AMINET_NAME).lha" --user "$(AMINET_FTP_USER):$(AMINET_FTP_PASS)" && \
+	  curl -sS --ftp-create-dirs -T $(AMINET_RDM) "ftp://$(AMINET_FTP_HOST)/$(AMINET_FTP_DIR)/$(AMINET_NAME).readme" --user "$(AMINET_FTP_USER):$(AMINET_FTP_PASS)" && \
+	  echo "upload complete — check the Aminet upload queue."; \
+	else \
+	  echo ""; \
+	  echo "=== DRY RUN — nothing sent ==="; \
+	  echo "Re-run to actually publish:  make aminet-publish AMINET_DRYRUN=0"; \
+	  echo ""; \
+	  echo "Would run:"; \
+	  echo "  curl -T $(AMINET_LHA) ftp://$(AMINET_FTP_HOST)/$(AMINET_FTP_DIR)/$(AMINET_NAME).lha --user $(AMINET_FTP_USER):$(AMINET_FTP_PASS)"; \
+	  echo "  curl -T $(AMINET_RDM) ftp://$(AMINET_FTP_HOST)/$(AMINET_FTP_DIR)/$(AMINET_NAME).readme --user $(AMINET_FTP_USER):$(AMINET_FTP_PASS)"; \
+	fi
 
-.PHONY: aminet aminet-package aminet-readme aminet-upload
+.PHONY: aminet aminet-release aminet-package aminet-readme aminet-publish

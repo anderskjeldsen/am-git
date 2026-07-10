@@ -1,0 +1,99 @@
+namespace Am.Git
+{
+    // A child process whose stdin+stdout are wired to a single, fully
+    // binary-clean bidirectional pipe (a socketpair). Used by the ssh
+    // git transport: we run `ssh <host> git-upload-pack '<path>'` and
+    // stream the pkt-line pack protocol over the channel — exactly how
+    // real `git` drives ssh (plain pipes, NOT a pty, so the packfile
+    // bytes pass through untouched).
+    //
+    // stderr is inherited from us, so ssh's own diagnostics and any
+    // passphrase / host-key prompts (which ssh reads straight from
+    // /dev/tty, not stdin) still reach the user's terminal.
+    //
+    // This is deliberately NOT Am.Lang.RunningProcess: that one is a
+    // pseudo-terminal with String I/O for interactive shells, which
+    // would mangle binary pack data through the tty line discipline.
+    //
+    // libc (macOS / Linux) is the real implementation. AmigaOS is listed
+    // only so the libc socketpair source is NOT cross-compiled for the
+    // amiga target: on AmigaOS SshChannel routes to RunningProcess instead
+    // (see SshChannel.spawn), so CommandChannel is unreachable there and
+    // its amigaos native file below is a stub.
+    #implementationPlatforms "libc", "amigaos"
+    native class CommandChannel
+    {
+        import Am.Lang
+        import Am.Collections
+
+        // argv joined by '\n' (no shell — we execvp directly, so no
+        // quoting pitfalls and the stream stays binary-clean). e.g.
+        // "ssh\ngit@github.com\ngit-upload-pack 'user/repo.git'"
+        static fun spawn(argvLine: String): CommandChannel {
+            var c = new CommandChannel()
+            c.spawnNative(argvLine)
+            return c
+        }
+
+        private native fun spawnNative(argvLine: String)
+
+        // Raw single read/write over the channel fd. read() returns 0
+        // at EOF; either call may transfer fewer bytes than requested.
+        native fun read(data: UByte[], offset: Long, length: UInt): UInt
+        native fun write(data: UByte[], offset: Long, length: UInt): UInt
+
+        // Half-close our write side so the child sees EOF on its stdin.
+        native fun closeWrite()
+
+        // Close the channel and reap the child; returns its exit code.
+        native fun close(): Int
+
+        // ---- byte-stream helpers (pure AmLang, built on read/write) ----
+
+        // Write every byte of `bytes`, looping over short writes.
+        fun writeAll(bytes: UByte[]) {
+            var total = bytes.length()
+            var sent = 0
+            while (sent < total) {
+                var n = this.write(bytes, sent.toLong(), (total - sent).toUInt())
+                if (n == 0UI) {
+                    throw new Exception("CommandChannel.writeAll: child closed the pipe early")
+                }
+                sent = sent + n.toInt()
+            }
+        }
+
+        // Read exactly `count` bytes into a fresh array. Returns null if
+        // the stream cleanly ends (EOF) before `count` bytes arrive.
+        fun readFully(count: Int): UByte[]? {
+            var buf = new UByte[count.toUInt()]
+            var got = 0
+            while (got < count) {
+                var n = this.read(buf, got.toLong(), (count - got).toUInt())
+                if (n == 0UI) {
+                    return null
+                }
+                got = got + n.toInt()
+            }
+            return buf
+        }
+
+        // Drain the rest of the channel to EOF into one array.
+        fun readToEnd(): UByte[] {
+            var out = List<UByte>.newList<UByte>()
+            var chunk = new UByte[8192UI]
+            loop {
+                var n = this.read(chunk, 0L, 8192UI)
+                if (n == 0UI) {
+                    break
+                }
+                var i = 0
+                while (i < n.toInt()) {
+                    out.add(chunk[i.toUInt()])
+                    i = i + 1
+                }
+            }
+            return out.toArray()
+        }
+    }
+}

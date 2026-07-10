@@ -1,0 +1,154 @@
+namespace Am.Git
+{
+    // One credential entry. `host == ""` marks a `default` entry that
+    // matches any host (lowest priority).
+    class NetrcEntry(var host: String, var login: String, var password: String)
+    {
+        import Am.Lang
+    }
+
+    // Minimal .netrc-style credential reader, so a single am-git install
+    // can hold DIFFERENT HTTPS credentials per host instead of one global
+    // AM_GIT_USERNAME / AM_GIT_PASSWORD.
+    //
+    // Source, in order:
+    //   1. The AM_GIT_NETRC env var — its VALUE is the whole file content.
+    //      Handy on AmigaOS: `ENV:AM_GIT_NETRC` can just hold the text, no
+    //      file path needed. (Multi-line env values are fine; we tokenise
+    //      on any whitespace including newlines.)
+    //   2. ~/.netrc on libc (git / curl compatible), when HOME is set.
+    //
+    // Format is the classic whitespace-delimited token stream, one-line or
+    // multi-line:
+    //
+    //   machine github.com login alice password ghp_personaltoken
+    //   machine gitlab.com  login bob   password glpat_yyy
+    //   default             login guest password anon
+    class Netrc
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        private var entries: List<NetrcEntry> = List<NetrcEntry>.newList<NetrcEntry>()
+
+        // Load whatever source is present; an empty Netrc when none is.
+        static fun load(): Netrc {
+            var n = new Netrc()
+            n.entries = Netrc.parse(Netrc.readSource())
+            return n
+        }
+
+        private static fun readSource(): String {
+            var env = Environment.get("AM_GIT_NETRC")
+            if (env != null && env.length() > 0) {
+                return env
+            }
+            // libc convenience: ~/.netrc (AmigaOS has no HOME/~, so it
+            // relies on AM_GIT_NETRC above).
+            var home = Environment.get("HOME")
+            if (home != null && home.length() > 0) {
+                var path = home + "/.netrc"
+                var f = new File(path)
+                if (f.exists()) {
+                    return String.readFromFile(path)
+                }
+            }
+            return ""
+        }
+
+        // Best credential for `host`, preferring one whose login matches
+        // `wantLogin` (pass "" for don't-care). Precedence:
+        //   exact host+login  >  host (any login)  >  default entry.
+        fun find(host: String, wantLogin: String): NetrcEntry? {
+            var hostFallback: NetrcEntry? = null
+            var defaultFallback: NetrcEntry? = null
+            var i = 0
+            while (i < this.entries.getSize()) {
+                var e = this.entries.get(i)
+                if (e.host == host) {
+                    if (wantLogin.length() == 0 || e.login == wantLogin) {
+                        return e
+                    }
+                    if (hostFallback == null) {
+                        hostFallback = e
+                    }
+                } else if (e.host.length() == 0) {
+                    if (defaultFallback == null) {
+                        defaultFallback = e
+                    }
+                }
+                i = i + 1
+            }
+            if (hostFallback != null) {
+                return hostFallback
+            }
+            return defaultFallback
+        }
+
+        // Token-walk parser: `machine <h>` / `default` start an entry;
+        // `login <u>` and `password <p>` fill the current one. Other
+        // keywords (account, macdef, ...) are ignored.
+        private static fun parse(content: String): List<NetrcEntry> {
+            var out = List<NetrcEntry>.newList<NetrcEntry>()
+            var tokens = Netrc.tokenize(content)
+            var cur: NetrcEntry? = null
+            var i = 0
+            var n = tokens.getSize()
+            while (i < n) {
+                var t = tokens.get(i)
+                if (t == "machine") {
+                    var e = new NetrcEntry("", "", "")
+                    out.add(e)
+                    cur = e
+                    if (i + 1 < n) {
+                        e.host = tokens.get(i + 1)
+                        i = i + 1
+                    }
+                } else if (t == "default") {
+                    var e2 = new NetrcEntry("", "", "")
+                    out.add(e2)
+                    cur = e2
+                } else if (t == "login") {
+                    var c1 = cur
+                    if (c1 != null && i + 1 < n) {
+                        c1.login = tokens.get(i + 1)
+                        i = i + 1
+                    }
+                } else if (t == "password") {
+                    var c2 = cur
+                    if (c2 != null && i + 1 < n) {
+                        c2.password = tokens.get(i + 1)
+                        i = i + 1
+                    }
+                }
+                i = i + 1
+            }
+            return out
+        }
+
+        // Split on whitespace (space, tab, CR, LF).
+        private static fun tokenize(s: String): List<String> {
+            var toks = List<String>.newList<String>()
+            var sb = new StringBuilder()
+            var i = 0UI
+            var len = s.length().toUInt()
+            while (i < len) {
+                var c = s.characterAt(i)
+                if (c == 32US || c == 9US || c == 10US || c == 13US) {
+                    if (sb.toString().length() > 0) {
+                        toks.add(sb.toString())
+                        sb = new StringBuilder()
+                    }
+                } else {
+                    sb.addChar(c)
+                }
+                i = i + 1UI
+            }
+            if (sb.toString().length() > 0) {
+                toks.add(sb.toString())
+            }
+            return toks
+        }
+    }
+}

@@ -29,7 +29,8 @@ namespace Am.Git
             var url = GitUrl.parse(remoteUrl)
             ("Cloning " + url.toString() + " into " + targetDir).println()
 
-            var advertisement = UploadPackTransport.fetchAdvertisement(url)
+            var client = new UploadPackClient(url)
+            var advertisement = client.getAdvertisement()
             ("Server advertised " + advertisement.refs.length().toString() + " refs").println()
 
             var headSha = advertisement.headSha()
@@ -41,8 +42,9 @@ namespace Am.Git
 
             var wants = CloneClient.wantsFromAdvertisement(advertisement)
             var haves = List<String>.newList<String>()
-            var packBytes = UploadPackTransport.requestPack(
-                url, wants, haves, UploadPackTransport.defaultCapabilities)
+            var packBytes = client.getPack(
+                wants, haves, UploadPackTransport.defaultCapabilities)
+            client.close()
             ("Received packfile: " + packBytes.length().toString() + " bytes").println()
 
             var header = PackHeader.parse(packBytes)

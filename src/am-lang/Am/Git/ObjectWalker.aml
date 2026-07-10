@@ -110,7 +110,7 @@ namespace Am.Git
         // Recursive tree walk. Iterative to keep stack bounded; deep
         // trees aren't common but a deep AmigaOS source tree could
         // hit a few hundred levels.
-        private fun walkTree(rootSha: String, seen: HashMap<String, Bool>, toSend: List<String>) {
+        private fun walkTree(rootSha: String, seen: HashMap<String, Bool>, toSend: List<String>?) {
             var queue = List<String>.newList<String>()
             queue.add(rootSha)
             loop {

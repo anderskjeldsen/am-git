@@ -27,7 +27,7 @@ namespace Am.Git
             var headers = new HashMap<String, String>()
             headers.set("Accept", "application/x-git-upload-pack-advertisement")
             headers.set("Git-Protocol", "version=1")
-            UploadPackTransport.addAuthHeader(headers)
+            UploadPackTransport.addAuthHeader(url, headers)
 
             var response = client.getBytesWithHeaders(
                 url.toString() + "/info/refs?service=git-upload-pack", headers)
@@ -68,7 +68,7 @@ namespace Am.Git
             headers.set("Accept", "application/x-git-upload-pack-result")
             headers.set("Content-Type", "application/x-git-upload-pack-request")
             headers.set("Git-Protocol", "version=1")
-            UploadPackTransport.addAuthHeader(headers)
+            UploadPackTransport.addAuthHeader(url, headers)
 
             var response = client.postBytesWithHeaders(
                 url.toString() + "/git-upload-pack", body, headers)
@@ -98,7 +98,9 @@ namespace Am.Git
         //
         // We don't loop the negotiation; one round + done is fine for
         // our use cases and the server happily replies with NAK + pack.
-        private static fun buildBody(wants: List<String>,
+        // Shared with the ssh transport (UploadPackClient) — the same
+        // want/have/done body regardless of carrier.
+        static fun buildBody(wants: List<String>,
                                       haves: List<String>,
                                       capabilities: String): UByte[] {
             var buf = List<UByte>.newList<UByte>()
@@ -133,8 +135,10 @@ namespace Am.Git
 
         // Strip the NAK/ACK preamble and demux side-band-64k bands —
         // band 1 = pack data, band 2 = textual progress (printed),
-        // band 3 = fatal error.
-        private static fun extractPack(body: UByte[]): UByte[] {
+        // band 3 = fatal error. Shared with the ssh transport
+        // (UploadPackClient), which slurps the whole upload-pack reply
+        // off the channel and hands it here.
+        static fun extractPack(body: UByte[]): UByte[] {
             var reader = new PktLineReader(body)
             var sawAck = false
             var collected = List<UByte>.newList<UByte>()
@@ -202,8 +206,8 @@ namespace Am.Git
             return out
         }
 
-        private static fun addAuthHeader(headers: HashMap<String, String>) {
-            var auth = BasicAuth.fromEnv()
+        private static fun addAuthHeader(url: GitUrl, headers: HashMap<String, String>) {
+            var auth = BasicAuth.forUrl(url)
             if (auth != null) {
                 headers.set("Authorization", auth)
             }
