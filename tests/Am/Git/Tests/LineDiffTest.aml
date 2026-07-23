@@ -1,0 +1,111 @@
+namespace Am.Git.Tests {
+
+    // LineDiff — the unified line differ behind `am-git diff`.
+    // Covers the edit-script core (prefix/suffix strip + LCS middle),
+    // hunk grouping/headers, and the binary/line-split helpers.
+    class LineDiffTest {
+        import Am.Lang
+        import Am.Collections
+        import Am.Git
+        import Am.Tests
+
+        private static fun lines(joined: String): List<String> {
+            var out = List<String>.newList<String>()
+            var parts = joined.splitByString("|")
+            var i: UInt = 0UI
+            while (i < parts.length()) {
+                out.add(parts[i])
+                i++
+            }
+            return out
+        }
+
+        // Identical inputs produce an empty diff.
+        test identicalIsEmpty() {
+            var a = LineDiffTest.lines("one|two|three")
+            var b = LineDiffTest.lines("one|two|three")
+            var hunks = LineDiff.unified(a, b)
+            Assert.assertEquals(0, hunks.getSize())
+        }
+
+        // A single changed line in the middle: one hunk, correct
+        // header, context on both sides, -old +new in the middle.
+        test singleLineChange() {
+            var a = LineDiffTest.lines("a|b|c|d|e|f|g")
+            var b = LineDiffTest.lines("a|b|c|X|e|f|g")
+            var hunks = LineDiff.unified(a, b)
+            // @@ header + 3 ctx + -d + +X + 3 ctx = 9 lines
+            Assert.assertEquals(9, hunks.getSize())
+            Assert.assertEquals("@@ -1,7 +1,7 @@", hunks.get(0))
+            Assert.assertEquals(" c", hunks.get(3))
+            Assert.assertEquals("-d", hunks.get(4))
+            Assert.assertEquals("+X", hunks.get(5))
+            Assert.assertEquals(" e", hunks.get(6))
+        }
+
+        // Pure insertion keeps surrounding context and emits only '+'.
+        test insertionOnly() {
+            var a = LineDiffTest.lines("a|b|c")
+            var b = LineDiffTest.lines("a|b|new|c")
+            var hunks = LineDiff.unified(a, b)
+            Assert.assertEquals("@@ -1,3 +1,4 @@", hunks.get(0))
+            Assert.assertEquals(" a", hunks.get(1))
+            Assert.assertEquals(" b", hunks.get(2))
+            Assert.assertEquals("+new", hunks.get(3))
+            Assert.assertEquals(" c", hunks.get(4))
+        }
+
+        // Two far-apart changes split into two hunks with their own
+        // headers (gap > 2*context).
+        test distantChangesSplitHunks() {
+            var a = LineDiffTest.lines("1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20")
+            var b = LineDiffTest.lines("X|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|Y")
+            var hunks = LineDiff.unified(a, b)
+            var headerCount = 0
+            var i = 0
+            while (i < hunks.getSize()) {
+                if (hunks.get(i).startsWith("@@")) {
+                    headerCount = headerCount + 1
+                }
+                i = i + 1
+            }
+            Assert.assertEquals(2, headerCount)
+            Assert.assertEquals("@@ -1,4 +1,4 @@", hunks.get(0))
+        }
+
+        // splitLines: trailing newline yields no phantom empty line;
+        // missing trailing newline keeps the last line.
+        test splitLinesShapes() {
+            var withNl = "one\ntwo\n".toBytes("UTF-8")
+            var l1 = LineDiff.splitLines(withNl)
+            Assert.assertEquals(2, l1.getSize())
+            Assert.assertEquals("two", l1.get(1))
+            var noNl = "one\ntwo".toBytes("UTF-8")
+            var l2 = LineDiff.splitLines(noNl)
+            Assert.assertEquals(2, l2.getSize())
+            Assert.assertEquals("two", l2.get(1))
+        }
+
+        // Binary detection: NUL byte trips it, plain text doesn't.
+        test binaryDetection() {
+            var text = "hello world".toBytes("UTF-8")
+            Assert.assertTrue(!LineDiff.isBinary(text))
+            var bin = new UByte[4]
+            bin[0] = 65UB
+            bin[1] = 0UB
+            bin[2] = 66UB
+            bin[3] = 67UB
+            Assert.assertTrue(LineDiff.isBinary(bin))
+        }
+
+        // Empty left side (added file body): all '+' lines, -0,0 header.
+        test addedFileShape() {
+            var a = List<String>.newList<String>()
+            var b = LineDiffTest.lines("n1|n2")
+            var hunks = LineDiff.unified(a, b)
+            Assert.assertEquals("@@ -0,0 +1,2 @@", hunks.get(0))
+            Assert.assertEquals("+n1", hunks.get(1))
+            Assert.assertEquals("+n2", hunks.get(2))
+        }
+    }
+}

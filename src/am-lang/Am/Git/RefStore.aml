@@ -1,0 +1,203 @@
+namespace Am.Git
+{
+    // Ref resolution that understands BOTH storage forms:
+    //
+    //   * loose:  one file per ref under `<gitDir>/refs/...`
+    //   * packed: lines in `<gitDir>/packed-refs` (written by real
+    //     git's `pack-refs` / `gc`; every clone real git makes starts
+    //     with most refs packed)
+    //
+    // Search order matches git: the loose file wins when both exist
+    // (a ref update always writes the loose form, shadowing the
+    // stale packed line).
+    //
+    // packed-refs format:
+    //   # pack-refs with: peeled fully-peeled sorted
+    //   <40-hex-sha> refs/heads/main
+    //   <40-hex-sha> refs/tags/v1.0
+    //   ^<40-hex-sha>
+    //
+    // `#` lines are comments. A `^<sha>` line gives the PEELED commit
+    // of the annotated tag on the preceding line — `peeledFor` serves
+    // it so resolvers can skip reading the tag object.
+    //
+    // Also home to `peelToCommit`: follow tag objects (type 4) down
+    // to the commit they ultimately reference, so annotated tags
+    // resolve anywhere a commit-ish is accepted.
+    class RefStore
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        // Resolve `refs/...` to a SHA: loose file first, then the
+        // packed-refs table. Null when the ref exists in neither.
+        static fun resolve(gitDir: String, refPath: String): String? {
+            var loosePath = gitDir + "/" + refPath
+            var looseFile = new File(loosePath)
+            if (looseFile.exists()) {
+                return String.readFromFile(loosePath).trim()
+            }
+            var lines = RefStore.readPackedLines(gitDir)
+            var i = 0
+            while (i < lines.getSize()) {
+                var line = lines.get(i)
+                if (RefStore.lineRefName(line) == refPath) {
+                    return RefStore.lineSha(line)
+                }
+                i = i + 1
+            }
+            return null
+        }
+
+        // The peeled (commit) SHA recorded for an annotated tag ref,
+        // from the `^<sha>` line following its packed entry. Null when
+        // the ref isn't packed or has no peel line.
+        static fun peeledFor(gitDir: String, refPath: String): String? {
+            var lines = RefStore.readPackedLines(gitDir)
+            var i = 0
+            while (i < lines.getSize()) {
+                var line = lines.get(i)
+                if (RefStore.lineRefName(line) == refPath) {
+                    if (i + 1 < lines.getSize()) {
+                        var next = lines.get(i + 1)
+                        if (next.startsWith("^") && next.length() >= 41) {
+                            return next.substring(1UI, 40UI)
+                        }
+                    }
+                    return null
+                }
+                i = i + 1
+            }
+            return null
+        }
+
+        // Ref NAMES under `prefix` (e.g. "refs/heads/") that exist
+        // ONLY in packed-refs — callers union this with their loose
+        // directory listing. Names are returned prefix-stripped
+        // ("main", not "refs/heads/main").
+        static fun packedNamesUnder(gitDir: String, prefix: String): List<String> {
+            var out = List<String>.newList<String>()
+            var lines = RefStore.readPackedLines(gitDir)
+            var i = 0
+            while (i < lines.getSize()) {
+                var line = lines.get(i)
+                var name = RefStore.lineRefName(line)
+                if (name != null && name.startsWith(prefix)) {
+                    var short = name.substringToEnd(prefix.length().toUInt())
+                    // Loose shadows packed — skip when the loose file exists.
+                    var looseFile = new File(gitDir + "/" + name)
+                    if (!looseFile.exists()) {
+                        out.add(short)
+                    }
+                }
+                i = i + 1
+            }
+            return out
+        }
+
+        // Follow annotated-tag objects down to the commit they point
+        // at: while `sha` is a tag object (type 4), read its
+        // `object <sha>` header line and continue. Non-tag objects
+        // (and SHAs missing from the store) return as-is. Bounded so
+        // a corrupt tag cycle can't loop forever.
+        static fun peelToCommit(store: ObjectStore, sha: String): String {
+            var current = sha
+            var hops = 0
+            while (hops < 10) {
+                if (current == null || current.length() != 40) {
+                    return current
+                }
+                if (!store.has(current)) {
+                    return current
+                }
+                var obj = store.read(current)
+                if (obj.typeCode != 4) {
+                    return current
+                }
+                var inner = RefStore.tagTargetSha(obj.content)
+                if (inner == null) {
+                    return current
+                }
+                current = inner
+                hops = hops + 1
+            }
+            return current
+        }
+
+        // Extract the `object <40-hex>` header from a tag object's
+        // content (always the first line per the format).
+        private static fun tagTargetSha(content: UByte[]): String? {
+            // "object " = 7 bytes, then 40 hex chars.
+            if (content.length() < 47UI) {
+                return null
+            }
+            var header = new StringBuilder()
+            var i: UInt = 0UI
+            while (i < 47UI) {
+                header.addChar(content[i].toUShort())
+                i++
+            }
+            var line = header.toString()
+            if (!line.startsWith("object ")) {
+                return null
+            }
+            return line.substringToEnd(7UI)
+        }
+
+        // packed-refs, split into trimmed lines with comments dropped
+        // (`^` peel lines are KEPT — peeledFor needs the adjacency).
+        private static fun readPackedLines(gitDir: String): List<String> {
+            var out = List<String>.newList<String>()
+            var path = gitDir + "/packed-refs"
+            var f = new File(path)
+            if (!f.exists()) {
+                return out
+            }
+            var raw = String.readFromFile(path)
+            var sb = new StringBuilder()
+            var i: UInt = 0UI
+            while (i < raw.length().toUInt()) {
+                var c = raw.characterAt(i).toInt()
+                if (c == 10) {
+                    if (sb.getLength() > 0UI) {
+                        var line = sb.toString().trim()
+                        if (line.length() > 0 && !line.startsWith("#")) {
+                            out.add(line)
+                        }
+                        sb = new StringBuilder()
+                    }
+                } else if (c != 13) {
+                    sb.addChar(c.toUShort())
+                }
+                i++
+            }
+            if (sb.getLength() > 0UI) {
+                var lastLine = sb.toString().trim()
+                if (lastLine.length() > 0 && !lastLine.startsWith("#")) {
+                    out.add(lastLine)
+                }
+            }
+            return out
+        }
+
+        // "sha refs/heads/x" → "refs/heads/x"; `^peel` lines → null.
+        private static fun lineRefName(line: String): String? {
+            if (line.startsWith("^")) {
+                return null
+            }
+            if (line.length() < 42) {
+                return null
+            }
+            return line.substringToEnd(41UI)
+        }
+
+        // "sha refs/heads/x" → sha.
+        private static fun lineSha(line: String): String? {
+            if (line.length() < 40 || line.startsWith("^")) {
+                return null
+            }
+            return line.substring(0UI, 40UI)
+        }
+    }
+}

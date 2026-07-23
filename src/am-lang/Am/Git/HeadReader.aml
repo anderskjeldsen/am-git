@@ -12,10 +12,10 @@ namespace Am.Git
     // `commitSha = null` so the caller knows to omit the commit
     // object's `parent` line.
     //
-    // We don't read `packed-refs` yet — am-git's own clones always
-    // write loose refs, and a freshly-init'd repo has no packed-refs
-    // either. Cross-repo cases that rely on `git gc`-packed refs
-    // come later.
+    // Branch refs resolve through RefStore, which reads the loose
+    // file first and falls back to `packed-refs` — so a repo cloned
+    // or `git gc`'d by real git (refs packed) resolves the same as
+    // am-git's own loose-ref clones.
     class HeadReader
     {
         import Am.Lang
@@ -39,15 +39,14 @@ namespace Am.Git
                 }
                 var branch = refPath.substringToEnd(11UI)
 
-                var branchFilePath = gitDir + "/" + refPath
-                var branchFile = new File(branchFilePath)
-                if (!branchFile.exists()) {
-                    // Unborn branch — `git init` left HEAD pointing
-                    // at refs/heads/<branch> but never created the
-                    // ref file. The first commit creates it.
+                // Loose file first, packed-refs second (RefStore). A
+                // null from both means an unborn branch — `git init`
+                // left HEAD pointing at refs/heads/<branch> but never
+                // created the ref; the first commit creates it.
+                var sha = RefStore.resolve(gitDir, refPath)
+                if (sha == null) {
                     return new HeadInfo(branch, null, false)
                 }
-                var sha = String.readFromFile(branchFilePath).trim()
                 if (sha.length() != 40) {
                     throw new Exception("ref " + refPath + " has unexpected content: " + sha)
                 }

@@ -1,0 +1,269 @@
+namespace Am.Git
+{
+    // Line-level unified diff (the missing half of `am-git diff`).
+    //
+    // Pipeline: split both blobs into lines → strip the common
+    // prefix/suffix (the overwhelming bulk of a typical source edit)
+    // → LCS the small middle via dynamic programming → group the
+    // edit script into unified hunks with 3 lines of context.
+    //
+    // The DP table is capped: when the stripped middle exceeds
+    // MAX_DP_CELLS (memory ~4 bytes/cell — Amiga-friendly), the
+    // middle degrades to one delete-all/add-all hunk. Correct, just
+    // not minimal — and only on pathological inputs.
+    //
+    // Binary safety: a NUL byte in the first 8000 bytes of either
+    // side short-circuits to git's "Binary files ... differ" line.
+    class LineDiff
+    {
+        import Am.Lang
+        import Am.Collections
+
+        private static const MAX_DP_CELLS: Int = 250000
+        private static const CONTEXT: Int = 3
+
+        // Split blob bytes into lines on '\n' (CR kept — byte-exact
+        // like git). A trailing newline yields no phantom last line.
+        static fun splitLines(bytes: UByte[]): List<String> {
+            var out = List<String>.newList<String>()
+            var sb = new StringBuilder()
+            var i: UInt = 0UI
+            var n = bytes.length()
+            while (i < n) {
+                var c = bytes[i].toInt()
+                if (c == 10) {
+                    out.add(sb.toString())
+                    sb = new StringBuilder()
+                } else {
+                    sb.addChar(c.toUShort())
+                }
+                i++
+            }
+            if (sb.getLength() > 0UI) {
+                out.add(sb.toString())
+            }
+            return out
+        }
+
+        static fun isBinary(bytes: UByte[]): Bool {
+            var n = bytes.length()
+            var cap: UInt = 8000UI
+            if (n < cap) { cap = n }
+            var i: UInt = 0UI
+            while (i < cap) {
+                if (bytes[i].toInt() == 0) {
+                    return true
+                }
+                i++
+            }
+            return false
+        }
+
+        // Unified-diff body for one file: hunk headers + ' '/'-'/'+'
+        // lines. Empty list when the sides are line-identical.
+        static fun unified(leftLines: List<String>, rightLines: List<String>): List<String> {
+            // Edit script as prefixed lines: ' ' keep, '-' del, '+' add.
+            var script = LineDiff.editScript(leftLines, rightLines)
+
+            var out = List<String>.newList<String>()
+            var n = script.getSize()
+            // Walk the script grouping changes into hunks: a hunk spans
+            // from CONTEXT before the first change to CONTEXT after the
+            // last, merging change-runs closer than 2*CONTEXT keeps.
+            var i = 0
+            // Absolute line cursors (1-based, git convention).
+            var leftLine = 1
+            var rightLine = 1
+            while (i < n) {
+                if (LineDiff.opOf(script, i) == 32) {
+                    leftLine = leftLine + 1
+                    rightLine = rightLine + 1
+                    i = i + 1
+                    continue
+                }
+                // Change found at i. Hunk start: back up over context.
+                var hunkStart = i - LineDiff.CONTEXT
+                if (hunkStart < 0) { hunkStart = 0 }
+                var backed = i - hunkStart
+                var hLeftStart = leftLine - backed
+                var hRightStart = rightLine - backed
+
+                // Extend to hunk end: last change with < 2*CONTEXT keeps after.
+                var j = i
+                var lastChange = i
+                var keepsRun = 0
+                while (j < n) {
+                    if (LineDiff.opOf(script, j) == 32) {
+                        keepsRun = keepsRun + 1
+                        if (keepsRun > 2 * LineDiff.CONTEXT) {
+                            break
+                        }
+                    } else {
+                        keepsRun = 0
+                        lastChange = j
+                    }
+                    j = j + 1
+                }
+                var hunkEnd = lastChange + LineDiff.CONTEXT
+                if (hunkEnd >= n) { hunkEnd = n - 1 }
+
+                // Count the hunk's left/right line spans + advance cursors.
+                var leftCount = 0
+                var rightCount = 0
+                var k = hunkStart
+                while (k <= hunkEnd) {
+                    var op = LineDiff.opOf(script, k)
+                    if (op == 32) {
+                        leftCount = leftCount + 1
+                        rightCount = rightCount + 1
+                    } else if (op == 45) {
+                        leftCount = leftCount + 1
+                    } else {
+                        rightCount = rightCount + 1
+                    }
+                    k = k + 1
+                }
+
+                // Header. Zero-length sides use git's "start-1,0" shape.
+                var hl = hLeftStart
+                if (leftCount == 0) { hl = hLeftStart - 1 }
+                var hr = hRightStart
+                if (rightCount == 0) { hr = hRightStart - 1 }
+                out.add("@@ -" + hl.toString() + "," + leftCount.toString() +
+                        " +" + hr.toString() + "," + rightCount.toString() + " @@")
+                k = hunkStart
+                while (k <= hunkEnd) {
+                    out.add(script.get(k))
+                    k = k + 1
+                }
+
+                // Advance absolute cursors over the consumed region
+                // [i, hunkEnd] (the region before i was already counted).
+                k = i
+                while (k <= hunkEnd) {
+                    var op2 = LineDiff.opOf(script, k)
+                    if (op2 == 32) {
+                        leftLine = leftLine + 1
+                        rightLine = rightLine + 1
+                    } else if (op2 == 45) {
+                        leftLine = leftLine + 1
+                    } else {
+                        rightLine = rightLine + 1
+                    }
+                    k = k + 1
+                }
+                i = hunkEnd + 1
+            }
+            return out
+        }
+
+        private static fun opOf(script: List<String>, i: Int): Int {
+            var s = script.get(i)
+            if (s.length() == 0) { return 32 }
+            return s.characterAt(0UI).toInt()
+        }
+
+        // Builds the full-file edit script (' '/'-'/'+' prefixed lines).
+        private static fun editScript(a: List<String>, b: List<String>): List<String> {
+            var na = a.getSize()
+            var nb = b.getSize()
+            // Common prefix.
+            var pre = 0
+            while (pre < na && pre < nb && a.get(pre) == b.get(pre)) {
+                pre = pre + 1
+            }
+            // Common suffix (not overlapping the prefix).
+            var suf = 0
+            while (suf < (na - pre) && suf < (nb - pre) &&
+                   a.get(na - 1 - suf) == b.get(nb - 1 - suf)) {
+                suf = suf + 1
+            }
+
+            var out = List<String>.newList<String>()
+            var i = 0
+            while (i < pre) {
+                out.add(" " + a.get(i))
+                i = i + 1
+            }
+            var ma = na - pre - suf
+            var mb = nb - pre - suf
+            if (ma > 0 || mb > 0) {
+                if (ma * mb > LineDiff.MAX_DP_CELLS || ma == 0 || mb == 0) {
+                    // Degenerate / oversized middle: delete-all, add-all.
+                    var d = 0
+                    while (d < ma) {
+                        out.add("-" + a.get(pre + d))
+                        d = d + 1
+                    }
+                    var ad = 0
+                    while (ad < mb) {
+                        out.add("+" + b.get(pre + ad))
+                        ad = ad + 1
+                    }
+                } else {
+                    LineDiff.lcsMiddle(a, b, pre, ma, mb, out)
+                }
+            }
+            i = 0
+            while (i < suf) {
+                out.add(" " + a.get(na - suf + i))
+                i = i + 1
+            }
+            return out
+        }
+
+        // Classic LCS DP over the stripped middle, then a backtrack
+        // emitting the edit script in order. Table is (ma+1)*(mb+1)
+        // Ints, flat-indexed.
+        private static fun lcsMiddle(a: List<String>, b: List<String>,
+                                     pre: Int, ma: Int, mb: Int,
+                                     out: List<String>) {
+            var w = mb + 1
+            var table = new Int[((ma + 1) * w).toUInt()]
+            // Fill bottom-up: table[i*w+j] = LCS length of a[i..) vs b[j..).
+            var i = ma - 1
+            while (i >= 0) {
+                var j = mb - 1
+                while (j >= 0) {
+                    if (a.get(pre + i) == b.get(pre + j)) {
+                        table[(i * w + j).toUInt()] = table[((i + 1) * w + j + 1).toUInt()] + 1
+                    } else {
+                        var down = table[((i + 1) * w + j).toUInt()]
+                        var rightV = table[(i * w + j + 1).toUInt()]
+                        if (down >= rightV) {
+                            table[(i * w + j).toUInt()] = down
+                        } else {
+                            table[(i * w + j).toUInt()] = rightV
+                        }
+                    }
+                    j = j - 1
+                }
+                i = i - 1
+            }
+            // Backtrack from (0,0).
+            var x = 0
+            var y = 0
+            while (x < ma && y < mb) {
+                if (a.get(pre + x) == b.get(pre + y)) {
+                    out.add(" " + a.get(pre + x))
+                    x = x + 1
+                    y = y + 1
+                } else if (table[((x + 1) * w + y).toUInt()] >= table[(x * w + y + 1).toUInt()]) {
+                    out.add("-" + a.get(pre + x))
+                    x = x + 1
+                } else {
+                    out.add("+" + b.get(pre + y))
+                    y = y + 1
+                }
+            }
+            while (x < ma) {
+                out.add("-" + a.get(pre + x))
+                x = x + 1
+            }
+            while (y < mb) {
+                out.add("+" + b.get(pre + y))
+                y = y + 1
+            }
+        }
+    }
+}

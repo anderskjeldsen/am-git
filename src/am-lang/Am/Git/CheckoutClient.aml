@@ -35,12 +35,12 @@ namespace Am.Git
             if (workTreePath == null || workTreePath.length() == 0 || workTreePath == ".") {
                 workTreePath = File.getCurrentDirectory()
             }
-            var refPath = gitDir + "/refs/heads/" + branch
-            var refFile = new File(refPath)
-            if (!refFile.exists()) {
+            // Loose or packed (RefStore) — real-git clones keep branch
+            // refs in packed-refs until first written.
+            var commitSha = RefStore.resolve(gitDir, "refs/heads/" + branch)
+            if (commitSha == null) {
                 throw new Exception("checkout: refs/heads/" + branch + " does not exist")
             }
-            var commitSha = String.readFromFile(refPath).trim()
             if (commitSha.length() != 40) {
                 throw new Exception("checkout: ref content not a SHA: " + commitSha)
             }

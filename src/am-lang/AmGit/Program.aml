@@ -367,14 +367,34 @@ namespace AmGit
 
         private static fun runClone(args: String[]) {
             if (args.length() < 2UI) {
-                "usage: am-git clone <url> [target-dir]".println()
+                "usage: am-git clone <url> [target-dir] [--depth <n>]".println()
                 return
             }
             try {
-                var url = args[1UI]
+                // Filter `--depth <n>` out of the positional args.
+                var depth = 0
+                var positional = List<String>.newList<String>()
+                var ci: UInt = 1UI
+                while (ci < args.length()) {
+                    var ca = args[ci]
+                    if (ca == "--depth") {
+                        if (ci + 1UI < args.length()) {
+                            ci++
+                            depth = Int.parse(args[ci])
+                        }
+                    } else {
+                        positional.add(ca)
+                    }
+                    ci++
+                }
+                if (positional.getSize() == 0) {
+                    "usage: am-git clone <url> [target-dir] [--depth <n>]".println()
+                    return
+                }
+                var url = positional.get(0)
                 var target = ""
-                if (args.length() >= 3UI) {
-                    target = args[2UI]
+                if (positional.getSize() >= 2) {
+                    target = positional.get(1)
                 } else {
                     var parsed = GitUrl.parse(url)
                     target = parsed.repositoryName()
@@ -382,7 +402,7 @@ namespace AmGit
                 if (target.length() == 0) {
                     target = "repo"
                 }
-                CloneClient.clone(url, target)
+                CloneClient.clone(url, target, depth)
             } catch (ex: Exception) {
                 ("clone failed: " + ex.message).println()
             }
@@ -929,7 +949,39 @@ namespace AmGit
                 if (args.length() >= 3UI) {
                     branch = args[2UI]
                 }
-                PullClient.pull(".git", ".", remoteUrl, branch, "origin")
+                var rc = PullClient.pull(".git", ".", remoteUrl, branch, "origin")
+                if (rc == 2) {
+                    // Non-fast-forward: the fetch is done and the remote-
+                    // tracking ref holds the server's tip. Merge it into
+                    // the CURRENT branch with the same 3-way machinery as
+                    // `am-git merge` (conflicts land in the worktree with
+                    // markers + MERGE_HEAD, exactly like a local merge).
+                    var head = HeadReader.read(".git")
+                    if (head.detached || head.commitSha == null) {
+                        "pull: cannot merge into a detached or unborn HEAD".println()
+                        return
+                    }
+                    var mergeBranch = branch
+                    if (mergeBranch == null) { mergeBranch = head.branch }
+                    if (mergeBranch != head.branch) {
+                        // `pull <url> <other-branch>` that diverged: merging a
+                        // non-current branch would need a worktree switch —
+                        // keep the old refusal for this edge.
+                        ("pull: " + mergeBranch + " is not the current branch — " +
+                         "checkout first, or merge origin/" + mergeBranch + " explicitly").println()
+                        return
+                    }
+                    var remoteRefPath = ".git/refs/remotes/origin/" + mergeBranch
+                    var theirsSha = String.readFromFile(remoteRefPath).trim()
+                    var theirsName = "origin/" + mergeBranch
+                    var store = new ObjectStore(".git")
+                    var baseSha = MergeBase.find(head.commitSha, theirsSha, store)
+                    if (baseSha == null) {
+                        "pull: refusing to merge unrelated histories".println()
+                        return
+                    }
+                    Program.threeWayMerge(head, head.commitSha, theirsSha, baseSha, theirsName, store)
+                }
             } catch (ex: Exception) {
                 ("pull: " + ex.message).println()
             }
@@ -2380,6 +2432,7 @@ namespace AmGit
                 var store = new ObjectStore(".git")
                 var left = new HashMap<String, String>()
                 var right = new HashMap<String, String>()
+                var rightIsWorkTree = false
 
                 if (staged) {
                     // index vs HEAD: left = HEAD's tree, right = index.
@@ -2412,10 +2465,12 @@ namespace AmGit
                     }
                     left = DiffCommand.snapshotCommit(cSha, store)
                     right = DiffCommand.snapshotWorkTree(".", ".git")
+                    rightIsWorkTree = true
                 } else {
                     // No args: worktree vs index.
                     left = DiffCommand.snapshotIndex(".git")
                     right = DiffCommand.snapshotWorkTree(".", ".git")
+                    rightIsWorkTree = true
                 }
 
                 var entries = DiffCommand.compute(left, right)
@@ -2423,13 +2478,11 @@ namespace AmGit
                     return
                 }
                 if (!nameOnly && !nameStatus) {
-                    // Default: name-status, with a one-line note that
-                    // hunk-level diff isn't wired up yet. The note
-                    // goes first so script use of `am-git diff
-                    // --name-status` (which suppresses it) stays
-                    // clean.
-                    "# am-git diff currently only emits path-level changes — use --name-only or --name-status to suppress this note.".println()
-                    nameStatus = true
+                    // Default: full hunk-level unified diff (LineDiff).
+                    var utext = DiffCommand.renderUnified(entries, left, right,
+                        rightIsWorkTree, ".", store)
+                    Program.printNoNewline(utext)
+                    return
                 }
                 var text = DiffCommand.render(entries, nameOnly)
                 Program.printNoNewline(text)
@@ -2617,23 +2670,30 @@ namespace AmGit
                 var head = HeadReader.read(".git")
                 return head.commitSha
             }
-            // Try local branches first, then tags. Matches real git's
-            // "loose-ref" search order (heads/, tags/, remotes/), at
-            // least for the two ref classes we support today.
-            // (Annotated tags would point at a tag object; we only
-            // write lightweight tags, so the file contents are
-            // already a commit SHA. If somebody created an annotated
-            // tag with real git in the same repo, downstream commands
-            // would see the tag-object SHA — not a commit — and
-            // refuse. Worth peeling through tag objects when we ship
-            // annotated tags.)
-            var branchPath = ".git/refs/heads/" + s
-            if (new File(branchPath).exists()) {
-                return Program.trim(String.readFromFile(branchPath))
+            // Try local branches first, then tags, then remotes —
+            // real git's search order. RefStore covers BOTH loose
+            // files and packed-refs (real-git clones keep most refs
+            // packed), and annotated tags peel through their tag
+            // object down to the commit.
+            var branchSha = RefStore.resolve(".git", "refs/heads/" + s)
+            if (branchSha != null) {
+                return branchSha
             }
-            var tagPath = ".git/refs/tags/" + s
-            if (new File(tagPath).exists()) {
-                return Program.trim(String.readFromFile(tagPath))
+            var tagSha = RefStore.resolve(".git", "refs/tags/" + s)
+            if (tagSha != null) {
+                // Annotated tag: prefer the packed `^peel` line (free),
+                // else follow the tag object chain to its commit.
+                var peeled = RefStore.peeledFor(".git", "refs/tags/" + s)
+                if (peeled != null) {
+                    return peeled
+                }
+                var store = new ObjectStore(".git")
+                return RefStore.peelToCommit(store, tagSha)
+            }
+            // `origin/main` style remote-tracking names.
+            var remoteSha = RefStore.resolve(".git", "refs/remotes/" + s)
+            if (remoteSha != null) {
+                return remoteSha
             }
             return null
         }
@@ -2942,6 +3002,14 @@ namespace AmGit
                 currentBranch = head.branch
             }
             var names = Program.collectBranchNames(".git/refs/heads", "")
+            // Union in packed-only branches (real-git clones keep refs
+            // in packed-refs; loose-shadowed names are already skipped).
+            var packedB = RefStore.packedNamesUnder(".git", "refs/heads/")
+            var pb = 0
+            while (pb < packedB.getSize()) {
+                names.add(packedB.get(pb))
+                pb = pb + 1
+            }
             Program.sortStringsBytewise(names)
             var k = 0
             while (k < names.getSize()) {
@@ -3062,6 +3130,13 @@ namespace AmGit
             // collectBranchNames is name-misleading but
             // implementation-neutral — it just walks any refs/* dir.
             var names = Program.collectBranchNames(".git/refs/tags", "")
+            // Union in packed-only tags (real-git clones pack them all).
+            var packedT = RefStore.packedNamesUnder(".git", "refs/tags/")
+            var pt = 0
+            while (pt < packedT.getSize()) {
+                names.add(packedT.get(pt))
+                pt = pt + 1
+            }
             Program.sortStringsBytewise(names)
             var k = 0
             while (k < names.getSize()) {
@@ -3310,12 +3385,26 @@ namespace AmGit
             try {
                 var remoteUrl: String? = null
                 var branch: String? = null
-                if (args.length() >= 2UI) {
-                    var arg = args[1UI]
+                var force = false
+                // `--force` / `-f` may appear anywhere; filter it out of the
+                // positional args before the url/branch scan.
+                var positional = List<String>.newList<String>()
+                var ai: UInt = 1UI
+                while (ai < args.length()) {
+                    var a = args[ai]
+                    if (a == "--force" || a == "-f") {
+                        force = true
+                    } else {
+                        positional.add(a)
+                    }
+                    ai++
+                }
+                if (positional.getSize() >= 1) {
+                    var arg = positional.get(0)
                     if (Program.looksLikeUrl(arg)) {
                         remoteUrl = arg
-                        if (args.length() >= 3UI) {
-                            branch = args[2UI]
+                        if (positional.getSize() >= 2) {
+                            branch = positional.get(1)
                         }
                     } else {
                         branch = arg
@@ -3337,7 +3426,7 @@ namespace AmGit
                     branch = head.branch
                 }
 
-                var ok = PushClient.push(".git", remoteUrl, branch)
+                var ok = PushClient.push(".git", remoteUrl, branch, force)
                 if (ok) {
                     "Push complete.".println()
                 } else {
@@ -3355,10 +3444,10 @@ namespace AmGit
             "  init [<dir>]                        Scaffold an empty .git/ at <dir> (default cwd)".println()
             "  config [--list | --unset <key> |    Read / write .git/config (INI)".println()
             "    <key> [<value>]]".println()
-            "  clone <url> [target-dir]            Clone a remote repository over smart-HTTP".println()
+            "  clone <url> [dir] [--depth <n>]     Clone a remote repository (smart-HTTP/ssh)".println()
             "  fetch [<url>|<remote-name>]         Fetch refs + objects (defaults from .git/config)".println()
-            "  pull [<url>] [<branch>]             Fast-forward-only pull (fetch + advance HEAD)".println()
-            "  push [<url>] [<branch>]             Push HEAD or named branch (defaults from .git/config)".println()
+            "  pull [<url>] [<branch>]             Pull: fast-forward, else 3-way merge".println()
+            "  push [--force] [<url>] [<branch>]   Push HEAD or named branch (defaults from .git/config)".println()
             "  add <path>...                       Stage path(s) into .git/index (file or dir)".println()
             "  rm [--cached] <path>...             Unstage; without --cached also delete from disk".println()
             "  mv <source> <destination>           Rename a tracked file (single file only)".println()
@@ -3374,7 +3463,7 @@ namespace AmGit
             "  rebase <upstream>                   Replay current-branch commits on top of <upstream>".println()
             "  cherry-pick <commit>                Apply <commit>'s changes onto HEAD as a new commit".println()
             "  revert <commit>                     Create a new commit that undoes <commit>".println()
-            "  diff [--staged] [--name-only |      Path-level diff (worktree/index/HEAD/two commits)".println()
+            "  diff [--staged] [--name-only |      Unified diff (worktree/index/HEAD/two commits)".println()
             "    --name-status] [<a> [<b>]]".println()
             "  show [<commit>]                     Print a commit's metadata + path-level changes".println()
             "  commit -m <message>                 Commit the cwd working tree against HEAD".println()

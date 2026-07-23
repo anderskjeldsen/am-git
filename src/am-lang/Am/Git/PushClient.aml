@@ -12,9 +12,13 @@ namespace Am.Git
     //   6. POST <remote>/git-receive-pack with the body.
     //   7. Read the report-status reply: per-ref `ok` / `ng <reason>`.
     //
+    // Force semantics: the wire protocol has no "force" bit — real
+    // git's `--force` merely skips the CLIENT's own fast-forward
+    // check (the server only rejects when receive.denyNonFastForwards
+    // is set). We mirror that: a non-fast-forward push is refused
+    // locally unless `force` is passed.
+    //
     // What we don't do yet:
-    //   * Force pushes — receive-pack rejects non-fast-forwards by
-    //     default, and we don't try to override.
     //   * Pushing tags as standalone refs (handled implicitly only
     //     when they happen to be reachable from the pushed commit).
     //   * Side-band-64k progress on the response — not requested,
@@ -33,7 +37,12 @@ namespace Am.Git
         //
         // Returns true on success (server reported `ok` for our ref),
         // false otherwise. Either way, status lines are printed.
+        // Compatibility overload: non-force push.
         static fun push(gitDir: String, remoteUrl: String, branch: String): Bool {
+            return PushClient.push(gitDir, remoteUrl, branch, false)
+        }
+
+        static fun push(gitDir: String, remoteUrl: String, branch: String, force: Bool): Bool {
             var url = GitUrl.parse(remoteUrl)
             ("Pushing to " + url.toString()).println()
 
@@ -65,10 +74,25 @@ namespace Am.Git
                 return true
             }
 
+            // Client-side fast-forward gate (matches real git): the
+            // remote's current tip must be an ancestor of what we're
+            // pushing, unless the caller forces. A new ref (zeros)
+            // always passes.
+            var store = new ObjectStore(gitDir)
+            if (!force && oldSha != ReceivePackRequest.zeroSha) {
+                if (!PullClient.isAncestor(store, oldSha, localSha)) {
+                    client.close()
+                    ("push: refusing non-fast-forward of " + remoteRefName +
+                     " (remote " + oldSha.substring(0UI, 7UI) +
+                     " is not an ancestor of local " + localSha.substring(0UI, 7UI) + ")").println()
+                    "Pull/merge first, or re-run with --force to overwrite.".println()
+                    return false
+                }
+            }
+
             // Walk objects: everything reachable from localSha but not
             // from oldSha. For a brand-new ref (zeros) that's the full
             // history.
-            var store = new ObjectStore(gitDir)
             var walker = new ObjectWalker(store)
             var shas = walker.collect(localSha, oldSha)
             ("Sending " + shas.getSize().toString() + " objects").println()

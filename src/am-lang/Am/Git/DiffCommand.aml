@@ -1,18 +1,13 @@
 namespace Am.Git
 {
-    // Path-level diff. We don't have an LCS-based line differ yet,
-    // so the output is restricted to the two subsets that don't need
-    // one:
+    // Diff command core. Three output modes:
     //
+    //   `am-git diff`                 — full unified hunk-level diff
+    //                                    (renderUnified + LineDiff)
     //   `am-git diff --name-only`     — paths that changed, one per line
     //   `am-git diff --name-status`   — paths that changed, prefixed
     //                                    with a one-letter code
     //                                    (A added, M modified, D deleted)
-    //
-    // Plain `am-git diff` (no flag) defaults to `--name-status` and
-    // prints a one-line reminder that full hunk-level diff isn't
-    // implemented. Scripts get useful output; humans get directed to
-    // the right flag.
     //
     // Snapshot selection mirrors real git's diff modes:
     //
@@ -121,6 +116,78 @@ namespace Am.Git
             var out = new HashMap<String, String>()
             StatusReport.collectDiskPaths(resolved, "", out, ignore)
             return out
+        }
+
+        // Full hunk-level unified diff for the entry list. Content for
+        // each side comes from the blob store (SHA from the snapshot),
+        // except the RIGHT side of worktree-backed diffs, whose SHAs
+        // are computed from disk and usually aren't in the store —
+        // those read the file directly.
+        static fun renderUnified(entries: List<DiffEntry>,
+                                 left: HashMap<String, String>,
+                                 right: HashMap<String, String>,
+                                 rightIsWorkTree: Bool,
+                                 workTreePath: String,
+                                 store: ObjectStore): String {
+            var sb = new StringBuilder()
+            var i = 0
+            while (i < entries.getSize()) {
+                var e = entries.get(i)
+                var leftBytes: UByte[] = new UByte[0]
+                var rightBytes: UByte[] = new UByte[0]
+                if (e.status != "A" && left.containsKey(e.path)) {
+                    leftBytes = DiffCommand.blobBytes(left.get(e.path), store)
+                }
+                if (e.status != "D" && right.containsKey(e.path)) {
+                    if (rightIsWorkTree) {
+                        rightBytes = DiffCommand.fileBytes(workTreePath + "/" + e.path)
+                    } else {
+                        rightBytes = DiffCommand.blobBytes(right.get(e.path), store)
+                    }
+                }
+
+                sb.add("diff --git a/").add(e.path).add(" b/").add(e.path).add("\n")
+                if (LineDiff.isBinary(leftBytes) || LineDiff.isBinary(rightBytes)) {
+                    sb.add("Binary files a/").add(e.path).add(" and b/").add(e.path).add(" differ\n")
+                    i = i + 1
+                    continue
+                }
+                if (e.status == "A") {
+                    sb.add("--- /dev/null\n")
+                    sb.add("+++ b/").add(e.path).add("\n")
+                } else if (e.status == "D") {
+                    sb.add("--- a/").add(e.path).add("\n")
+                    sb.add("+++ /dev/null\n")
+                } else {
+                    sb.add("--- a/").add(e.path).add("\n")
+                    sb.add("+++ b/").add(e.path).add("\n")
+                }
+                var hunks = LineDiff.unified(LineDiff.splitLines(leftBytes), LineDiff.splitLines(rightBytes))
+                var h = 0
+                while (h < hunks.getSize()) {
+                    sb.add(hunks.get(h)).add("\n")
+                    h = h + 1
+                }
+                i = i + 1
+            }
+            return sb.toString()
+        }
+
+        private static fun blobBytes(sha: String, store: ObjectStore): UByte[] {
+            if (sha == null || sha.length() != 40 || !store.has(sha)) {
+                return new UByte[0]
+            }
+            var obj = store.read(sha)
+            return obj.content
+        }
+
+        private static fun fileBytes(path: String): UByte[] {
+            var f = new File(path)
+            if (!f.exists()) {
+                return new UByte[0]
+            }
+            var stream = new FileStream(f, FileAccess.readOnly)
+            return stream.readAll()
         }
 
         // Render a List<DiffEntry> as text. `nameOnly` suppresses the

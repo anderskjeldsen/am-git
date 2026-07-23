@@ -1,0 +1,153 @@
+namespace Am.Git.Tests {
+
+    // RefStore — the loose + packed-refs resolver and the annotated-
+    // tag peeler. Real-git clones keep most refs in packed-refs, so
+    // this is the interop path for repos am-git didn't create itself.
+    class RefStoreTest {
+        import Am.Lang
+        import Am.IO
+        import Am.Git
+        import Am.Tests
+
+        private static const SHA_A: String = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        private static const SHA_B: String = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        private static const SHA_C: String = "cccccccccccccccccccccccccccccccccccccccc"
+
+        // A ref present ONLY in packed-refs resolves; a missing one
+        // doesn't; the header comment line is ignored.
+        test packedOnlyRefResolves() {
+            RefStoreTest.cleanup()
+            try {
+                RefStoreTest.scaffold("./testrefs/.git")
+                ("# pack-refs with: peeled fully-peeled sorted \n" +
+                 RefStoreTest.SHA_A + " refs/heads/main\n" +
+                 RefStoreTest.SHA_B + " refs/tags/v1.0\n").writeToFile("./testrefs/.git/packed-refs")
+
+                Assert.assertEquals(RefStoreTest.SHA_A, RefStore.resolve("./testrefs/.git", "refs/heads/main"))
+                Assert.assertEquals(RefStoreTest.SHA_B, RefStore.resolve("./testrefs/.git", "refs/tags/v1.0"))
+                var missing = RefStore.resolve("./testrefs/.git", "refs/heads/nope")
+                Assert.assertTrue(missing == null)
+            } catch (ex: Exception) {
+                RefStoreTest.cleanup()
+                throw ex
+            }
+            RefStoreTest.cleanup()
+        }
+
+        // A loose file shadows the stale packed line for the same ref.
+        test looseWinsOverPacked() {
+            RefStoreTest.cleanup()
+            try {
+                RefStoreTest.scaffold("./testrefs/.git")
+                (RefStoreTest.SHA_A + " refs/heads/main\n").writeToFile("./testrefs/.git/packed-refs")
+                (RefStoreTest.SHA_B + "\n").writeToFile("./testrefs/.git/refs/heads/main")
+
+                Assert.assertEquals(RefStoreTest.SHA_B, RefStore.resolve("./testrefs/.git", "refs/heads/main"))
+            } catch (ex: Exception) {
+                RefStoreTest.cleanup()
+                throw ex
+            }
+            RefStoreTest.cleanup()
+        }
+
+        // The `^peel` line after an annotated tag's packed entry is
+        // served by peeledFor; refs without one give null.
+        test peelLineServed() {
+            RefStoreTest.cleanup()
+            try {
+                RefStoreTest.scaffold("./testrefs/.git")
+                (RefStoreTest.SHA_A + " refs/tags/v2.0\n" +
+                 "^" + RefStoreTest.SHA_C + "\n" +
+                 RefStoreTest.SHA_B + " refs/heads/main\n").writeToFile("./testrefs/.git/packed-refs")
+
+                Assert.assertEquals(RefStoreTest.SHA_C, RefStore.peeledFor("./testrefs/.git", "refs/tags/v2.0"))
+                var noPeel = RefStore.peeledFor("./testrefs/.git", "refs/heads/main")
+                Assert.assertTrue(noPeel == null)
+            } catch (ex: Exception) {
+                RefStoreTest.cleanup()
+                throw ex
+            }
+            RefStoreTest.cleanup()
+        }
+
+        // packedNamesUnder lists only names NOT shadowed by loose files.
+        test packedNamesUnionSkipsLoose() {
+            RefStoreTest.cleanup()
+            try {
+                RefStoreTest.scaffold("./testrefs/.git")
+                (RefStoreTest.SHA_A + " refs/heads/main\n" +
+                 RefStoreTest.SHA_B + " refs/heads/dev\n").writeToFile("./testrefs/.git/packed-refs")
+                (RefStoreTest.SHA_C + "\n").writeToFile("./testrefs/.git/refs/heads/main")
+
+                var names = RefStore.packedNamesUnder("./testrefs/.git", "refs/heads/")
+                Assert.assertEquals(1, names.getSize())
+                Assert.assertEquals("dev", names.get(0))
+            } catch (ex: Exception) {
+                RefStoreTest.cleanup()
+                throw ex
+            }
+            RefStoreTest.cleanup()
+        }
+
+        // peelToCommit follows a real tag OBJECT (type 4) down to the
+        // commit SHA in its `object` header; non-tag objects and
+        // unknown SHAs pass through unchanged.
+        test peelThroughTagObject() {
+            RefStoreTest.cleanup()
+            try {
+                RefStoreTest.scaffold("./testrefs/.git")
+                var writer = new LooseObjectWriter("./testrefs/.git")
+                // A blob standing in for the "commit" — peelToCommit
+                // only follows type-4 objects, so any non-tag type
+                // terminates the walk.
+                var target = writer.write("blob", "payload".toBytes("UTF-8"))
+                var tagBody = "object " + target + "\n" +
+                              "type commit\n" +
+                              "tag v3.0\n" +
+                              "tagger T <t@example.com> 0 +0000\n" +
+                              "\n" +
+                              "release v3.0\n"
+                var tagSha = writer.write("tag", tagBody.toBytes("UTF-8"))
+
+                var store = new ObjectStore("./testrefs/.git")
+                Assert.assertEquals(target, RefStore.peelToCommit(store, tagSha))
+                // Non-tag object: unchanged.
+                Assert.assertEquals(target, RefStore.peelToCommit(store, target))
+                // Unknown SHA: unchanged.
+                Assert.assertEquals(RefStoreTest.SHA_A, RefStore.peelToCommit(store, RefStoreTest.SHA_A))
+            } catch (ex: Exception) {
+                RefStoreTest.cleanup()
+                throw ex
+            }
+            RefStoreTest.cleanup()
+        }
+
+        private static fun scaffold(gitDir: String) {
+            Repository.ensureDir(gitDir)
+            Repository.ensureDir(gitDir + "/objects")
+            Repository.ensureDir(gitDir + "/refs")
+            Repository.ensureDir(gitDir + "/refs/heads")
+            Repository.ensureDir(gitDir + "/refs/tags")
+        }
+
+        private static fun cleanup() {
+            RefStoreTest.deleteRecursive("./testrefs")
+        }
+
+        private static fun deleteRecursive(path: String) {
+            var f = new File(path)
+            if (!f.exists()) {
+                return
+            }
+            if (f.isDirectory()) {
+                var children = f.listFiles()
+                var i = 0
+                while (i < children.length().toInt()) {
+                    RefStoreTest.deleteRecursive(children[i.toUInt()].toString())
+                    i = i + 1
+                }
+            }
+            f.delete()
+        }
+    }
+}

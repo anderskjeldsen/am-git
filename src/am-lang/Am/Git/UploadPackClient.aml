@@ -34,10 +34,17 @@ namespace Am.Git
 
         // Step 2: the packfile covering `wants` minus `haves`.
         fun getPack(wants: List<String>, haves: List<String>, capabilities: String): UByte[] {
+            var noShallow = List<String>.newList<String>()
+            return this.getPack(wants, haves, capabilities, 0, noShallow)
+        }
+
+        // Depth-aware variant (shallow clone): see UploadPackTransport.
+        fun getPack(wants: List<String>, haves: List<String>, capabilities: String,
+                    depth: Int, shallowOut: List<String>): UByte[] {
             if (this.url.isSsh()) {
-                return this.sshPack(wants, haves, capabilities)
+                return this.sshPack(wants, haves, capabilities, depth, shallowOut)
             }
-            return UploadPackTransport.requestPack(this.url, wants, haves, capabilities)
+            return UploadPackTransport.requestPack(this.url, wants, haves, capabilities, depth, shallowOut)
         }
 
         // Release the ssh channel and reap the child (no-op for http).
@@ -109,19 +116,20 @@ namespace Am.Git
             ("(host-key trust step finished, exit " + code.toString() + ")").println()
         }
 
-        private fun sshPack(wants: List<String>, haves: List<String>, capabilities: String): UByte[] {
+        private fun sshPack(wants: List<String>, haves: List<String>, capabilities: String,
+                            depth: Int, shallowOut: List<String>): UByte[] {
             var ch = this.channel
             if (ch == null) {
                 throw new Exception("UploadPackClient: ssh channel not open — call getAdvertisement() first")
             }
-            var body = UploadPackTransport.buildBody(wants, haves, capabilities)
+            var body = UploadPackTransport.buildBody(wants, haves, capabilities, depth)
             this.negotiated = true
             ch.writeAll(body)
             // git-upload-pack replies with NAK + the side-band packfile +
             // a flush, then exits, closing its stdout → channel EOF. Slurp
             // the whole reply and hand it to the shared side-band demux.
             var reply = ch.readToEnd()
-            return UploadPackTransport.extractPack(reply)
+            return UploadPackTransport.extractPackWithShallow(reply, shallowOut)
         }
 
         // Read pkt-lines off the channel up to (and including) the flush

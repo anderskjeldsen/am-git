@@ -57,11 +57,24 @@ namespace Am.Git
                                 wants: List<String>,
                                 haves: List<String>,
                                 capabilities: String): UByte[] {
+            var noShallow = List<String>.newList<String>()
+            return UploadPackTransport.requestPack(url, wants, haves, capabilities, 0, noShallow)
+        }
+
+        // Depth-aware variant: `depth > 0` requests a shallow fetch
+        // (`deepen <n>`); the server's `shallow <sha>` boundary lines
+        // land in `shallowOut` for the caller to record in .git/shallow.
+        static fun requestPack(url: GitUrl,
+                                wants: List<String>,
+                                haves: List<String>,
+                                capabilities: String,
+                                depth: Int,
+                                shallowOut: List<String>): UByte[] {
             if (wants.getSize() == 0) {
                 throw new Exception("UploadPackTransport: no wants — nothing to request")
             }
 
-            var body = UploadPackTransport.buildBody(wants, haves, capabilities)
+            var body = UploadPackTransport.buildBody(wants, haves, capabilities, depth)
 
             var client = new WebClient()
             var headers = new HashMap<String, String>()
@@ -84,7 +97,7 @@ namespace Am.Git
             if (ct == null || ct.indexOf("application/x-git-upload-pack-result") < 0) {
                 throw new Exception("Unexpected upload-pack Content-Type: " + ct)
             }
-            return UploadPackTransport.extractPack(response.getBodyAsBytes())
+            return UploadPackTransport.extractPackWithShallow(response.getBodyAsBytes(), shallowOut)
         }
 
         // Body layout (Documentation/technical/pack-protocol.txt):
@@ -103,6 +116,17 @@ namespace Am.Git
         static fun buildBody(wants: List<String>,
                                       haves: List<String>,
                                       capabilities: String): UByte[] {
+            return UploadPackTransport.buildBody(wants, haves, capabilities, 0)
+        }
+
+        // `depth > 0` inserts a `deepen <n>` line after the wants —
+        // protocol v0 shallow-clone request. The server then prefixes
+        // its reply with `shallow`/`unshallow` boundary lines (see
+        // extractPackWithShallow).
+        static fun buildBody(wants: List<String>,
+                                      haves: List<String>,
+                                      capabilities: String,
+                                      depth: Int): UByte[] {
             var buf = List<UByte>.newList<UByte>()
 
             var i = 0
@@ -116,6 +140,9 @@ namespace Am.Git
                 }
                 UploadPackTransport.appendBytes(buf, PktLine.encode(line))
                 i = i + 1
+            }
+            if (depth > 0) {
+                UploadPackTransport.appendBytes(buf, PktLine.encode("deepen " + depth.toString() + "\n"))
             }
             // Flush packet ends the wants section.
             UploadPackTransport.appendBytes(buf, PktLine.flushPacket())
@@ -139,6 +166,15 @@ namespace Am.Git
         // (UploadPackClient), which slurps the whole upload-pack reply
         // off the channel and hands it here.
         static fun extractPack(body: UByte[]): UByte[] {
+            var noShallow = List<String>.newList<String>()
+            return UploadPackTransport.extractPackWithShallow(body, noShallow)
+        }
+
+        // Shallow-aware demux: a deepen request makes the server open
+        // its reply with `shallow <sha>` / `unshallow <sha>` lines +
+        // a flush BEFORE the NAK. Without capturing them here they'd
+        // fall into the raw-pack fallback and corrupt the pack.
+        static fun extractPackWithShallow(body: UByte[], shallowOut: List<String>): UByte[] {
             var reader = new PktLineReader(body)
             var sawAck = false
             var collected = List<UByte>.newList<UByte>()
@@ -160,6 +196,25 @@ namespace Am.Git
                 var asText = String.fromBytes(payload, "UTF-8")
                 if (!sawAck && (asText.startsWith("NAK") || asText.startsWith("ACK"))) {
                     sawAck = true
+                    continue
+                }
+                if (!sawAck && asText.startsWith("shallow ")) {
+                    var shSha = asText.substringToEnd(8UI).trim()
+                    if (shSha.length() == 40) {
+                        shallowOut.add(shSha)
+                    }
+                    continue
+                }
+                if (!sawAck && asText.startsWith("unshallow ")) {
+                    var unSha = asText.substringToEnd(10UI).trim()
+                    var ui = 0
+                    while (ui < shallowOut.getSize()) {
+                        if (shallowOut.get(ui) == unSha) {
+                            shallowOut.removeAt(ui)
+                        } else {
+                            ui = ui + 1
+                        }
+                    }
                     continue
                 }
                 var band = payload[0UI].toInt()

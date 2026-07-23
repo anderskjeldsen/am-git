@@ -26,8 +26,20 @@ namespace Am.Git
         import Am.Web.Client
 
         static fun clone(remoteUrl: String, targetDir: String) {
+            CloneClient.clone(remoteUrl, targetDir, 0)
+        }
+
+        // `depth > 0` → shallow clone: only the last <depth> commits of
+        // each branch come over; the history boundary SHAs are recorded
+        // in .git/shallow (same file real git uses, so the two tools
+        // agree on what "shallow" means for this repo).
+        static fun clone(remoteUrl: String, targetDir: String, depth: Int) {
             var url = GitUrl.parse(remoteUrl)
-            ("Cloning " + url.toString() + " into " + targetDir).println()
+            if (depth > 0) {
+                ("Cloning " + url.toString() + " into " + targetDir + " (depth " + depth.toString() + ")").println()
+            } else {
+                ("Cloning " + url.toString() + " into " + targetDir).println()
+            }
 
             var client = new UploadPackClient(url)
             var advertisement = client.getAdvertisement()
@@ -42,8 +54,9 @@ namespace Am.Git
 
             var wants = CloneClient.wantsFromAdvertisement(advertisement)
             var haves = List<String>.newList<String>()
+            var shallowShas = List<String>.newList<String>()
             var packBytes = client.getPack(
-                wants, haves, UploadPackTransport.defaultCapabilities)
+                wants, haves, UploadPackTransport.defaultCapabilities, depth, shallowShas)
             client.close()
             ("Received packfile: " + packBytes.length().toString() + " bytes").println()
 
@@ -51,6 +64,19 @@ namespace Am.Git
             ("Pack version " + header.version.toString() + " with " + header.objectCount.toString() + " objects").println()
 
             CloneClient.writeRepository(targetDir, remoteUrl, advertisement, defaultBranch, packBytes)
+
+            // Shallow boundary: record the server-reported cut points so
+            // history walks (log/merge-base) know where the repo ends.
+            if (shallowShas.getSize() > 0) {
+                var shSb = new StringBuilder()
+                var shi = 0
+                while (shi < shallowShas.getSize()) {
+                    shSb.add(shallowShas.get(shi)).add("\n")
+                    shi = shi + 1
+                }
+                shSb.toString().writeToFile(targetDir + "/.git/shallow")
+                ("Shallow clone — " + shallowShas.getSize().toString() + " boundary commit(s) in .git/shallow").println()
+            }
 
             // Walk the pack and SHA every entry: full objects get
             // hashed inline by `PackParser`; deltas are inflated

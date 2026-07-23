@@ -1,8 +1,9 @@
 namespace Am.Git
 {
-    // `git pull --ff-only` — fetch + advance the current branch to
-    // the remote's tip, provided it's a strict descendant of where we
-    // are. No merge, no rebase, no overwrite of divergent history.
+    // `git pull` — fetch + advance the current branch to the remote's
+    // tip when it's a strict descendant (fast-forward); otherwise
+    // report the divergence to the caller, who runs the same 3-way
+    // merge machinery `am-git merge` uses (see Program.runPull).
     //
     // Flow:
     //   1. Resolve the remote URL (CLI arg, or `remote.<name>.url`
@@ -17,8 +18,13 @@ namespace Am.Git
     //   5. Write the new SHA into `refs/heads/<branch>` and re-run
     //      checkout to refresh the working tree.
     //
+    // Return codes (the CLI layer merges on 2):
+    //   0 = failed (bad args / missing remote / missing ref)
+    //   1 = success (already up-to-date, or fast-forwarded)
+    //   2 = fetched OK but non-fast-forward — remote-tracking ref is
+    //       updated; the caller should 3-way merge it into HEAD.
+    //
     // Limitations on purpose:
-    //   * Non-fast-forward → bail loud. No 3-way merge yet.
     //   * Dirty working tree → clobbered by the checkout step. Run
     //     `am-git status` first if you care.
     //   * Only updates the branch you're on / passed explicitly —
@@ -35,13 +41,13 @@ namespace Am.Git
         // branch    == null → use HEAD's current branch.
         // remoteName defaults to "origin" at the CLI layer.
         static fun pull(gitDir: String, workTreePath: String,
-                        remoteUrl: String, branch: String, remoteName: String): Bool {
+                        remoteUrl: String, branch: String, remoteName: String): Int {
             // Resolve branch from HEAD if not passed.
             var head = HeadReader.read(gitDir)
             if (branch == null) {
                 if (head.detached) {
                     "pull: HEAD is detached — pass <branch> explicitly".println()
-                    return false
+                    return 0
                 }
                 branch = head.branch
             }
@@ -53,7 +59,7 @@ namespace Am.Git
                 url = cfg.getRemoteUrl(remoteName)
                 if (url == null) {
                     ("pull: no URL set for remote '" + remoteName + "'").println()
-                    return false
+                    return 0
                 }
             }
 
@@ -65,22 +71,18 @@ namespace Am.Git
             var remoteRef = new File(remoteRefPath)
             if (!remoteRef.exists()) {
                 ("pull: remote did not advertise refs/heads/" + branch).println()
-                return false
+                return 0
             }
             var remoteSha = String.readFromFile(remoteRefPath).trim()
 
             // Local branch — may not exist yet if we just initialised
-            // this repo against the remote.
+            // this repo against the remote. Loose or packed (RefStore).
             var localRefPath = gitDir + "/refs/heads/" + branch
-            var localRef = new File(localRefPath)
-            var localSha: String? = null
-            if (localRef.exists()) {
-                localSha = String.readFromFile(localRefPath).trim()
-            }
+            var localSha: String? = RefStore.resolve(gitDir, "refs/heads/" + branch)
 
             if (localSha == remoteSha) {
                 ("Already up-to-date: " + branch + " = " + remoteSha).println()
-                return true
+                return 1
             }
 
             // Fast-forward check: walk back from the remote SHA, ask
@@ -90,10 +92,13 @@ namespace Am.Git
             var store = new ObjectStore(gitDir)
             if (localSha != null) {
                 if (!PullClient.isAncestor(store, localSha, remoteSha)) {
-                    ("pull: refusing non-fast-forward (local " + localSha +
-                     " is not an ancestor of remote " + remoteSha + ")").println()
-                    "Use a real git client to merge / rebase.".println()
-                    return false
+                    // Divergent histories. The fetch already happened and
+                    // refs/remotes/<remote>/<branch> points at the server's
+                    // tip — hand the 3-way merge to the CLI layer, which
+                    // reuses the same machinery as `am-git merge`.
+                    ("pull: " + branch + " and " + remoteName + "/" + branch +
+                     " have diverged — merging").println()
+                    return 2
                 }
             }
 
@@ -103,14 +108,15 @@ namespace Am.Git
             (remoteSha + "\n").writeToFile(localRefPath)
             CheckoutClient.checkout(gitDir, workTreePath, branch)
             ("Fast-forwarded " + branch + " → " + remoteSha).println()
-            return true
+            return 1
         }
 
         // Walk parents from `descendantSha` looking for `ancestorSha`.
         // Iterative work-list keeps the stack flat on deep histories.
         // Returns true iff `ancestorSha` is reachable from
-        // `descendantSha` via parent links.
-        private static fun isAncestor(store: ObjectStore, ancestorSha: String, descendantSha: String): Bool {
+        // `descendantSha` via parent links. Public: PushClient uses it
+        // for the client-side fast-forward gate too.
+        static fun isAncestor(store: ObjectStore, ancestorSha: String, descendantSha: String): Bool {
             if (ancestorSha == descendantSha) {
                 return true
             }

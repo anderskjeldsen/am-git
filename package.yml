@@ -82,6 +82,13 @@ platforms:
   - id: linux-x64
     extends: libc
     gccCommand: gcc
+    # OpenSSL (ssl/crypto via am-ssl) + zlib (via am-z) — linked at the app
+    # level because those packages' linux-x64 platforms don't declare them
+    # (same pattern as am-ide's package.yml).
+    gccAdditionalLibraries:
+      - ssl
+      - crypto
+      - z
   - id: linux-ppc32
     extends: libc
     gccCommand: powerpc-linux-gnu-gcc -O1
