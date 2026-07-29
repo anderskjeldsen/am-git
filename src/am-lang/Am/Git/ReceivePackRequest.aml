@@ -11,7 +11,7 @@ namespace Am.Git
     //     update   old = real sha, new = real sha
     //     delete   old = real sha, new = 40 zeros
     //
-    // We don't enforce the tristate here — receive-pack does that, and
+    // We don't enforce the tristate here - receive-pack does that, and
     // its error messages are clearer than anything we'd invent.
     class RefUpdate(var oldSha: String, var newSha: String, var refName: String)
     {
@@ -33,7 +33,7 @@ namespace Am.Git
     }
 
     // Composes the body of an HTTP POST to `<repo>/git-receive-pack`.
-    // Layout (Documentation/technical/pack-protocol.txt §"Reference Update Request"):
+    // Layout (Documentation/technical/pack-protocol.txt section "Reference Update Request"):
     //
     //     pkt-line: <old> SP <new> SP <refname>\0<capabilities>\n   (first)
     //     pkt-line: <old> SP <new> SP <refname>\n                   (rest)
@@ -52,8 +52,8 @@ namespace Am.Git
         static var zeroSha: String = "0000000000000000000000000000000000000000"
 
         // Minimal capability set:
-        //   report-status — required to get per-ref ok/ng status back
-        //   agent=...     — informational
+        //   report-status - required to get per-ref ok/ng status back
+        //   agent=...     - informational
         // Side-band-64k can be added later if we want to surface
         // server-side progress messages.
         static var capabilities: String = "report-status agent=am-git/0.1.0"
@@ -73,7 +73,7 @@ namespace Am.Git
                 var u = updates.get(i)
                 // First command carries the capability list after an
                 // embedded NUL byte. We build the payload bytewise so
-                // the NUL survives — a String round-trip through UTF-8
+                // the NUL survives - a String round-trip through UTF-8
                 // truncates at the first NUL on some platforms.
                 var withCaps = (i == 0)
                 var payload = ReceivePackRequest.encodeCommandLine(u, withCaps)
@@ -85,7 +85,7 @@ namespace Am.Git
             // Flush pkt terminates the command list.
             ReceivePackRequest.appendBytes(buf, PktLine.flushPacket())
 
-            // Pack bytes follow the flush, unframed — receive-pack
+            // Pack bytes follow the flush, unframed - receive-pack
             // distinguishes by the flush boundary.
             ReceivePackRequest.appendBytes(buf, packBytes)
 

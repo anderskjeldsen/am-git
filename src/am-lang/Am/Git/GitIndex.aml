@@ -15,15 +15,15 @@ namespace Am.Git
     //     mtime_sec, mtime_ns  (4 + 4 bytes BE)
     //     dev                  (4 bytes BE)
     //     ino                  (4 bytes BE)
-    //     mode                 (4 bytes BE) — 0100644 etc.
+    //     mode                 (4 bytes BE) - 0100644 etc.
     //     uid, gid             (4 + 4 bytes BE)
     //     size                 (4 bytes BE)
     //     sha-1                (20 raw bytes)
-    //     flags                (2 bytes BE) — assume-valid|extended|stage(2)|namelen(12)
+    //     flags                (2 bytes BE) - assume-valid|extended|stage(2)|namelen(12)
     //     path                 (variable, NUL-terminated)
     //     padding              (1..8 NUL bytes so entry total is %8 == 0)
     //
-    //   (extensions — we don't emit any; v2 readers are required to
+    //   (extensions - we don't emit any; v2 readers are required to
     //    tolerate their absence)
     //
     //   trailer: 20-byte SHA-1 over every preceding byte.
@@ -41,7 +41,7 @@ namespace Am.Git
 
         // Build a fresh index whose entries mirror every blob in a
         // commit's tree. This is what `git clone` and `git checkout`
-        // do internally — they seed the index so it matches HEAD's
+        // do internally - they seed the index so it matches HEAD's
         // tree before the user does anything else, which is what
         // makes a clean checkout report "nothing to commit". Without
         // this, our index/HEAD diff would treat every file as "staged
@@ -61,7 +61,7 @@ namespace Am.Git
         // Like `fromTree`, but reads tree objects out of an in-memory
         // HashMap instead of an on-disk ObjectStore. Used by clone's
         // index-seeding step so we don't bounce back through the pack
-        // we just wrote — the round-trip via `ObjectStore` failed
+        // we just wrote - the round-trip via `ObjectStore` failed
         // silently on AmigaOS (its pack-dir walk hit a wall there),
         // leaving the seed empty and every later `add` looking like a
         // mass delete + re-add.
@@ -129,9 +129,9 @@ namespace Am.Git
         // Build an IndexEntry from a tree entry. Mode mapping mirrors
         // the on-disk values git stores in the index (octal numerics
         // packed into a UInt):
-        //   100644 → 33188   regular file
-        //   100755 → 33261   executable
-        //   120000 → 40960   symlink
+        //   100644 -> 33188   regular file
+        //   100755 -> 33261   executable
+        //   120000 -> 40960   symlink
         private static fun makeEntry(path: String, e: TreeEntry): IndexEntry {
             var mode: UInt = 33188UI
             if (e.mode == "100755") {
@@ -149,7 +149,7 @@ namespace Am.Git
         }
 
         // Load `.git/index` if it exists. Returns an empty index when
-        // the file is absent — that's the normal state for a freshly
+        // the file is absent - that's the normal state for a freshly
         // cloned (or am-git-cloned) repo.
         static fun read(gitDir: String): GitIndex {
             var idx = new GitIndex()
@@ -272,7 +272,7 @@ namespace Am.Git
         }
 
         // Upsert an entry, identifying by path AND stage. The pair
-        // (path, stage) is the real identity of an index row — during a
+        // (path, stage) is the real identity of an index row - during a
         // conflicted merge the same path appears three times with
         // stages 1/2/3 simultaneously, and they must not clobber each
         // other.
@@ -309,7 +309,7 @@ namespace Am.Git
             return removed
         }
 
-        // True iff any entry is at stage > 0 — i.e. the index records
+        // True iff any entry is at stage > 0 - i.e. the index records
         // an unresolved conflict somewhere. Used by `commit` (to refuse
         // committing with unresolved conflicts) and by `status` (to
         // show "UU"/"AA"/"DD" markers).
@@ -349,7 +349,7 @@ namespace Am.Git
             return null
         }
 
-        // Flatten the resolved (stage-0) entries to a path → sha map.
+        // Flatten the resolved (stage-0) entries to a path -> sha map.
         // Conflict stages (1/2/3) are intentionally excluded: a
         // conflicted path has no single "current" SHA, and folding
         // multiple rows into a HashMap would silently overwrite each
@@ -368,7 +368,7 @@ namespace Am.Git
             return m
         }
 
-        // All paths that have at least one stage > 0 row — i.e. every
+        // All paths that have at least one stage > 0 row - i.e. every
         // path the index records as unmerged. Returns a deduped
         // `List<String>` in insertion order for deterministic status
         // output.
@@ -390,10 +390,10 @@ namespace Am.Git
         // Detect the unmerged shape for `path` by looking at which
         // of stages 1/2/3 exist:
         //
-        //   1+2+3 present  → "UU" (both modified)
-        //   2+3 only       → "AA" (both added — no base)
-        //   1+3 only       → "DU" (deleted by us, modified by them)
-        //   1+2 only       → "UD" (modified by us, deleted by them)
+        //   1+2+3 present  -> "UU" (both modified)
+        //   2+3 only       -> "AA" (both added - no base)
+        //   1+3 only       -> "DU" (deleted by us, modified by them)
+        //   1+2 only       -> "UD" (modified by us, deleted by them)
         //
         // Returns the empty string if the path isn't unmerged.
         fun unmergedXY(path: String): String {
@@ -447,7 +447,7 @@ namespace Am.Git
             if (clampedLen > 4095) {
                 clampedLen = 4095
             }
-            var flagsHi = (e.flags & 61440US).toInt()  // top 4 bits — assume-valid|extended|stage(2)
+            var flagsHi = (e.flags & 61440US).toInt()  // top 4 bits - assume-valid|extended|stage(2)
             var flags = (flagsHi | clampedLen).toUShort()
             GitIndex.appendBE16(buf, flags)
 
@@ -458,7 +458,7 @@ namespace Am.Git
                 pi++
             }
             buf.add(0UB)
-            // Total written so far for this entry — pad to 8-byte
+            // Total written so far for this entry - pad to 8-byte
             // boundary. Header is 62 bytes + name + 1 NUL.
             var raw = 62 + nameLen + 1
             var pad = (8 - (raw % 8)) % 8
@@ -470,7 +470,7 @@ namespace Am.Git
         }
 
         private fun sortByPath() {
-            // Bubble sort — entry counts are small (~hundreds typically),
+            // Bubble sort - entry counts are small (~hundreds typically),
             // and this keeps the implementation self-contained.
             //
             // Same-path entries (the three stages of a conflict) sort

@@ -1,7 +1,7 @@
 namespace Am.Git
 {
     // A parsed git remote URL. Only the smart-HTTP forms are supported for
-    // now — `http(s)://[user[:pass]@]host[:port]/path[.git]`. The path is
+    // now - `http(s)://[user[:pass]@]host[:port]/path[.git]`. The path is
     // kept verbatim (without a trailing slash) so requests can append
     // `/info/refs?service=...` or `/git-upload-pack` directly.
     class GitUrl(var scheme: String,
@@ -51,10 +51,10 @@ namespace Am.Git
         // (AmLang string literals can't carry a raw newline, so we join
         // with addChar(10).) SshChannel keeps this form verbatim for the
         // libc execvp backend, or flattens the newlines to spaces for the
-        // AmigaOS shell backend — the ssh helper re-tokenises there. `-T`
+        // AmigaOS shell backend - the ssh helper re-tokenises there. `-T`
         // = no pseudo-terminal, so the pack stream stays binary-clean; the
         // single-quotes keep an odd path intact when the remote shell
-        // re-parses it. No platform check here — the program is env-driven.
+        // re-parses it. No platform check here - the program is env-driven.
         fun sshCommandLine(service: String): String {
             var target = this.host
             if (this.userInfo.length() > 0) {
@@ -81,7 +81,7 @@ namespace Am.Git
         // terminal / CLI) whose only purpose is to make the ssh helper
         // connect so it prompts to accept the host key. A space-joined
         // shell string (Process.run goes through the shell). The remote
-        // command is benign `true` — the host-key prompt fires during the
+        // command is benign `true` - the host-key prompt fires during the
         // SSH handshake, before the command runs, so it works even when
         // the remote's git-shell would reject `true`. NOT `-T` here: we
         // want the interactive prompt to reach the user.
@@ -112,10 +112,17 @@ namespace Am.Git
         }
 
         override fun toString(): String {
-            return this.scheme + "://" + this.host + ":" + this.port.toString() + this.path
+            // scp-like ssh paths are relative (no leading "/") - insert the
+            // separator so the display doesn't fuse port and path
+            // ("ssh://host:22anderskjeldsen/..." -> "ssh://host:22/anderskjeldsen/...").
+            var sep = ""
+            if (!this.path.startsWith("/")) {
+                sep = "/"
+            }
+            return this.scheme + "://" + this.host + ":" + this.port.toString() + sep + this.path
         }
 
-        // Parse `http(s)://host[:port]/path` — returns null if the URL
+        // Parse `http(s)://host[:port]/path` - returns null if the URL
         // can't be understood. We're intentionally strict; the smart-HTTP
         // transport is the only one wired up so far.
         static fun parse(raw: String): GitUrl {
@@ -125,7 +132,7 @@ namespace Am.Git
 
             var schemeEnd = s.indexOf("://")
             if (schemeEnd < 0) {
-                // No `scheme://` — accept git's scp-like ssh shorthand,
+                // No `scheme://` - accept git's scp-like ssh shorthand,
                 // `[user@]host:path` (the `:` separates host from path,
                 // NOT a port). Anything else is unsupported.
                 return GitUrl.parseScpLike(s)
@@ -189,7 +196,7 @@ namespace Am.Git
             var hostPart = s.substring(0UI, colon.toUInt())
             var path = s.substringToEnd((colon + 1).toUInt())
 
-            // A slash before the colon means this isn't host:path — most
+            // A slash before the colon means this isn't host:path - most
             // likely a local filesystem path, which we don't clone from.
             if (hostPart.indexOf("/") >= 0) {
                 throw new Exception("Unrecognised git URL: " + s)
@@ -209,7 +216,7 @@ namespace Am.Git
             return new GitUrl("ssh", hostPart, 22, path, userInfo)
         }
 
-        // Pull a sensible repository name out of the path — last path
+        // Pull a sensible repository name out of the path - last path
         // segment, with any trailing `.git` stripped. Used as the default
         // target directory for `clone`.
         fun repositoryName(): String {

@@ -9,7 +9,7 @@ namespace Am.Git
     // (paths in the index use `/` as the separator) and writing one
     // tree object per directory level.
     //
-    // We re-use TreeBuilder's sort + serialize helpers — the on-disk
+    // We re-use TreeBuilder's sort + serialize helpers - the on-disk
     // format and the byte-wise comparator are the same for both
     // builders.
     class IndexTreeBuilder
@@ -19,7 +19,7 @@ namespace Am.Git
 
         // Returns the root tree's SHA. An empty index produces the
         // well-known empty-tree SHA `4b825dc642cb6eb9a060e54bf8d69288fbee4904`
-        // (= SHA-1("tree 0\0")) — same convention as TreeBuilder.
+        // (= SHA-1("tree 0\0")) - same convention as TreeBuilder.
         static fun build(idx: GitIndex, writer: LooseObjectWriter): String {
             var root = new IndexDirNode("")
             var i = 0
@@ -33,7 +33,7 @@ namespace Am.Git
 
         // Walk one node, write child trees recursively, emit our own
         // tree object. Empty subdirs produce no tree object (TreeBuilder
-        // does the same) — the root is always emitted, even when empty.
+        // does the same) - the root is always emitted, even when empty.
         private static fun writeNode(node: IndexDirNode, writer: LooseObjectWriter): String? {
             var entries = List<TreeEntry>.newList<TreeEntry>()
 
@@ -60,7 +60,7 @@ namespace Am.Git
             }
 
             if (entries.getSize() == 0 && node.name.length() > 0) {
-                // Non-root empty dir — git doesn't record it.
+                // Non-root empty dir - git doesn't record it.
                 return null
             }
             TreeBuilder.sortEntries(entries)
@@ -88,7 +88,7 @@ namespace Am.Git
 
     // Internal node in the in-memory directory tree we build from
     // flat index paths. Each node holds its own files plus a map of
-    // subdir name → child node.
+    // subdir name -> child node.
     class IndexDirNode(var name: String)
     {
         import Am.Lang

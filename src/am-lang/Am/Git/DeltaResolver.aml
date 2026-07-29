@@ -6,21 +6,21 @@ namespace Am.Git
     //
     //   The inflated content of an OFS_DELTA / REF_DELTA entry is:
     //
-    //     varint base_size       — size of the base object
-    //     varint result_size     — size of the result we're producing
-    //     instruction_stream     — repeated COPY / INSERT ops
+    //     varint base_size       - size of the base object
+    //     varint result_size     - size of the result we're producing
+    //     instruction_stream     - repeated COPY / INSERT ops
     //
     //   Each instruction's first byte selects which kind:
-    //     * bit 7 set  → COPY from base.
+    //     * bit 7 set  -> COPY from base.
     //         Low 7 bits is a bitmap of which extra fields follow:
     //           bits 0..3 = offset bytes 0..3 (little-endian)
     //           bits 4..6 = size bytes 0..2 (little-endian)
     //         Read those bytes, then `copy(base[offset..offset+size])`
     //         onto the result. If size came out 0, treat as 0x10000.
-    //     * bit 7 clear → INSERT literal.
+    //     * bit 7 clear -> INSERT literal.
     //         Low 7 bits is N; the next N bytes are appended to result.
     //
-    // Bases may themselves be deltas — we recurse and resolve those
+    // Bases may themselves be deltas - we recurse and resolve those
     // first. The pack format guarantees acyclic delta chains and that
     // each base appears before its dependants in the pack body, so
     // simple recursion terminates.
@@ -67,7 +67,7 @@ namespace Am.Git
                     // REF_DELTA bases that aren't in the pack are
                     // "thin pack" references to objects the client
                     // already has. We didn't advertise `thin-pack`,
-                    // so this shouldn't happen — surface clearly if
+                    // so this shouldn't happen - surface clearly if
                     // it does.
                     throw new Exception("REF_DELTA base " + delta.baseSha +
                                          " not present in pack (thin pack?)")
@@ -77,14 +77,14 @@ namespace Am.Git
                                      delta.typeCode.toString())
             }
 
-            // The base may itself still be a delta — drive it to
+            // The base may itself still be a delta - drive it to
             // completion before we try to apply our own instructions.
             if (baseObj.isDelta() && baseObj.sha == null) {
                 baseObj = this.resolve(baseObj)
             }
 
             // Apply the delta and SHA the resulting content. The
-            // resolved object has the same TYPE as its base — git's
+            // resolved object has the same TYPE as its base - git's
             // pack-format doc says so, and the new SHA is the SHA of
             // the wrapped result.
             var resultBytes = DeltaResolver.applyDelta(baseObj.content, delta.content)
@@ -96,7 +96,7 @@ namespace Am.Git
         }
 
         // Apply `delta`'s instruction stream against `baseBytes`,
-        // returning the reconstructed bytes. Pure function — no state
+        // returning the reconstructed bytes. Pure function - no state
         // from the surrounding parse. (`base` is a reserved keyword
         // in AmLang, hence `baseBytes`.)
         private static fun applyDelta(baseBytes: UByte[], delta: UByte[]): UByte[] {
@@ -117,7 +117,7 @@ namespace Am.Git
                     go = false
                 }
             }
-            // Sanity — if the delta thinks the base is a different
+            // Sanity - if the delta thinks the base is a different
             // size than what we actually have, the chain is corrupt.
             if (baseSize != baseBytes.length().toLong()) {
                 throw new Exception("Delta base size mismatch: header says " +
@@ -147,7 +147,7 @@ namespace Am.Git
                 pos = pos + 1
 
                 if ((op & 0x80) != 0) {
-                    // COPY — read the offset and size sub-fields the
+                    // COPY - read the offset and size sub-fields the
                     // op's low bits asked for.
                     var copyOffset = 0
                     if ((op & 0x01) != 0) {
@@ -192,7 +192,7 @@ namespace Am.Git
                     }
                     outPos = outPos + copySize
                 } else {
-                    // INSERT — `op` bytes of literal data follow.
+                    // INSERT - `op` bytes of literal data follow.
                     // (op == 0 is reserved and shouldn't appear.)
                     var n = op & 0x7F
                     var k = 0

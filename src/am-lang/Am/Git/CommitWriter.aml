@@ -6,8 +6,8 @@ namespace Am.Git
     //
     //     tree <root-tree-sha>\n
     //     parent <parent-commit-sha>\n          (omitted on initial commit)
-    //     author <name> <email> <unix-sec> <±HHMM>\n
-    //     committer <name> <email> <unix-sec> <±HHMM>\n
+    //     author <name> <email> <unix-sec> <+/-HHMM>\n
+    //     committer <name> <email> <unix-sec> <+/-HHMM>\n
     //     \n
     //     <commit message, terminated by \n>
     //
@@ -18,7 +18,7 @@ namespace Am.Git
     // with their original metadata).
     //
     // Multi-parent commits (merge commits) need multiple `parent`
-    // lines. Not exposed yet — `parentSha` is either a single SHA
+    // lines. Not exposed yet - `parentSha` is either a single SHA
     // or null. Adding a `parents: String[]` overload later is trivial.
     class CommitWriter(private var writer: LooseObjectWriter)
     {
@@ -45,11 +45,11 @@ namespace Am.Git
         // Rebase / cherry-pick variant: preserve a pre-formatted
         // `author <name> <email> <ts> <tz>` line verbatim and only
         // pick a fresh committer line. Used when re-applying a
-        // commit on a new base — the original author and author-date
+        // commit on a new base - the original author and author-date
         // must survive byte-for-byte (otherwise `git log --author`
         // breaks, and the commit's identity drifts).
         fun writeRawAuthor(rootTreeSha: String,
-                           parentSha: String,
+                           parentSha: String?,
                            authorLine: String,
                            committer: Identity,
                            committerTime: DateTime,
@@ -68,7 +68,7 @@ namespace Am.Git
             return this.writer.write("commit", sb.toString().toBytes("UTF-8"))
         }
 
-        // Multi-parent variant — emits one `parent <sha>\n` line per
+        // Multi-parent variant - emits one `parent <sha>\n` line per
         // entry in `parents`. An empty `parents` list produces a root
         // commit (no parent line); two entries produces a merge
         // commit; three+ entries produce an octopus merge.

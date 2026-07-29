@@ -1,6 +1,6 @@
 namespace Am.Git
 {
-    // Represents an on-disk git repository — specifically, the .git
+    // Represents an on-disk git repository - specifically, the .git
     // directory layout. We only create the bits a freshly-cloned repo
     // needs: HEAD, refs/heads, refs/tags, objects/pack, plus a `config`
     // file with the remote configured. No working tree checkout yet.
@@ -21,7 +21,7 @@ namespace Am.Git
         }
 
         // Build the .git skeleton on disk, with `defaultBranch` recorded
-        // in HEAD. The branch's ref file is *not* written here — that's
+        // in HEAD. The branch's ref file is *not* written here - that's
         // the job of the clone code, which only knows the SHA after the
         // ref advertisement comes back.
         static fun init(workTreePath: String, defaultBranch: String, bare: Bool): Repository {
@@ -45,7 +45,7 @@ namespace Am.Git
             return repo
         }
 
-        // Persist a remote config — `[remote "origin"] url = <url>` plus
+        // Persist a remote config - `[remote "origin"] url = <url>` plus
         // a default fetch refspec. Mimics what `git clone` writes so
         // subsequent `git fetch`/`git pull` from a real git binary work.
         fun writeRemoteConfig(remoteName: String, url: String, defaultBranch: String) {
@@ -85,7 +85,7 @@ namespace Am.Git
             stream.close()
         }
 
-        // mkdir -p — create every missing component along the way.
+        // mkdir -p - create every missing component along the way.
         // The native File.createDirectory only mkdirs the leaf.
         static fun ensureParentDir(path: String) {
             var lastSlash = path.lastIndexOf("/")
@@ -98,7 +98,7 @@ namespace Am.Git
 
         static fun ensureDir(path: String) {
             // Build the path one segment at a time, mkdir-ing each. Existing
-            // directories make mkdir return false — we don't care. Only the
+            // directories make mkdir return false - we don't care. Only the
             // final fopen() call has to succeed.
             if (path.length() == 0) {
                 return

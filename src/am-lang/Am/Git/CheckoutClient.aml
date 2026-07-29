@@ -1,6 +1,6 @@
 namespace Am.Git
 {
-    // `git checkout <branch>` — switch HEAD to a local branch and
+    // `git checkout <branch>` - switch HEAD to a local branch and
     // bring the working tree in line with that branch's tip.
     //
     // Algorithm:
@@ -10,15 +10,15 @@ namespace Am.Git
     //   3. Build the set of file paths the new tree expects.
     //   4. Walk the working tree and delete any file (or empty subdir)
     //      that the new tree doesn't include. This is what makes the
-    //      checkout coherent — without it, files that existed on the
+    //      checkout coherent - without it, files that existed on the
     //      old branch but not the new one would linger.
     //   5. Write the new tree's blobs over the working tree.
     //   6. Repoint `HEAD` at `refs/heads/<branch>`.
     //
     // What it doesn't do yet:
-    //   * Detect "dirty" working-tree files and refuse to overwrite —
+    //   * Detect "dirty" working-tree files and refuse to overwrite -
     //     we always clobber. Run `am-git status` first if you care.
-    //   * Checkout by raw commit SHA (detached HEAD) — branch only.
+    //   * Checkout by raw commit SHA (detached HEAD) - branch only.
     //   * Restore executable mode / symlinks (same gap as `clone`).
     class CheckoutClient
     {
@@ -29,13 +29,13 @@ namespace Am.Git
         // workTreePath is typically "." (current working dir).
         // gitDir is typically ".git".
         static fun checkout(gitDir: String, workTreePath: String, branch: String) {
-            // Resolve "."/"" to an absolute path — see StatusReport.run
+            // Resolve "."/"" to an absolute path - see StatusReport.run
             // for the rationale (opendir(".") is unreliable on
             // amiga-gcc without ixemul).
             if (workTreePath == null || workTreePath.length() == 0 || workTreePath == ".") {
                 workTreePath = File.getCurrentDirectory()
             }
-            // Loose or packed (RefStore) — real-git clones keep branch
+            // Loose or packed (RefStore) - real-git clones keep branch
             // refs in packed-refs until first written.
             var commitSha = RefStore.resolve(gitDir, "refs/heads/" + branch)
             if (commitSha == null) {
@@ -57,7 +57,7 @@ namespace Am.Git
         }
 
         // Apply `commitSha`'s tree to the working tree and re-seed
-        // the index from it. Does NOT touch HEAD or any ref — that's
+        // the index from it. Does NOT touch HEAD or any ref - that's
         // the caller's responsibility. Used by both `checkout`
         // (which updates HEAD after) and `reset --hard` (which
         // updates the branch ref before).
@@ -104,7 +104,7 @@ namespace Am.Git
         }
 
         // Walk the new commit's tree and record every blob's path
-        // relative to the work tree root. Tree paths aren't added —
+        // relative to the work tree root. Tree paths aren't added -
         // empty directories aren't part of git's model.
         private static fun collectExpectedPaths(treeSha: String,
                                                  prefix: String,
@@ -132,7 +132,7 @@ namespace Am.Git
                 } else if (entry.isFile() || entry.isSymlink()) {
                     out.set(path, true)
                 }
-                // Submodules and other modes — ignored (matches WorkTree).
+                // Submodules and other modes - ignored (matches WorkTree).
                 i = i + 1
             }
         }

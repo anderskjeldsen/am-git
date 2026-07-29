@@ -27,7 +27,7 @@ namespace Am.Git.Tests {
         // tree-flattening.
         //
         // Returns the outcome for the single path "f".
-        private static fun classifyForPath(b: MergeFile, o: MergeFile, t: MergeFile): Int {
+        private static fun classifyForPath(b: MergeFile?, o: MergeFile?, t: MergeFile?): Int {
             // Mirror MergePlan.classifyOne. We can't reach the private
             // method, but the public contract is "given three MergeFiles
             // produce one outcome", so we just reconstruct the same
@@ -53,18 +53,18 @@ namespace Am.Git.Tests {
             return MergePlan.outcomeConflictBothModified
         }
 
-        private static fun fileEqual(a: MergeFile, b: MergeFile): Bool {
+        private static fun fileEqual(a: MergeFile?, b: MergeFile?): Bool {
             if (a == null && b == null) { return true }
             if (a == null || b == null) { return false }
             return a.sha == b.sha && a.mode == b.mode
         }
 
-        // Typed `null` — AmLang can't infer the type of a bare `null`
-        // at a function-call site when the parameter type is a non-Any
-        // class, so test cases that pass "absent" go through this.
-        private static fun absent(): MergeFile {
-            var f: MergeFile = null
-            return f
+        // Typed `null` - honest nullable return type ("absent in that
+        // tree" IS null in the MergePlan contract); call sites pass it
+        // into MergeFile params the same way MergePlan's own nullable
+        // locals flow into classifyOne.
+        private static fun absent(): MergeFile? {
+            return null
         }
 
         // ---- direct classification tests -------------------------------
@@ -111,7 +111,7 @@ namespace Am.Git.Tests {
             var o = new MergeFile("aaaa", "100644")
             var t = new MergeFile("bbbb", "100644")
             Assert.assertEquals(MergePlan.outcomeConflictAddAdd,
-                MergePlanTest.classifyForPath(null, o, t))
+                MergePlanTest.classifyForPath(MergePlanTest.absent(), o, t))
         }
 
         // Add/add with the same content → unchanged. Reaches the

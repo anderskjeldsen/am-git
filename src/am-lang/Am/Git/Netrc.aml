@@ -12,7 +12,7 @@ namespace Am.Git
     // AM_GIT_USERNAME / AM_GIT_PASSWORD.
     //
     // Source, in order:
-    //   1. The AM_GIT_NETRC env var — its VALUE is the whole file content.
+    //   1. The AM_GIT_NETRC env var - its VALUE is the whole file content.
     //      Handy on AmigaOS: `ENV:AM_GIT_NETRC` can just hold the text, no
     //      file path needed. (Multi-line env values are fine; we tokenise
     //      on any whitespace including newlines.)

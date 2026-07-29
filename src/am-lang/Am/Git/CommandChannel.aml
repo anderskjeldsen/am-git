@@ -3,7 +3,7 @@ namespace Am.Git
     // A child process whose stdin+stdout are wired to a single, fully
     // binary-clean bidirectional pipe (a socketpair). Used by the ssh
     // git transport: we run `ssh <host> git-upload-pack '<path>'` and
-    // stream the pkt-line pack protocol over the channel — exactly how
+    // stream the pkt-line pack protocol over the channel - exactly how
     // real `git` drives ssh (plain pipes, NOT a pty, so the packfile
     // bytes pass through untouched).
     //
@@ -26,7 +26,7 @@ namespace Am.Git
         import Am.Lang
         import Am.Collections
 
-        // argv joined by '\n' (no shell — we execvp directly, so no
+        // argv joined by '\n' (no shell - we execvp directly, so no
         // quoting pitfalls and the stream stays binary-clean). e.g.
         // "ssh\ngit@github.com\ngit-upload-pack 'user/repo.git'"
         static fun spawn(argvLine: String): CommandChannel {

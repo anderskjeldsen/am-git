@@ -3,14 +3,14 @@ namespace Am.Git
     // HTTP Basic auth helper for the smart-HTTP transport.
     //
     // GitHub (and every other modern git host) accepts a personal
-    // access token in place of the password — that's the supported
+    // access token in place of the password - that's the supported
     // way to push over HTTPS now that password auth was retired.
     //
     // The auth header is built from two env vars:
-    //   AM_GIT_USERNAME — the user (often just the GitHub login, or
+    //   AM_GIT_USERNAME - the user (often just the GitHub login, or
     //                     "x-access-token" / "git" when the token
     //                     carries the identity)
-    //   AM_GIT_PASSWORD — the password or personal-access-token value
+    //   AM_GIT_PASSWORD - the password or personal-access-token value
     //
     // If either is unset `fromEnv` returns null and the caller is
     // expected to send the request unauthenticated. Many ref-listing
@@ -27,9 +27,9 @@ namespace Am.Git
         //
         //   1. Credentials embedded in the URL (https://user:token@host).
         //   2. A .netrc-style store matched by host (AM_GIT_NETRC env
-        //      content, or ~/.netrc on libc) — the multi-credential path.
+        //      content, or ~/.netrc on libc) - the multi-credential path.
         //   3. AM_GIT_USERNAME / AM_GIT_PASSWORD (the single global
-        //      credential — kept as the simple / CI fallback).
+        //      credential - kept as the simple / CI fallback).
         //
         // Returns null when nothing applies (send the request unauthed).
         static fun forUrl(url: GitUrl): String? {
@@ -75,7 +75,7 @@ namespace Am.Git
         static fun headerValue(user: String, pass: String): String {
             var combined = user + ":" + pass
             var asUBytes = combined.toBytes("UTF-8")
-            // Base64.encode takes `Byte[]` (signed) — credentials are
+            // Base64.encode takes `Byte[]` (signed) - credentials are
             // ASCII in practice so the cast is lossless.
             var asBytes = new Byte[asUBytes.length()]
             var i = 0UI

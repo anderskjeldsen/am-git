@@ -1,6 +1,6 @@
 namespace Am.Git
 {
-    // Reverse of `WorkTree.checkout` — walks an on-disk working tree
+    // Reverse of `WorkTree.checkout` - walks an on-disk working tree
     // and produces git tree + blob objects, returning the root tree
     // SHA.
     //
@@ -31,7 +31,7 @@ namespace Am.Git
     //     target content is recorded as a regular file.
     //   * No `.gitignore`. Everything that isn't literally named
     //     `.git` lands in the tree.
-    //   * No staging — `build()` always reflects the live working
+    //   * No staging - `build()` always reflects the live working
     //     tree, no index involvement.
     class TreeBuilder(private var workTreePath: String,
                       private var writer: LooseObjectWriter)
@@ -47,7 +47,7 @@ namespace Am.Git
         fun build(): String {
             var sha = this.buildDir(this.workTreePath, true)
             if (sha == null) {
-                // Should be unreachable — `buildDir(..., isRoot=true)`
+                // Should be unreachable - `buildDir(..., isRoot=true)`
                 // writes the empty tree explicitly rather than
                 // returning null.
                 throw new Exception("TreeBuilder.build: root buildDir returned null")
@@ -71,7 +71,7 @@ namespace Am.Git
                 var child = children[i.toUInt()]
                 var name = child.getName()
 
-                // Skip git's metadata dir. Defensive — git itself
+                // Skip git's metadata dir. Defensive - git itself
                 // wouldn't let `.git` appear nested, but the cost
                 // of checking is zero.
                 if (name == ".git") {
@@ -115,7 +115,7 @@ namespace Am.Git
         // `app.c` vs `app/` for why this matters.
         //
         // Public so IndexTreeBuilder can sort the entries it derives
-        // from the index — same byte-wise rules apply for index-based
+        // from the index - same byte-wise rules apply for index-based
         // trees.
         static fun compareEntries(a: TreeEntry, b: TreeEntry): Int {
             var aName = a.name
@@ -137,7 +137,7 @@ namespace Am.Git
             }
 
             // Shared prefix equal. The "past-end" byte breaks the
-            // tie — `/` for trees, NUL (0) for files.
+            // tie - `/` for trees, NUL (0) for files.
             var aChar = 0
             var bChar = 0
             if (aLen > minLen) {
@@ -156,8 +156,8 @@ namespace Am.Git
         }
 
         // In-place insertion sort using compareEntries. Directories
-        // rarely have more than a few dozen entries, so n² is fine.
-        // Public — same reasoning as compareEntries.
+        // rarely have more than a few dozen entries, so n^2 is fine.
+        // Public - same reasoning as compareEntries.
         static fun sortEntries(entries: List<TreeEntry>) {
             var n = entries.getSize()
             var i = 1
@@ -178,7 +178,7 @@ namespace Am.Git
         //
         //     <ascii-octal-mode> SP <name> NUL <20-byte-raw-sha>
         //
-        // packed end-to-end with no separator. No outer length —
+        // packed end-to-end with no separator. No outer length -
         // the entry stream is exactly as long as the tree object's
         // size field promises.
         // Public so IndexTreeBuilder can serialise tree objects it

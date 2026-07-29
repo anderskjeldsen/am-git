@@ -359,13 +359,12 @@ namespace Am.Git.Tests {
             return stream.readAll()
         }
 
-        // Typed `null` for `MergeFile` parameter slots — same idiom
-        // as the other test files. We could drop these once the
-        // compiler's null-arg inference covers literal `null` at
-        // every call site we hit; for now a typed local is safest.
-        private static fun absent(): MergeFile {
-            var f: MergeFile = null
-            return f
+        // Typed `null` for `MergeFile` parameter slots - honest nullable
+        // return type ("absent in that tree" IS null in the MergePlan
+        // contract); call sites pass it into MergeFile params the same
+        // way MergePlan's own nullable locals flow into classifyOne.
+        private static fun absent(): MergeFile? {
+            return null
         }
 
         // Walk the test dir and remove every file + every subdir.

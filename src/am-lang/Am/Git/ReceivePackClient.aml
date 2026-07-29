@@ -5,7 +5,7 @@ namespace Am.Git
     // the ref-update + pack body (ReceivePackRequest.build) and hands it
     // here; we deliver it and return the raw report-status reply.
     //
-    // The body is identical for both carriers — over HTTP it's the POST
+    // The body is identical for both carriers - over HTTP it's the POST
     // body, over ssh it's written straight to git-receive-pack's stdin.
     // For ssh we run `ssh <host> git-receive-pack '<path>'` on a binary-
     // clean CommandChannel, read the (bannerless) advertisement, send the
@@ -24,7 +24,7 @@ namespace Am.Git
         private var negotiated: Bool = false
 
         // Step 1: the receive-pack ref advertisement (what the remote
-        // currently has, so PushClient can compute old→new updates).
+        // currently has, so PushClient can compute old->new updates).
         fun getAdvertisement(): RefAdvertisement {
             if (this.url.isSsh()) {
                 return this.sshAdvertisement()
@@ -47,7 +47,7 @@ namespace Am.Git
             if (ch != null) {
                 if (!this.negotiated) {
                     // Read the advertisement but nothing to push (already
-                    // up-to-date) — flush-pkt so git-receive-pack exits 0
+                    // up-to-date) - flush-pkt so git-receive-pack exits 0
                     // instead of logging "the remote end hung up".
                     try {
                         ch.writeAll(PktLine.flushPacket())
@@ -93,13 +93,13 @@ namespace Am.Git
         private fun sshDeliver(body: UByte[]): UByte[] {
             var ch = this.channel
             if (ch == null) {
-                throw new Exception("ReceivePackClient: ssh channel not open — call getAdvertisement() first")
+                throw new Exception("ReceivePackClient: ssh channel not open - call getAdvertisement() first")
             }
             this.negotiated = true
             ch.writeAll(body)
             // Signal end-of-input so git-receive-pack stops reading,
             // processes the pack, writes the report to stdout and exits
-            // (closing its stdout → our readToEnd() sees EOF).
+            // (closing its stdout -> our readToEnd() sees EOF).
             ch.closeWrite()
             return ch.readToEnd()
         }

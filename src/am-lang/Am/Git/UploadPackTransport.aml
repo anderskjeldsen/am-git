@@ -3,8 +3,8 @@ namespace Am.Git
     // Smart-HTTP `git-upload-pack` wire-protocol plumbing shared by
     // `clone` and `fetch`. Both flows do the same two requests:
     //
-    //   1. GET  <repo>/info/refs?service=git-upload-pack   → ref advertisement
-    //   2. POST <repo>/git-upload-pack                     → packfile of new objects
+    //   1. GET  <repo>/info/refs?service=git-upload-pack   -> ref advertisement
+    //   2. POST <repo>/git-upload-pack                     -> packfile of new objects
     //
     // The only thing that differs is the body of (2): clone sends just
     // `want`s, fetch sends `want`s plus `have`s for what it already
@@ -40,7 +40,7 @@ namespace Am.Git
                                      response.getStatusCode().toString() + " " +
                                      response.getStatusMessage())
             }
-            // Dumb-HTTP servers don't emit the smart Content-Type — bail
+            // Dumb-HTTP servers don't emit the smart Content-Type - bail
             // rather than try to fall through to the dumb protocol.
             var contentType = response.getHeader("content-type")
             if (contentType == null || contentType.indexOf("application/x-git-upload-pack-advertisement") < 0) {
@@ -50,7 +50,7 @@ namespace Am.Git
         }
 
         // Step 2: request the pack. `wants` is the list of new SHAs we
-        // need. `haves` is the list of SHAs we already have locally —
+        // need. `haves` is the list of SHAs we already have locally -
         // pass an empty list for the clone case so the server sends
         // everything reachable from the wants.
         static fun requestPack(url: GitUrl,
@@ -71,7 +71,7 @@ namespace Am.Git
                                 depth: Int,
                                 shallowOut: List<String>): UByte[] {
             if (wants.getSize() == 0) {
-                throw new Exception("UploadPackTransport: no wants — nothing to request")
+                throw new Exception("UploadPackTransport: no wants - nothing to request")
             }
 
             var body = UploadPackTransport.buildBody(wants, haves, capabilities, depth)
@@ -111,7 +111,7 @@ namespace Am.Git
         //
         // We don't loop the negotiation; one round + done is fine for
         // our use cases and the server happily replies with NAK + pack.
-        // Shared with the ssh transport (UploadPackClient) — the same
+        // Shared with the ssh transport (UploadPackClient) - the same
         // want/have/done body regardless of carrier.
         static fun buildBody(wants: List<String>,
                                       haves: List<String>,
@@ -119,7 +119,7 @@ namespace Am.Git
             return UploadPackTransport.buildBody(wants, haves, capabilities, 0)
         }
 
-        // `depth > 0` inserts a `deepen <n>` line after the wants —
+        // `depth > 0` inserts a `deepen <n>` line after the wants -
         // protocol v0 shallow-clone request. The server then prefixes
         // its reply with `shallow`/`unshallow` boundary lines (see
         // extractPackWithShallow).
@@ -160,7 +160,7 @@ namespace Am.Git
             return buf.toArray()
         }
 
-        // Strip the NAK/ACK preamble and demux side-band-64k bands —
+        // Strip the NAK/ACK preamble and demux side-band-64k bands -
         // band 1 = pack data, band 2 = textual progress (printed),
         // band 3 = fatal error. Shared with the ssh transport
         // (UploadPackClient), which slurps the whole upload-pack reply
@@ -191,7 +191,7 @@ namespace Am.Git
                 if (payload.length() == 0UI) {
                     continue
                 }
-                // Negotiation preamble — eat one NAK/ACK line before
+                // Negotiation preamble - eat one NAK/ACK line before
                 // expecting pack data on band 1.
                 var asText = String.fromBytes(payload, "UTF-8")
                 if (!sawAck && (asText.startsWith("NAK") || asText.startsWith("ACK"))) {

@@ -6,7 +6,7 @@ namespace AmGit
     //     am-git hash-object [-w] <file>
     //
     // The target dir for `clone` defaults to the last segment of the
-    // URL with any trailing `.git` stripped — same convention as
+    // URL with any trailing `.git` stripped - same convention as
     // upstream git.
     class Program
     {
@@ -118,7 +118,7 @@ namespace AmGit
                     }
                 }
             } else if (command == "version" || command == "--version") {
-                "am-git 0.1.0".println()
+                Program.runVersion(args)
             } else {
                 ("am-git: unknown command '" + command + "'").println()
                 Program.printUsage()
@@ -142,7 +142,7 @@ namespace AmGit
 
         // Binary round-trip test for the new RunningProcess binary API
         // (Process.startBinary + tryReadOutputBytes/writeInputBytes):
-        // pushes all 256 byte values — including NUL and high bytes —
+        // pushes all 256 byte values - including NUL and high bytes -
         // through `cat` and checks every byte survives. Proves the
         // channel carries "anything", not just strings. `am-git __rp-test`
         private static fun runRpTest(args: String[]) {
@@ -187,16 +187,16 @@ namespace AmGit
             ("rp-test: received " + got.getSize().toString() + " bytes, roundtrip " + verdict).println()
         }
 
-        // `am-git init [<directory>]` — scaffold a fresh `.git/`
+        // `am-git init [<directory>]` - scaffold a fresh `.git/`
         // skeleton at the given path (defaults to cwd). Reinit-safe:
         // if `.git/` already exists, ensures the standard subdirs
         // are present without touching anything that's already there
-        // — same behaviour as real `git init`.
+        // - same behaviour as real `git init`.
         //
         // Minimal layout we lay down:
         //
         //   .git/HEAD             "ref: refs/heads/main\n"
-        //                         (only written if missing — don't
+        //                         (only written if missing - don't
         //                         clobber an existing branch)
         //   .git/config           tiny [core] section
         //                         (only written if missing)
@@ -206,16 +206,16 @@ namespace AmGit
         //   .git/refs/tags/       empty
         //   .git/info/            empty
         //
-        // Default branch is hardcoded to `main` for v1 — no
+        // Default branch is hardcoded to `main` for v1 - no
         // `init.defaultBranch` config plumbing yet. Pass `-b <name>`
         // later when we wire `am-git config`.
-        // `am-git config`                                     — list everything
-        // `am-git config --list`                              — list everything (explicit)
-        // `am-git config <key>`                               — print value (empty exit on miss)
-        // `am-git config <key> <value>`                       — set / overwrite
-        // `am-git config --unset <key>`                       — remove
+        // `am-git config`                                     - list everything
+        // `am-git config --list`                              - list everything (explicit)
+        // `am-git config <key>`                               - print value (empty exit on miss)
+        // `am-git config <key> <value>`                       - set / overwrite
+        // `am-git config --unset <key>`                       - remove
         //
-        // Operates on `.git/config` only — no user / system / `--global`
+        // Operates on `.git/config` only - no user / system / `--global`
         // scope yet. Output of `--list` is `<key>=<value>` per line,
         // matching the column-less form `git config --list` emits.
         //
@@ -243,7 +243,7 @@ namespace AmGit
                     Program.configUnset(args[2UI])
                     return
                 }
-                // Reject any other flag — keeps the door open for
+                // Reject any other flag - keeps the door open for
                 // `--global` etc. without silently accepting them.
                 if (first.startsWith("--")) {
                     ("config: unrecognised flag '" + first + "'").println()
@@ -266,7 +266,7 @@ namespace AmGit
         private static fun configList() {
             var cfg = GitConfig.read(".git")
             var keys = cfg.keys()
-            // Sort bytewise for stable output — same rule as
+            // Sort bytewise for stable output - same rule as
             // GitConfig.write uses internally.
             Program.sortStringsBytewise(keys)
             var i = 0
@@ -289,7 +289,7 @@ namespace AmGit
         private static fun configSet(key: String, value: String) {
             if (!Program.isValidConfigKey(key)) {
                 ("config: invalid key '" + key +
-                    "' — keys must be `<section>.<key>` or `<section>.<sub>.<key>`").println()
+                    "' - keys must be `<section>.<key>` or `<section>.<sub>.<key>`").println()
                 return
             }
             var cfg = GitConfig.read(".git")
@@ -308,7 +308,7 @@ namespace AmGit
 
         // A key needs at least one `.` (separating section from field
         // name). We don't enforce the alnum + `-` restriction on the
-        // section name yet — real git is strict here, but for v1 we
+        // section name yet - real git is strict here, but for v1 we
         // trust the user.
         private static fun isValidConfigKey(key: String): Bool {
             return key != null && key.length() > 0 && key.indexOf(".") > 0
@@ -412,7 +412,7 @@ namespace AmGit
         // prints the SHA-1 the file would have if it were a blob;
         // with `-w` also writes it as a loose object under ./.git/
         // (caller's cwd is assumed to be a working tree root for
-        // now — no upward search yet).
+        // now - no upward search yet).
         private static fun runHashObject(args: String[]) {
             var write = false
             var fileArgIdx = 1UI
@@ -454,12 +454,12 @@ namespace AmGit
             var author = Identity.loadAuthor()
             var committer = Identity.loadCommitter()
             if (author == null) {
-                "author: <unset — set GIT_AUTHOR_NAME/EMAIL or AM_GIT_USER_NAME/EMAIL>".println()
+                "author: <unset - set GIT_AUTHOR_NAME/EMAIL or AM_GIT_USER_NAME/EMAIL>".println()
             } else {
                 ("author    " + author.formatLine(now)).println()
             }
             if (committer == null) {
-                "committer: <unset — set GIT_COMMITTER_NAME/EMAIL or AM_GIT_USER_NAME/EMAIL>".println()
+                "committer: <unset - set GIT_COMMITTER_NAME/EMAIL or AM_GIT_USER_NAME/EMAIL>".println()
             } else {
                 ("committer " + committer.formatLine(now)).println()
             }
@@ -475,7 +475,7 @@ namespace AmGit
                 if (info.detached) {
                     ("detached HEAD at " + info.commitSha).println()
                 } else if (info.isInitial()) {
-                    ("on branch " + info.branch + " (unborn — no commits yet)").println()
+                    ("on branch " + info.branch + " (unborn - no commits yet)").println()
                 } else {
                     ("on branch " + info.branch + " at " + info.commitSha).println()
                 }
@@ -486,7 +486,7 @@ namespace AmGit
 
         // Diagnostic: walk the working tree (cwd) and write blobs +
         // trees as loose objects under ./.git/. Prints the root tree
-        // SHA. Mirrors `git write-tree` — useful to confirm our
+        // SHA. Mirrors `git write-tree` - useful to confirm our
         // TreeBuilder's SHA matches what real git produces for the
         // same on-disk state.
         private static fun runWriteTree(args: String[]) {
@@ -502,8 +502,8 @@ namespace AmGit
         // Mirrors `git commit-tree <tree> [-p <parent>] -m <message>`.
         // Reads identity from env (see Identity.loadAuthor /
         // loadCommitter) and optionally pinned timestamps via
-        // GIT_AUTHOR_DATE / GIT_COMMITTER_DATE — same names real git
-        // uses, same `<unix-seconds> <±HHMM>` format. Writes the
+        // GIT_AUTHOR_DATE / GIT_COMMITTER_DATE - same names real git
+        // uses, same `<unix-seconds> <+/-HHMM>` format. Writes the
         // commit as a loose object under ./.git/ and prints its SHA.
         private static fun runCommitTree(args: String[]) {
             try {
@@ -562,17 +562,17 @@ namespace AmGit
         // The user-facing commit. Wraps the four primitives we built
         // in steps 1-5:
         //
-        //   1. HeadReader.read       → current branch + parent SHA
-        //   2. TreeBuilder.build     → root tree SHA from cwd
-        //   3. CommitWriter.write    → new commit SHA
-        //   4. write ref/HEAD        → atomic move-forward of the
+        //   1. HeadReader.read       -> current branch + parent SHA
+        //   2. TreeBuilder.build     -> root tree SHA from cwd
+        //   3. CommitWriter.write    -> new commit SHA
+        //   4. write ref/HEAD        -> atomic move-forward of the
         //                              branch (or detached HEAD)
         //
         // v1 differences from real `git commit`:
         //
-        //   * No staging — always commits the live working tree state
+        //   * No staging - always commits the live working tree state
         //     against HEAD's parent. No `git add` step required.
-        //   * No "nothing to commit" detection — we don't compare the
+        //   * No "nothing to commit" detection - we don't compare the
         //     new tree's SHA against HEAD's tree. If the working tree
         //     is unchanged you'll just get an empty-delta commit
         //     (legal git object, semantically equivalent to passing
@@ -603,24 +603,24 @@ namespace AmGit
                     return
                 }
 
-                // Refuse to commit while a rebase is in flight —
+                // Refuse to commit while a rebase is in flight -
                 // a plain commit would put a commit at HEAD without
                 // advancing the rebase's todo, leaving a half-rebased
                 // state. The user should `am-git rebase --continue`
                 // or `--abort`.
                 if (RebaseState.isInProgress(".git")) {
-                    "commit: rebase in progress — use `am-git rebase --continue` or `--abort`".println()
+                    "commit: rebase in progress - use `am-git rebase --continue` or `--abort`".println()
                     return
                 }
                 // Same shape for cherry-pick: a plain commit would
                 // bypass the author + message preservation that
                 // --continue does for us.
                 if (Program.cherryPickInProgress()) {
-                    "commit: cherry-pick in progress — use `am-git cherry-pick --continue` or `--abort`".println()
+                    "commit: cherry-pick in progress - use `am-git cherry-pick --continue` or `--abort`".println()
                     return
                 }
                 if (Program.revertInProgress()) {
-                    "commit: revert in progress — use `am-git revert --continue` or `--abort`".println()
+                    "commit: revert in progress - use `am-git revert --continue` or `--abort`".println()
                     return
                 }
 
@@ -642,8 +642,8 @@ namespace AmGit
                 }
 
                 var writer = new LooseObjectWriter(".git")
-                // Prefer the index when one exists — real git semantics.
-                // No index file → fall back to walking the working
+                // Prefer the index when one exists - real git semantics.
+                // No index file -> fall back to walking the working
                 // tree, preserving am-git's pre-index "commit
                 // everything" behaviour for repos that haven't run
                 // `am-git add` yet.
@@ -658,11 +658,11 @@ namespace AmGit
                         return
                     }
                     // Refuse to commit while the index records an
-                    // unresolved merge — same precondition as real
+                    // unresolved merge - same precondition as real
                     // git ("Committing is not possible because you
                     // have unmerged files").
                     if (idx.hasUnmerged()) {
-                        "commit: unresolved merge conflicts — fix the listed paths and `am-git add` them first".println()
+                        "commit: unresolved merge conflicts - fix the listed paths and `am-git add` them first".println()
                         var ui = 0
                         while (ui < idx.entries.getSize()) {
                             var ue = idx.entries.get(ui)
@@ -719,13 +719,13 @@ namespace AmGit
                 // confusing "everything deleted" status.
                 //
                 // We read the tree from `writer.written` rather than a
-                // fresh `ObjectStore` — same-process write→read of a
+                // fresh `ObjectStore` - same-process write->read of a
                 // loose object isn't reliable on AmigaOS, and we
                 // already have every object we just wrote in memory.
                 GitIndex.fromTreeMap(treeSha, writer.written).write(".git")
 
                 // If this was a merge-commit finalisation, the merge
-                // is done — clear the two metadata files so the next
+                // is done - clear the two metadata files so the next
                 // commit isn't accidentally promoted into a merge.
                 if (inMergeFinalisation) {
                     Program.deleteIfExists(".git/MERGE_HEAD")
@@ -772,13 +772,13 @@ namespace AmGit
                 if (flag == "-t") {
                     obj.typeName().println()
                 } else if (flag == "-p") {
-                    // Most objects are text — `String.fromBytes(...,
+                    // Most objects are text - `String.fromBytes(...,
                     // "UTF-8").print()` works fine for commits and
                     // trees-as-debug-output. Trees actually contain
                     // raw 20-byte SHAs after each name's NUL, so the
                     // bytes-to-UTF8 round-trip would mangle them.
                     // For now we print as if UTF-8; trees will look
-                    // garbled but commits / blobs will be readable —
+                    // garbled but commits / blobs will be readable -
                     // good enough for round-trip diagnostics.
                     String.fromBytes(obj.content, "UTF-8").print()
                 } else {
@@ -790,7 +790,7 @@ namespace AmGit
         }
 
         // Diagnostic for ObjectWalker. Mirrors a subset of
-        // `git rev-list --objects <new> ^<have>` — prints every SHA
+        // `git rev-list --objects <new> ^<have>` - prints every SHA
         // reachable from <new> that isn't reachable from <have>.
         // Useful for cross-checking the walk against real git
         // before we feed the result into PackWriter.
@@ -825,7 +825,7 @@ namespace AmGit
 
         // Build a v2 packfile containing every object reachable from
         // <new-sha> that isn't reachable from <have-sha>. Writes the
-        // pack bytes to <output-pack> — pipe through `git index-pack
+        // pack bytes to <output-pack> - pipe through `git index-pack
         // --stdin --keep` to verify the pack is well-formed and the
         // contained objects match git's view of those SHAs.
         private static fun runPackObjects(args: String[]) {
@@ -911,7 +911,7 @@ namespace AmGit
 
         // Print the Authorization header that would be sent for the
         // current AM_GIT_USERNAME / AM_GIT_PASSWORD env vars. Mostly
-        // a debugging aid — verify the encoding against `echo -n
+        // a debugging aid - verify the encoding against `echo -n
         // "$AM_GIT_USERNAME:$AM_GIT_PASSWORD" | base64`. Pass an
         // explicit `<user> <pass>` pair to avoid relying on env.
         private static fun runAuthHeader(args: String[]) {
@@ -938,7 +938,7 @@ namespace AmGit
         //   am-git pull <url>               (branch from HEAD)
         //   am-git pull <url> <branch>      (both explicit)
         //
-        // Bails on non-fast-forward — no merge / rebase machinery yet.
+        // Bails on non-fast-forward - no merge / rebase machinery yet.
         private static fun runPull(args: String[]) {
             try {
                 var remoteUrl: String? = null
@@ -965,9 +965,9 @@ namespace AmGit
                     if (mergeBranch == null) { mergeBranch = head.branch }
                     if (mergeBranch != head.branch) {
                         // `pull <url> <other-branch>` that diverged: merging a
-                        // non-current branch would need a worktree switch —
+                        // non-current branch would need a worktree switch -
                         // keep the old refusal for this edge.
-                        ("pull: " + mergeBranch + " is not the current branch — " +
+                        ("pull: " + mergeBranch + " is not the current branch - " +
                          "checkout first, or merge origin/" + mergeBranch + " explicitly").println()
                         return
                     }
@@ -987,7 +987,7 @@ namespace AmGit
             }
         }
 
-        // `am-git merge-base <a> <b>` — print the SHA of the lowest
+        // `am-git merge-base <a> <b>` - print the SHA of the lowest
         // common ancestor of two commits. Each arg is either a 40-char
         // hex SHA or a local branch name (resolved against
         // .git/refs/heads/). Prints nothing and exits silently when
@@ -1019,7 +1019,7 @@ namespace AmGit
             }
         }
 
-        // `am-git merge-plan <ours> <theirs>` — print the 3-way
+        // `am-git merge-plan <ours> <theirs>` - print the 3-way
         // classification of every changed path between two commits,
         // using their common ancestor as the base. Dry-run: nothing
         // is written. Used to validate the merge classifier on
@@ -1085,7 +1085,7 @@ namespace AmGit
         }
 
         // Read a commit's root-tree SHA. Throws if the commit isn't in
-        // the store — the merge-plan caller bails on that case loud
+        // the store - the merge-plan caller bails on that case loud
         // and clear rather than silently merging against an empty tree.
         private static fun commitTreeSha(commitSha: String, store: ObjectStore): String? {
             if (!store.has(commitSha)) {
@@ -1098,28 +1098,28 @@ namespace AmGit
             return WorkTree.extractRootTreeSha(obj.content)
         }
 
-        // "(absent)" → "-" so the columnar output stays readable.
-        private static fun shaOrDash(f: MergeFile): String? {
+        // "(absent)" -> "-" so the columnar output stays readable.
+        private static fun shaOrDash(f: MergeFile?): String? {
             if (f == null) {
                 return "-"
             }
             return f.sha
         }
 
-        // `am-git merge <branch>` — merge the named branch into the
+        // `am-git merge <branch>` - merge the named branch into the
         // current branch. Three resolution paths:
         //
-        //   1. `branch` is an ancestor of HEAD → "already up to date",
+        //   1. `branch` is an ancestor of HEAD -> "already up to date",
         //      do nothing.
-        //   2. HEAD is an ancestor of `branch` → fast-forward: move
+        //   2. HEAD is an ancestor of `branch` -> fast-forward: move
         //      the branch ref + materialise the new working tree.
         //      No merge commit; same as real git's default ff-on-ff.
-        //   3. Divergent histories → 3-way merge:
+        //   3. Divergent histories -> 3-way merge:
         //      - compute MergePlan
         //      - apply it (writes workdir + index stages)
-        //      - if no conflicts → create a 2-parent merge commit,
+        //      - if no conflicts -> create a 2-parent merge commit,
         //        advance HEAD, clear MERGE_HEAD
-        //      - if conflicts → write `.git/MERGE_HEAD` +
+        //      - if conflicts -> write `.git/MERGE_HEAD` +
         //        `.git/MERGE_MSG`, leave the workdir in conflict
         //        state, print the conflict list. The user resolves,
         //        runs `am-git add <file>...`, then `am-git commit`
@@ -1140,7 +1140,7 @@ namespace AmGit
                     return
                 }
                 if (head.commitSha == null) {
-                    "merge: current branch has no commits yet — nothing to merge into".println()
+                    "merge: current branch has no commits yet - nothing to merge into".println()
                     return
                 }
 
@@ -1180,7 +1180,7 @@ namespace AmGit
         }
 
         // Advance the current branch ref to the merged-in commit and
-        // materialise its working tree. No merge commit — the merge
+        // materialise its working tree. No merge commit - the merge
         // is fast-forwardable.
         private static fun fastForwardMerge(head: HeadInfo, theirsSha: String,
                                              theirsName: String) {
@@ -1190,7 +1190,7 @@ namespace AmGit
 
             // Checkout the new tree on top of the working tree. We
             // reuse CheckoutClient since the semantics are the same
-            // as a regular branch checkout — only the ref name
+            // as a regular branch checkout - only the ref name
             // differs, and we've already moved it.
             CheckoutClient.checkout(".git", ".", head.branch)
 
@@ -1276,7 +1276,7 @@ namespace AmGit
             (commitSha + "\n").writeToFile(refPath)
 
             // Clean up any stale merge metadata (a previous interrupted
-            // merge could have left these around — but in the clean
+            // merge could have left these around - but in the clean
             // path neither file should exist).
             Program.deleteIfExists(".git/MERGE_HEAD")
             Program.deleteIfExists(".git/MERGE_MSG")
@@ -1285,7 +1285,7 @@ namespace AmGit
                 commitSha.substring(0UI, 7UI) + "]").println()
         }
 
-        // Default MERGE_MSG text — real git's format starts with
+        // Default MERGE_MSG text - real git's format starts with
         // "Merge branch '<name>'" and lists the conflicting paths as
         // "# Conflicts:" comments. `am-git commit` will use this as
         // the message body if the user doesn't pass `-m`.
@@ -1309,18 +1309,18 @@ namespace AmGit
             }
         }
 
-        // `am-git rebase <upstream>` — replays current-branch
+        // `am-git rebase <upstream>` - replays current-branch
         // commits on top of <upstream>, one at a time, producing N
         // new commits with new SHAs.
         //
         //     before:         upstream                 after:        upstream
         //                        |                                       |
-        //          base ── C1 ── C2 ── HEAD                base ── … ── C1' ── C2' (HEAD)
+        //          base -- C1 -- C2 -- HEAD                base -- ... -- C1' -- C2' (HEAD)
         //
         // Strategy: reset HEAD to <upstream>, then for each commit
         // in the original ahead-of-upstream range (oldest first),
         // three-way merge it onto current HEAD using MergePlan +
-        // MergeApplier — the same machinery as `am-git merge`, one
+        // MergeApplier - the same machinery as `am-git merge`, one
         // commit at a time. A clean apply produces a new commit
         // with the original commit's author + author-date + message
         // (committer is updated to "now" by `loadCommitter`).
@@ -1341,10 +1341,10 @@ namespace AmGit
         //       the state.
         //
         // v1 limitations:
-        //   * Linear histories only — if any commit in the range is
+        //   * Linear histories only - if any commit in the range is
         //     a merge commit (multiple parents), we bail before
         //     touching anything.
-        //   * No `--onto X` yet — always rebases onto <upstream>.
+        //   * No `--onto X` yet - always rebases onto <upstream>.
         //   * No `-i` interactive rebase, no squash / fixup / drop.
         private static fun runRebase(args: String[]) {
             try {
@@ -1362,7 +1362,7 @@ namespace AmGit
                     return
                 }
                 // Starting a fresh rebase. Refuse if one's already
-                // in progress — the user should --continue or --abort.
+                // in progress - the user should --continue or --abort.
                 if (RebaseState.isInProgress(".git")) {
                     "rebase: a rebase is already in progress. Use `--continue` or `--abort`.".println()
                     return
@@ -1406,24 +1406,24 @@ namespace AmGit
                 return
             }
 
-            // Already at / past upstream → nothing to do.
+            // Already at / past upstream -> nothing to do.
             if (head.commitSha == upstreamSha) {
                 "Current branch already at upstream.".println()
                 return
             }
-            // We are an ancestor of upstream → fast-forward.
+            // We are an ancestor of upstream -> fast-forward.
             if (baseSha == head.commitSha) {
                 Program.rebaseFastForward(head, upstreamSha)
                 return
             }
-            // Upstream is an ancestor of HEAD → already rebased.
+            // Upstream is an ancestor of HEAD -> already rebased.
             if (baseSha == upstreamSha) {
                 "Current branch is up to date with upstream.".println()
                 return
             }
 
             // Collect ahead-of-upstream commits oldest-first. Linear
-            // histories only — `collectLinearAhead` refuses merge
+            // histories only - `collectLinearAhead` refuses merge
             // commits in the range and returns null in that case.
             var commits = Program.collectLinearAhead(head.commitSha, baseSha, store)
             if (commits == null) {
@@ -1438,13 +1438,13 @@ namespace AmGit
             // outside the rebase machinery if they want.
             (head.commitSha + "\n").writeToFile(".git/ORIG_HEAD")
 
-            // Reset the branch to upstream — both ref and worktree
+            // Reset the branch to upstream - both ref and worktree
             // + index. From here, every successful apply moves the
             // ref forward; a conflict freezes state for --continue.
             Program.moveBranchRef(head.branch, upstreamSha)
             CheckoutClient.applyCommitToWorkTree(".git", ".", upstreamSha)
 
-            // Build the initial state — no stoppedSha yet, full todo
+            // Build the initial state - no stoppedSha yet, full todo
             // queue. The processing loop pops commits off the front
             // of todo until either the queue is empty (success) or
             // a replay hits a conflict (state written to disk).
@@ -1491,7 +1491,7 @@ namespace AmGit
                 var commit = Commit.parse(nextSha, obj.content)
 
                 // Use the branch portion of head-name for moveBranchRef
-                // — head-name is the full ref path "refs/heads/<branch>".
+                // - head-name is the full ref path "refs/heads/<branch>".
                 var branch = Program.stripRefsHeads(state.headName)
                 var replayed = Program.replayCommit(commit, head, branch, store)
                 if (replayed == null) {
@@ -1506,7 +1506,7 @@ namespace AmGit
                     return
                 }
                 head = replayed
-                ("  applied " + nextSha.substring(0UI, 7UI) + " → " +
+                ("  applied " + nextSha.substring(0UI, 7UI) + " -> " +
                     replayed.substring(0UI, 7UI) + " '" +
                     Program.firstLine(commit.message) + "'").println()
             }
@@ -1518,7 +1518,7 @@ namespace AmGit
                 state.onto.substring(0UI, 7UI)).println()
         }
 
-        // `am-git rebase --continue` — after the user has resolved
+        // `am-git rebase --continue` - after the user has resolved
         // conflicts and `am-git add`ed the resolved files, finalise
         // the stopped commit from the index, then drain the rest of
         // the todo.
@@ -1529,7 +1529,7 @@ namespace AmGit
             }
             var state = RebaseState.load(".git")
             if (state.stoppedSha == null) {
-                "rebase: state file has no stopped-sha — corrupted rebase, try --abort".println()
+                "rebase: state file has no stopped-sha - corrupted rebase, try --abort".println()
                 return
             }
 
@@ -1537,7 +1537,7 @@ namespace AmGit
             // expected to have `am-git add`ed every resolved file.
             var idx = GitIndex.read(".git")
             if (idx.hasUnmerged()) {
-                "rebase: unresolved merge conflicts in the index — `am-git add` the resolved paths first".println()
+                "rebase: unresolved merge conflicts in the index - `am-git add` the resolved paths first".println()
                 var i = 0
                 while (i < idx.entries.getSize()) {
                     var e = idx.entries.get(i)
@@ -1554,7 +1554,7 @@ namespace AmGit
             // made aren't silently clobbered.
             var head = HeadReader.read(".git")
             if (head.commitSha == null) {
-                "rebase: HEAD has no commit — corrupted state, try --abort".println()
+                "rebase: HEAD has no commit - corrupted state, try --abort".println()
                 return
             }
 
@@ -1593,7 +1593,7 @@ namespace AmGit
             var branch = Program.stripRefsHeads(state.headName)
             Program.moveBranchRef(branch, newCommitSha)
 
-            ("  applied " + state.stoppedSha.substring(0UI, 7UI) + " → " +
+            ("  applied " + state.stoppedSha.substring(0UI, 7UI) + " -> " +
                 newCommitSha.substring(0UI, 7UI) + " '" +
                 Program.firstLine(stoppedCommit.message) + "' (continued)").println()
 
@@ -1602,7 +1602,7 @@ namespace AmGit
             Program.processRebaseTodo(state, newCommitSha, store)
         }
 
-        // `am-git rebase --abort` — read orig-head, reset --hard to
+        // `am-git rebase --abort` - read orig-head, reset --hard to
         // it, clear the state dir.
         private static fun runRebaseAbort() {
             if (!RebaseState.isInProgress(".git")) {
@@ -1611,7 +1611,7 @@ namespace AmGit
             }
             var state = RebaseState.load(".git")
             if (state.origHead == null) {
-                "rebase: state file missing orig-head — can't abort cleanly. Inspect .git/rebase-merge/.".println()
+                "rebase: state file missing orig-head - can't abort cleanly. Inspect .git/rebase-merge/.".println()
                 return
             }
             var branch = Program.stripRefsHeads(state.headName)
@@ -1622,7 +1622,7 @@ namespace AmGit
                 state.origHead.substring(0UI, 7UI)).println()
         }
 
-        // "refs/heads/<branch>" → "<branch>". The head-name file
+        // "refs/heads/<branch>" -> "<branch>". The head-name file
         // stores the full ref path (real git's format); the rest of
         // am-git wants just the branch name.
         private static fun stripRefsHeads(headName: String): String? {
@@ -1633,9 +1633,9 @@ namespace AmGit
             return headName
         }
 
-        // `am-git cherry-pick <commit>` — apply one commit's
+        // `am-git cherry-pick <commit>` - apply one commit's
         // changes onto the current HEAD as a new commit. Reuses
-        // `replayCommit` (the per-commit step of rebase) directly —
+        // `replayCommit` (the per-commit step of rebase) directly -
         // 3-way merge with base=<commit>'s parent, ours=HEAD,
         // theirs=<commit>. On clean apply, a new commit is made
         // with the picked commit's author + message preserved.
@@ -1654,10 +1654,10 @@ namespace AmGit
         //   and clears state.
         //
         // v1 limitations:
-        //   * Single commit only — no `am-git cherry-pick A B C`.
+        //   * Single commit only - no `am-git cherry-pick A B C`.
         //   * Refuses merge commits (would need `-m <parent>` to
         //     pick which side to bring in).
-        //   * Refuses detached HEAD (same as rebase — reuses
+        //   * Refuses detached HEAD (same as rebase - reuses
         //     `moveBranchRef`).
         private static fun runCherryPick(args: String[]) {
             try {
@@ -1679,11 +1679,11 @@ namespace AmGit
                     return
                 }
                 if (Program.revertInProgress()) {
-                    "cherry-pick: revert in progress — finish or abort that first".println()
+                    "cherry-pick: revert in progress - finish or abort that first".println()
                     return
                 }
                 if (RebaseState.isInProgress(".git")) {
-                    "cherry-pick: rebase in progress — finish or abort that first".println()
+                    "cherry-pick: rebase in progress - finish or abort that first".println()
                     return
                 }
                 Program.runCherryPickStart(first)
@@ -1705,7 +1705,7 @@ namespace AmGit
                 return
             }
             if (head.commitSha == null) {
-                "cherry-pick: current branch has no commits yet — cannot pick onto an unborn branch".println()
+                "cherry-pick: current branch has no commits yet - cannot pick onto an unborn branch".println()
                 return
             }
             var pickedSha = Program.resolveCommitish(commitish)
@@ -1726,12 +1726,12 @@ namespace AmGit
             var commit = Commit.parse(pickedSha, obj.content)
             if (commit.parents.getSize() > 1) {
                 ("cherry-pick: " + pickedSha.substring(0UI, 7UI) +
-                    " is a merge commit — v1 doesn't support `-m <parent-number>` yet.").println()
+                    " is a merge commit - v1 doesn't support `-m <parent-number>` yet.").println()
                 return
             }
             if (commit.parents.getSize() == 0) {
                 ("cherry-pick: " + pickedSha.substring(0UI, 7UI) +
-                    " is a root commit — no parent to diff against.").println()
+                    " is a root commit - no parent to diff against.").println()
                 return
             }
 
@@ -1747,7 +1747,7 @@ namespace AmGit
                 return
             }
 
-            ("Cherry-picked " + pickedSha.substring(0UI, 7UI) + " → " +
+            ("Cherry-picked " + pickedSha.substring(0UI, 7UI) + " -> " +
                 newSha.substring(0UI, 7UI) + " '" +
                 Program.firstLine(commit.message) + "'").println()
         }
@@ -1768,7 +1768,7 @@ namespace AmGit
 
             var idx = GitIndex.read(".git")
             if (idx.hasUnmerged()) {
-                "cherry-pick: unresolved merge conflicts in the index — `am-git add` the resolved paths first".println()
+                "cherry-pick: unresolved merge conflicts in the index - `am-git add` the resolved paths first".println()
                 var ci = 0
                 while (ci < idx.entries.getSize()) {
                     var e = idx.entries.get(ci)
@@ -1782,7 +1782,7 @@ namespace AmGit
 
             var head = HeadReader.read(".git")
             if (head.commitSha == null) {
-                "cherry-pick: HEAD has no commit — corrupted state, use --abort".println()
+                "cherry-pick: HEAD has no commit - corrupted state, use --abort".println()
                 return
             }
 
@@ -1813,7 +1813,7 @@ namespace AmGit
 
             Program.moveBranchRef(head.branch, newCommitSha)
             Program.deleteIfExists(".git/CHERRY_PICK_HEAD")
-            ("Cherry-picked " + pickedSha.substring(0UI, 7UI) + " → " +
+            ("Cherry-picked " + pickedSha.substring(0UI, 7UI) + " -> " +
                 newCommitSha.substring(0UI, 7UI) + " '" +
                 Program.firstLine(pickedCommit.message) + "' (continued)").println()
         }
@@ -1843,13 +1843,13 @@ namespace AmGit
             return new File(".git/CHERRY_PICK_HEAD").exists()
         }
 
-        // `am-git revert <commit>` — produce a new commit that undoes
+        // `am-git revert <commit>` - produce a new commit that undoes
         // the changes introduced by <commit>. The mirror image of
         // cherry-pick: same three-way merge, but with base and theirs
         // swapped. Where cherry-pick says "given the diff from
-        // commit's parent → commit, apply it onto HEAD", revert says
-        // "given the diff from commit → commit's parent, apply it
-        // onto HEAD" — exactly the same machinery in reverse.
+        // commit's parent -> commit, apply it onto HEAD", revert says
+        // "given the diff from commit -> commit's parent, apply it
+        // onto HEAD" - exactly the same machinery in reverse.
         //
         // Two real differences from cherry-pick at finalisation time:
         //
@@ -1861,7 +1861,7 @@ namespace AmGit
         //       Revert "<first line of original message>"
         //
         //       This reverts commit <full SHA>.
-        //     — matches real git's default.
+        //     - matches real git's default.
         //
         // Resume flow uses `.git/REVERT_HEAD` (real git's filename)
         // so an interrupted revert can in principle be aborted by
@@ -1890,11 +1890,11 @@ namespace AmGit
                     return
                 }
                 if (Program.cherryPickInProgress()) {
-                    "revert: cherry-pick in progress — finish or abort that first".println()
+                    "revert: cherry-pick in progress - finish or abort that first".println()
                     return
                 }
                 if (RebaseState.isInProgress(".git")) {
-                    "revert: rebase in progress — finish or abort that first".println()
+                    "revert: rebase in progress - finish or abort that first".println()
                     return
                 }
                 Program.runRevertStart(first)
@@ -1905,7 +1905,7 @@ namespace AmGit
         }
 
         // Initial revert. Same shape as cherry-pick start, but the
-        // 3-way merge has base=commit's tree, theirs=parent's tree —
+        // 3-way merge has base=commit's tree, theirs=parent's tree -
         // i.e. the inverse-diff direction.
         private static fun runRevertStart(commitish: String) {
             var head = HeadReader.read(".git")
@@ -1914,7 +1914,7 @@ namespace AmGit
                 return
             }
             if (head.commitSha == null) {
-                "revert: current branch has no commits — nothing to revert into".println()
+                "revert: current branch has no commits - nothing to revert into".println()
                 return
             }
             var pickedSha = Program.resolveCommitish(commitish)
@@ -1935,12 +1935,12 @@ namespace AmGit
             var commit = Commit.parse(pickedSha, obj.content)
             if (commit.parents.getSize() > 1) {
                 ("revert: " + pickedSha.substring(0UI, 7UI) +
-                    " is a merge commit — v1 doesn't support `-m <parent-number>` yet.").println()
+                    " is a merge commit - v1 doesn't support `-m <parent-number>` yet.").println()
                 return
             }
             if (commit.parents.getSize() == 0) {
                 ("revert: " + pickedSha.substring(0UI, 7UI) +
-                    " is a root commit — nothing to revert (no parent to diff against).").println()
+                    " is a root commit - nothing to revert (no parent to diff against).").println()
                 return
             }
 
@@ -1954,7 +1954,7 @@ namespace AmGit
                 return
             }
 
-            ("Reverted " + pickedSha.substring(0UI, 7UI) + " → " +
+            ("Reverted " + pickedSha.substring(0UI, 7UI) + " -> " +
                 newSha.substring(0UI, 7UI)).println()
         }
 
@@ -2029,7 +2029,7 @@ namespace AmGit
 
             var idx = GitIndex.read(".git")
             if (idx.hasUnmerged()) {
-                "revert: unresolved merge conflicts in the index — `am-git add` the resolved paths first".println()
+                "revert: unresolved merge conflicts in the index - `am-git add` the resolved paths first".println()
                 var ri = 0
                 while (ri < idx.entries.getSize()) {
                     var e = idx.entries.get(ri)
@@ -2043,7 +2043,7 @@ namespace AmGit
 
             var head = HeadReader.read(".git")
             if (head.commitSha == null) {
-                "revert: HEAD has no commit — corrupted state, use --abort".println()
+                "revert: HEAD has no commit - corrupted state, use --abort".println()
                 return
             }
             var store = new ObjectStore(".git")
@@ -2076,7 +2076,7 @@ namespace AmGit
 
             Program.moveBranchRef(head.branch, newCommitSha)
             Program.deleteIfExists(".git/REVERT_HEAD")
-            ("Reverted " + pickedSha.substring(0UI, 7UI) + " → " +
+            ("Reverted " + pickedSha.substring(0UI, 7UI) + " -> " +
                 newCommitSha.substring(0UI, 7UI) + " (continued)").println()
         }
 
@@ -2103,7 +2103,7 @@ namespace AmGit
             return new File(".git/REVERT_HEAD").exists()
         }
 
-        // Default revert message — matches `git revert`'s template.
+        // Default revert message - matches `git revert`'s template.
         //   Revert "<first line of original message>"
         //
         //   This reverts commit <full-sha>.
@@ -2114,7 +2114,7 @@ namespace AmGit
                    "This reverts commit " + picked.sha + ".\n"
         }
 
-        // FF-style "rebase" — HEAD is an ancestor of upstream, so
+        // FF-style "rebase" - HEAD is an ancestor of upstream, so
         // the rebased history equals upstream. Just move the ref +
         // checkout, no commits to replay.
         private static fun rebaseFastForward(head: HeadInfo, upstreamSha: String) {
@@ -2153,7 +2153,7 @@ namespace AmGit
                 var commit = Commit.parse(current, obj.content)
                 if (commit.parents.getSize() > 1) {
                     ("rebase: commit " + current.substring(0UI, 7UI) +
-                        " is a merge — v1 doesn't rebase through merge commits.").println()
+                        " is a merge - v1 doesn't rebase through merge commits.").println()
                     "  Either flatten the history with `git rebase --rebase-merges` (real git) or pick a different upstream.".println()
                     return null
                 }
@@ -2180,7 +2180,7 @@ namespace AmGit
         private static fun replayCommit(commit: Commit, currentHeadSha: String,
                                           branch: String, store: ObjectStore): String? {
             // Parent's tree as the merge base. The parent must exist
-            // in the store — we walked through it during
+            // in the store - we walked through it during
             // collectLinearAhead.
             var parentSha = commit.parents.get(0)
             var parentCommit = store.read(parentSha)
@@ -2250,7 +2250,7 @@ namespace AmGit
             return message.substring(0UI, nl.toUInt())
         }
 
-        // Centralised "write a SHA to refs/heads/<branch>" — used
+        // Centralised "write a SHA to refs/heads/<branch>" - used
         // by both rebase and reset, kept here so the
         // ensureParentDir + trailing-newline contract lives in one
         // spot.
@@ -2269,10 +2269,10 @@ namespace AmGit
         //                    <commit>'s tree. Working tree untouched.
         //   --hard           move HEAD, reset index, AND overwrite
         //                    the working tree with <commit>'s tree.
-        //                    Destroys uncommitted edits — same
+        //                    Destroys uncommitted edits - same
         //                    semantics as real git.
         //
-        // <commit> defaults to HEAD if omitted — i.e. `am-git reset`
+        // <commit> defaults to HEAD if omitted - i.e. `am-git reset`
         // unstages everything (mixed) without changing where HEAD
         // points.
         //
@@ -2306,7 +2306,7 @@ namespace AmGit
 
                 var head = HeadReader.read(".git")
                 if (head.commitSha == null) {
-                    "reset: current branch has no commits — nothing to reset".println()
+                    "reset: current branch has no commits - nothing to reset".println()
                     return
                 }
                 if (target == null) {
@@ -2357,7 +2357,7 @@ namespace AmGit
                     GitIndex.fromTree(rootTreeSha, store).write(".git")
                 }
 
-                // Clear any in-progress merge state — a reset is the
+                // Clear any in-progress merge state - a reset is the
                 // canonical way to abandon one (matches `git merge
                 // --abort` semantics when the target is HEAD).
                 Program.deleteIfExists(".git/MERGE_HEAD")
@@ -2386,7 +2386,7 @@ namespace AmGit
 
         // `am-git diff [--staged|--cached] [--name-only|--name-status] [<commit> [<commit>]]`
         //
-        // Path-level only — we don't have an LCS line-differ yet.
+        // Path-level only - we don't have an LCS line-differ yet.
         // With `--name-only` we emit one path per line. With
         // `--name-status` (and the no-flag default) we emit
         // `<A|M|D>\t<path>`.
@@ -2506,7 +2506,7 @@ namespace AmGit
             }
         }
 
-        // `am-git show [<commit>]` — print a commit's metadata
+        // `am-git show [<commit>]` - print a commit's metadata
         // (SHA, parents, author, committer, message) plus a
         // path-level name-status of what it changed. With no
         // arg, defaults to HEAD.
@@ -2542,7 +2542,7 @@ namespace AmGit
                 }
                 var commit = Commit.parse(sha, obj.content)
 
-                // Header — same shape as `git show`'s default text.
+                // Header - same shape as `git show`'s default text.
                 ("commit " + commit.sha).println()
                 var pi = 0
                 while (pi < commit.parents.getSize()) {
@@ -2553,7 +2553,7 @@ namespace AmGit
                 ("Commit: " + commit.committer).println()
                 "".println()
 
-                // Message — indent every line by 4 spaces, matching
+                // Message - indent every line by 4 spaces, matching
                 // real git. We don't try to detect "merge"-style
                 // boilerplate or trailers, just print as-is.
                 var msg = commit.message
@@ -2567,7 +2567,7 @@ namespace AmGit
                     if (line.length() == 0 && mi == msgLines.length().toInt() - 1) {
                         // Skip the synthetic trailing empty line that
                         // split() produces when the message ends with
-                        // `\n` — otherwise we'd emit an extra blank
+                        // `\n` - otherwise we'd emit an extra blank
                         // line at the end.
                         mi = mi + 1
                         continue
@@ -2577,7 +2577,7 @@ namespace AmGit
                 }
                 "".println()
 
-                // Path-level diff: parent tree → this commit's tree.
+                // Path-level diff: parent tree -> this commit's tree.
                 // For root commits (no parent), the implicit "base"
                 // is the empty tree, so every file shows up as Added.
                 var thisTree = commit.treeSha
@@ -2605,13 +2605,13 @@ namespace AmGit
             }
         }
 
-        // `am-git ls-stages` — print every index entry as
+        // `am-git ls-stages` - print every index entry as
         // `<mode> <sha> <stage>\t<path>`, mirroring
         // `git ls-files --stage`. Useful when debugging conflict
         // resolution: stage 0 = resolved, 1/2/3 = base/ours/theirs.
         //
         // With `--rewrite` it also writes the index back out unchanged
-        // — a round-trip sanity check that proves stage bits and the
+        // - a round-trip sanity check that proves stage bits and the
         // rest of the entry record survive a read/write cycle byte-
         // for-byte (modulo extension blocks we don't emit).
         private static fun runLsStages(args: String[]) {
@@ -2641,7 +2641,7 @@ namespace AmGit
             }
         }
 
-        // Mode bits → 6-char octal string (matches `git ls-files --stage`).
+        // Mode bits -> 6-char octal string (matches `git ls-files --stage`).
         private static fun modeOctal(mode: UInt): String? {
             // 33188 = 0o100644, 33261 = 0o100755, 40960 = 0o120000,
             // 57344 = 0o160000, 16384 = 0o040000 (tree).
@@ -2652,7 +2652,7 @@ namespace AmGit
             return "100644"
         }
 
-        // Resolve a "commit-ish" — a 40-char hex SHA passes through,
+        // Resolve a "commit-ish" - a 40-char hex SHA passes through,
         // anything else is treated as a local branch name and looked
         // up under .git/refs/heads/. Returns null if neither path
         // works.
@@ -2664,13 +2664,13 @@ namespace AmGit
                 return s
             }
             // Special: the literal `HEAD` resolves to whatever the
-            // current HEAD points at — `HeadReader` already handles
+            // current HEAD points at - `HeadReader` already handles
             // detached / symbolic / unborn cases.
             if (s == "HEAD") {
                 var head = HeadReader.read(".git")
                 return head.commitSha
             }
-            // Try local branches first, then tags, then remotes —
+            // Try local branches first, then tags, then remotes -
             // real git's search order. RefStore covers BOTH loose
             // files and packed-refs (real-git clones keep most refs
             // packed), and annotated tags peel through their tag
@@ -2713,7 +2713,7 @@ namespace AmGit
             return true
         }
 
-        // Strip trailing CR/LF/whitespace — ref files have a trailing
+        // Strip trailing CR/LF/whitespace - ref files have a trailing
         // newline.
         private static fun trim(raw: String): String {
             var end = raw.length()
@@ -2734,7 +2734,7 @@ namespace AmGit
         }
 
         // Stage one or more paths into `.git/index`. Mirrors
-        // `git add <path>...` — accepts files and directories; `.`
+        // `git add <path>...` - accepts files and directories; `.`
         // means "everything except .git/".
         private static fun runAdd(args: String[]) {
             try {
@@ -2803,7 +2803,7 @@ namespace AmGit
             }
         }
 
-        // `am-git mv <src> <dst>` — rename a tracked file on disk and
+        // `am-git mv <src> <dst>` - rename a tracked file on disk and
         // in the index. Same blob SHA is preserved (we're not
         // re-hashing); the index entry's path changes.
         //
@@ -2814,9 +2814,9 @@ namespace AmGit
         //     work tree root.
         //
         // v1 limitations:
-        //   * Single source only — `git mv a b c target/` (multi-source
+        //   * Single source only - `git mv a b c target/` (multi-source
         //     into a dir) isn't supported.
-        //   * Files only — directory renames need recursion.
+        //   * Files only - directory renames need recursion.
         //   * No `-f` (force overwrite). Refuses if <dst> already
         //     exists in the workdir or is tracked in the index.
         //   * <src> must be tracked. Renaming an untracked file
@@ -2830,7 +2830,7 @@ namespace AmGit
                 var src = Program.normaliseRel(args[1UI])
                 var dst = args[2UI]
                 if (dst.endsWith("/")) {
-                    // Target is a directory — append source basename.
+                    // Target is a directory - append source basename.
                     dst = dst + Program.basename(src)
                 }
                 dst = Program.normaliseRel(dst)
@@ -2856,7 +2856,7 @@ namespace AmGit
                     return
                 }
 
-                // Don't clobber an existing destination — real git
+                // Don't clobber an existing destination - real git
                 // requires `-f` for that, we don't support it yet.
                 var dstFile = new File(dst)
                 if (dstFile.exists()) {
@@ -2868,7 +2868,7 @@ namespace AmGit
                     return
                 }
 
-                // Move on disk first — if rename fails, leave the
+                // Move on disk first - if rename fails, leave the
                 // index alone so we don't end up with an inconsistent
                 // state.
                 Repository.ensureParentDir(dst)
@@ -2886,10 +2886,10 @@ namespace AmGit
                     srcEntry.ctimeSeconds, srcEntry.ctimeNanos,
                     srcEntry.dev, srcEntry.ino,
                     srcEntry.uid, srcEntry.gid,
-                    0US)  // flags reset — namelen is set on write
+                    0US)  // flags reset - namelen is set on write
                 idx.upsert(moved)
                 idx.write(".git")
-                ("Renamed " + src + " → " + dst).println()
+                ("Renamed " + src + " -> " + dst).println()
             } catch (ex: Exception) {
                 ("mv: " + ex.message).println()
             }
@@ -2910,7 +2910,7 @@ namespace AmGit
             return s
         }
 
-        // Basename — everything after the last `/`. Returns the
+        // Basename - everything after the last `/`. Returns the
         // whole string if there's no slash.
         private static fun basename(p: String): String {
             var slash = p.lastIndexOf("/")
@@ -2925,9 +2925,9 @@ namespace AmGit
         // `am-git status [--porcelain]`
         //
         // Without --porcelain: human-friendly output with the
-        //   "On branch …" header and a "nothing to commit, working
+        //   "On branch ..." header and a "nothing to commit, working
         //   tree clean" line when there are no changes.
-        // With --porcelain: stable machine-readable output — branch
+        // With --porcelain: stable machine-readable output - branch
         //   header suppressed, clean tree emits nothing at all, and
         //   each entry stays in the `XY <path>` form (already the
         //   porcelain v1 shape `StatusReport.printGroup` produces).
@@ -2954,7 +2954,7 @@ namespace AmGit
             }
         }
 
-        // `am-git checkout <branch>` — repoint HEAD at refs/heads/<branch>
+        // `am-git checkout <branch>` - repoint HEAD at refs/heads/<branch>
         // and bring the working tree in line with that branch's tip.
         // Refuses if the branch doesn't exist locally; doesn't detect
         // dirty files (clobbers them).
@@ -2970,10 +2970,10 @@ namespace AmGit
             }
         }
 
-        // `am-git branch`              — list local branches with a
+        // `am-git branch`              - list local branches with a
         //                                 `*` next to the current one.
-        // `am-git branch <name>`       — create a new branch at HEAD.
-        // `am-git branch -d <name>`    — delete a branch (refuses to
+        // `am-git branch <name>`       - create a new branch at HEAD.
+        // `am-git branch -d <name>`    - delete a branch (refuses to
         //                                 delete the current one).
         private static fun runBranch(args: String[]) {
             try {
@@ -3023,7 +3023,7 @@ namespace AmGit
             }
         }
 
-        // Recurse into refs/heads — branch names can contain slashes
+        // Recurse into refs/heads - branch names can contain slashes
         // (`feature/foo`) which become nested directories on disk.
         private static fun collectBranchNames(dir: String, prefix: String): List<String> {
             var out = List<String>.newList<String>()
@@ -3054,7 +3054,7 @@ namespace AmGit
         private static fun createBranch(name: String) {
             var head = HeadReader.read(".git")
             if (head.commitSha == null) {
-                "branch: HEAD has no commit yet — create one first".println()
+                "branch: HEAD has no commit yet - create one first".println()
                 return
             }
             var path = ".git/refs/heads/" + name
@@ -3084,17 +3084,17 @@ namespace AmGit
             ("Deleted refs/heads/" + name).println()
         }
 
-        // `am-git tag`                     — list every tag, sorted.
-        // `am-git tag <name>`              — lightweight tag at HEAD.
-        // `am-git tag <name> <commit>`     — lightweight tag at <commit>.
+        // `am-git tag`                     - list every tag, sorted.
+        // `am-git tag <name>`              - lightweight tag at HEAD.
+        // `am-git tag <name> <commit>`     - lightweight tag at <commit>.
         //                                    <commit> goes through
         //                                    `resolveCommitish`, so
         //                                    branch names + SHAs +
         //                                    `HEAD` all work.
-        // `am-git tag -d <name>`           — delete a tag.
+        // `am-git tag -d <name>`           - delete a tag.
         //
         // v1 limitations:
-        //   * Lightweight tags only — the ref file contains the commit
+        //   * Lightweight tags only - the ref file contains the commit
         //     SHA directly. Annotated tags (a separate tag object with
         //     its own author/date/message) aren't written yet.
         //   * No `-f` to overwrite an existing tag (real git's safety
@@ -3124,11 +3124,11 @@ namespace AmGit
         }
 
         // List tags, one per line, sorted alphabetically. No marker
-        // for "current" — tags don't have a "checked out" concept
+        // for "current" - tags don't have a "checked out" concept
         // the way branches do.
         private static fun listTags() {
             // collectBranchNames is name-misleading but
-            // implementation-neutral — it just walks any refs/* dir.
+            // implementation-neutral - it just walks any refs/* dir.
             var names = Program.collectBranchNames(".git/refs/tags", "")
             // Union in packed-only tags (real-git clones pack them all).
             var packedT = RefStore.packedNamesUnder(".git", "refs/tags/")
@@ -3147,7 +3147,7 @@ namespace AmGit
 
         // Bytewise lexicographic sort. AmLang's String `<` doesn't
         // compare contents, so listBranches / listTags both have to
-        // walk the code units themselves — same workaround
+        // walk the code units themselves - same workaround
         // GitIndex.compareBytewise uses for its on-disk index sort.
         private static fun sortStringsBytewise(list: List<String>) {
             var n = list.getSize()
@@ -3188,7 +3188,7 @@ namespace AmGit
         // Create a lightweight tag at the resolved commit. Refuses
         // to overwrite an existing tag (matches real git's default).
         // Also refuses if the target SHA isn't actually in the
-        // object store — `resolveCommitish` treats any 40-char hex
+        // object store - `resolveCommitish` treats any 40-char hex
         // as a valid SHA without checking existence, so without
         // this guard `am-git tag x ffff...` would happily create a
         // dangling ref.
@@ -3197,7 +3197,7 @@ namespace AmGit
             if (commitish == null) {
                 var head = HeadReader.read(".git")
                 if (head.commitSha == null) {
-                    "tag: HEAD has no commit yet — create one first".println()
+                    "tag: HEAD has no commit yet - create one first".println()
                     return
                 }
                 targetSha = head.commitSha
@@ -3236,8 +3236,8 @@ namespace AmGit
         }
 
         // Walk commit ancestry from HEAD, printing each commit's sha,
-        // author, and message. Follows the first parent only — same
-        // behaviour as `git log --first-parent` — which keeps merges
+        // author, and message. Follows the first parent only - same
+        // behaviour as `git log --first-parent` - which keeps merges
         // from exploding the output. `-n N` caps the count.
         private static fun runLog(args: String[]) {
             try {
@@ -3317,7 +3317,7 @@ namespace AmGit
         //   am-git fetch <remote-name>       (URL from config, override name)
         //   am-git fetch <remote-url> [<remote-name>]
         //
-        // <remote-name> defaults to "origin" — it's the prefix used
+        // <remote-name> defaults to "origin" - it's the prefix used
         // for the remote-tracking refs on disk.
         private static fun runFetch(args: String[]) {
             try {
@@ -3347,14 +3347,14 @@ namespace AmGit
             }
         }
 
-        // Heuristic — pull's first arg might be a URL or a remote
+        // Heuristic - pull's first arg might be a URL or a remote
         // name. A URL contains "://"; a remote name doesn't.
         private static fun looksLikeUrl(s: String): Bool {
             // Explicit scheme: http://, https://, ssh://
             if (s.indexOf("://") > 0) {
                 return true
             }
-            // git's scp-like ssh shorthand: `[user@]host:path` — a colon
+            // git's scp-like ssh shorthand: `[user@]host:path` - a colon
             // that appears before any slash. Distinguishes an ssh remote
             // from a plain branch name or a local path.
             var colon = s.indexOf(":")
@@ -3420,7 +3420,7 @@ namespace AmGit
                 if (branch == null) {
                     var head = HeadReader.read(".git")
                     if (head.detached) {
-                        "push: HEAD is detached — pass <branch> explicitly".println()
+                        "push: HEAD is detached - pass <branch> explicitly".println()
                         return
                     }
                     branch = head.branch
@@ -3430,15 +3430,40 @@ namespace AmGit
                 if (ok) {
                     "Push complete.".println()
                 } else {
-                    "Push reported failures — see lines above.".println()
+                    "Push reported failures - see lines above.".println()
                 }
             } catch (ex: Exception) {
                 ("push: " + ex.message).println()
             }
         }
 
+        // `am-git version` prints this package's version - read from
+        // package.yml via the compiler-generated package registry
+        // (Runtime.getPackages()), so there is no hardcoded string to
+        // drift. `am-git version --all` also lists every package (and
+        // its version) compiled into the binary.
+        private static fun runVersion(args: String[]) {
+            var v = Runtime.getPackageVersion("am-git")
+            if (v == null) {
+                v = "unknown"
+            }
+            ("am-git " + v).println()
+            if (args.length() > 1UI && args[1UI] == "--all") {
+                "".println()
+                "built with packages:".println()
+                var m = Runtime.getPackages()
+                var keys = m.buildKeys()
+                each(keys, id) {
+                    // am-git itself is already the headline line above.
+                    if (id != "am-git") {
+                        ("  " + id + " " + m.get(id)).println()
+                    }
+                }
+            }
+        }
+
         private static fun printUsage() {
-            "am-git — a small git client written in AmLang".println()
+            "am-git - a small git client written in AmLang".println()
             "".println()
             "Commands:".println()
             "  init [<dir>]                        Scaffold an empty .git/ at <dir> (default cwd)".println()
@@ -3479,14 +3504,34 @@ namespace AmGit
             "  build-push-body <out> <old> <new> <ref>".println()
             "                                      Build a raw receive-pack request body".println()
             "  auth-header [<user> <pass>]         Print the Authorization header that would be sent".println()
-            "  version                             Print version information".println()
+            "  version [--all]                     Print version; --all lists all built-in packages".println()
             "  help                                Show this help".println()
             "".println()
-            "Environment:".println()
-            "  AM_GIT_USER_NAME, AM_GIT_USER_EMAIL  Identity used for commit author/committer".println()
-            "    (GIT_AUTHOR_NAME / GIT_COMMITTER_NAME etc. also accepted)".println()
-            "  AM_GIT_USERNAME, AM_GIT_PASSWORD     HTTP Basic auth credentials for push and".println()
-            "                                       cloning private repos (use a PAT for GitHub)".println()
+            "Identity (used for commit author / committer):".println()
+            "  AM_GIT_USER_NAME, AM_GIT_USER_EMAIL".println()
+            "    GIT_AUTHOR_NAME / GIT_COMMITTER_NAME etc. are also accepted.".println()
+            "".println()
+            "Credentials for HTTP / HTTPS (clone, fetch, push):".println()
+            "  Resolved per remote host, first match wins:".println()
+            "    1. In the URL:   https://user:token@host/owner/repo.git".println()
+            "    2. A .netrc store, matched by host:".println()
+            "         AM_GIT_NETRC  the env var VALUE is the whole file. On AmigaOS".println()
+            "                       put the text straight into ENV:AM_GIT_NETRC.".println()
+            "         ~/.netrc      used on Mac / Linux when HOME is set.".println()
+            "       File lines look like:".println()
+            "         machine github.com login alice password ghp_yourtoken".println()
+            "         machine gitlab.com login bob password glpat_yyy".println()
+            "         default login guest password anon".println()
+            "    3. AM_GIT_USERNAME, AM_GIT_PASSWORD  one global login (CI fallback).".println()
+            "  For GitHub (and most hosts) use a personal access token as the".println()
+            "  password. Only the entry that matches the remote host is sent.".println()
+            "".println()
+            "Credentials for SSH (clone, fetch, push over ssh URLs):".println()
+            "  am-git shells out to an ssh client; it does not store ssh keys.".println()
+            "    AM_GIT_SSH   ssh program to run. Default 'ssh'; on AmigaOS set it".println()
+            "                 to 'bebbossh'. Any client taking 'ssh host cmd' works.".println()
+            "  Keys and known-hosts live wherever that client keeps them (for".println()
+            "  bebbossh that is ENVARC:.ssh/known_hosts).".println()
         }
     }
 }

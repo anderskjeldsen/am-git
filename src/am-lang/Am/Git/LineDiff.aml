@@ -2,15 +2,15 @@ namespace Am.Git
 {
     // Line-level unified diff (the missing half of `am-git diff`).
     //
-    // Pipeline: split both blobs into lines → strip the common
+    // Pipeline: split both blobs into lines -> strip the common
     // prefix/suffix (the overwhelming bulk of a typical source edit)
-    // → LCS the small middle via dynamic programming → group the
+    // -> LCS the small middle via dynamic programming -> group the
     // edit script into unified hunks with 3 lines of context.
     //
     // The DP table is capped: when the stripped middle exceeds
-    // MAX_DP_CELLS (memory ~4 bytes/cell — Amiga-friendly), the
+    // MAX_DP_CELLS (memory ~4 bytes/cell - Amiga-friendly), the
     // middle degrades to one delete-all/add-all hunk. Correct, just
-    // not minimal — and only on pathological inputs.
+    // not minimal - and only on pathological inputs.
     //
     // Binary safety: a NUL byte in the first 8000 bytes of either
     // side short-circuits to git's "Binary files ... differ" line.
@@ -22,7 +22,7 @@ namespace Am.Git
         private static const MAX_DP_CELLS: Int = 250000
         private static const CONTEXT: Int = 3
 
-        // Split blob bytes into lines on '\n' (CR kept — byte-exact
+        // Split blob bytes into lines on '\n' (CR kept - byte-exact
         // like git). A trailing newline yields no phantom last line.
         static fun splitLines(bytes: UByte[]): List<String> {
             var out = List<String>.newList<String>()

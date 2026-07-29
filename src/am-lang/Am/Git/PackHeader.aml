@@ -14,7 +14,7 @@ namespace Am.Git
             }
             // 'P' 'A' 'C' 'K' = 0x50 0x41 0x43 0x4B
             if (bytes[0UI] != 80UB || bytes[1UI] != 65UB || bytes[2UI] != 67UB || bytes[3UI] != 75UB) {
-                throw new Exception("Not a packfile — magic bytes not 'PACK'")
+                throw new Exception("Not a packfile - magic bytes not 'PACK'")
             }
             var version = PackHeader.readBE32(bytes, 4)
             var objectCount = PackHeader.readBE32(bytes, 8)

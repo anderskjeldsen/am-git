@@ -3,8 +3,8 @@ namespace Am.Git
     // Resolves `<gitDir>/HEAD` to a `HeadInfo`.
     //
     // `.git/HEAD` is one of two forms:
-    //   * `ref: refs/heads/<branch>\n` — the normal "on a branch" case
-    //   * `<40-char hex sha>\n`        — detached HEAD
+    //   * `ref: refs/heads/<branch>\n` - the normal "on a branch" case
+    //   * `<40-char hex sha>\n`        - detached HEAD
     //
     // For the symbolic-ref form we then follow the indirection to
     // `<gitDir>/<refpath>`; if that file doesn't exist (e.g. after a
@@ -13,7 +13,7 @@ namespace Am.Git
     // object's `parent` line.
     //
     // Branch refs resolve through RefStore, which reads the loose
-    // file first and falls back to `packed-refs` — so a repo cloned
+    // file first and falls back to `packed-refs` - so a repo cloned
     // or `git gc`'d by real git (refs packed) resolves the same as
     // am-git's own loose-ref clones.
     class HeadReader
@@ -26,13 +26,13 @@ namespace Am.Git
             var headFile = new File(headPath)
             if (!headFile.exists()) {
                 throw new Exception("HEAD not found at " + headPath +
-                                     " — not a git repository?")
+                                     " - not a git repository?")
             }
 
             var content = String.readFromFile(headPath).trim()
 
             if (content.startsWith("ref: ")) {
-                // "ref: refs/heads/<branch>" → resolve.
+                // "ref: refs/heads/<branch>" -> resolve.
                 var refPath = content.substringToEnd(5UI)
                 if (!refPath.startsWith("refs/heads/")) {
                     throw new Exception("HEAD points outside refs/heads/: " + refPath)
@@ -40,7 +40,7 @@ namespace Am.Git
                 var branch = refPath.substringToEnd(11UI)
 
                 // Loose file first, packed-refs second (RefStore). A
-                // null from both means an unborn branch — `git init`
+                // null from both means an unborn branch - `git init`
                 // left HEAD pointing at refs/heads/<branch> but never
                 // created the ref; the first commit creates it.
                 var sha = RefStore.resolve(gitDir, refPath)
@@ -53,7 +53,7 @@ namespace Am.Git
                 return new HeadInfo(branch, sha, false)
             }
 
-            // Detached HEAD — raw SHA after trim().
+            // Detached HEAD - raw SHA after trim().
             if (content.length() != 40) {
                 throw new Exception("HEAD content is neither a ref nor a 40-char SHA: " + content)
             }

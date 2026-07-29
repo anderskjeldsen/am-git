@@ -1,6 +1,6 @@
 namespace Am.Git
 {
-    // `am-git add <path>...` — stage paths into `.git/index`.
+    // `am-git add <path>...` - stage paths into `.git/index`.
     //
     // For each path:
     //   * If it's a regular file: hash its bytes as a blob, write the
@@ -9,13 +9,13 @@ namespace Am.Git
     //     (excluding `.git`).
     //
     // What we don't do yet:
-    //   * `.gitignore` parsing — `am-git add .` adds everything that
+    //   * `.gitignore` parsing - `am-git add .` adds everything that
     //     isn't `.git/`.
-    //   * Pathspec patterns — paths are interpreted literally.
-    //   * `--update` / `-A` etc. — explicit paths only.
+    //   * Pathspec patterns - paths are interpreted literally.
+    //   * `--update` / `-A` etc. - explicit paths only.
     //   * Recording exec / symlink modes accurately. We always tag
     //     entries as `0100644` (regular file). Real git would inspect
-    //     the inode mode bits — we don't have those wired up from
+    //     the inode mode bits - we don't have those wired up from
     //     AmLang yet.
     class AddCommand
     {
@@ -61,7 +61,7 @@ namespace Am.Git
         private static fun addOne(gitDir: String, workTreePath: String, rawPath: String,
                                    idx: GitIndex, writer: LooseObjectWriter,
                                    ignore: GitIgnore): Int {
-            // "." → the work tree itself.
+            // "." -> the work tree itself.
             if (rawPath == "." || rawPath == "./") {
                 return AddCommand.addDir(gitDir, workTreePath, "", idx, writer, ignore)
             }
@@ -122,7 +122,7 @@ namespace Am.Git
                 var isDir = f.isDirectory()
                 // Skip paths the user told us to ignore. We test
                 // before recursing into dirs, so ignored dirs aren't
-                // walked at all — matches real git's behaviour and
+                // walked at all - matches real git's behaviour and
                 // saves us a pile of File operations on large
                 // builds/ trees.
                 if (ignore.isIgnored(relPath, isDir)) {
@@ -157,7 +157,7 @@ namespace Am.Git
             if (sizeLong > 0L) {
                 size = sizeLong.toUInt()
             }
-            // getLastModified() returns ms since epoch — DIRC stores
+            // getLastModified() returns ms since epoch - DIRC stores
             // seconds + nanoseconds separately. We don't have ns
             // resolution from AmLang's File API; nanos = 0 is fine.
             var mtimeMs = f.getLastModified()
@@ -167,17 +167,17 @@ namespace Am.Git
             }
 
             // 0100644 = regular file. We don't tag exec / symlink
-            // modes yet — see class comment.
+            // modes yet - see class comment.
             var mode: UInt = 33188UI  // 0100644 octal
             var entry = new IndexEntry(
                 relPath, sha, mode, size,
                 mtimeSec, 0UI,           // mtime
-                mtimeSec, 0UI,           // ctime (same as mtime — no separate ctime from AmLang)
+                mtimeSec, 0UI,           // ctime (same as mtime - no separate ctime from AmLang)
                 0UI, 0UI,                 // dev, ino
                 0UI, 0UI,                 // uid, gid
-                0US)                      // flags — namelen is set on write (stage 0)
+                0US)                      // flags - namelen is set on write (stage 0)
             // Clear any leftover conflict-stage rows (1/2/3) for this
-            // path — staging the resolved working-tree version is
+            // path - staging the resolved working-tree version is
             // what marks a merge conflict as fixed. clearConflictStages
             // is a no-op on non-conflicted paths so this stays cheap.
             idx.clearConflictStages(relPath)

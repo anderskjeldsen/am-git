@@ -12,7 +12,7 @@ namespace Am.Git
     class IndexEntry(
         var path: String,
         var sha: String,             // 40-char lowercase hex SHA-1 of the blob
-        var mode: UInt,              // git mode bits — 0100644, 0100755, 0120000, 0160000
+        var mode: UInt,              // git mode bits - 0100644, 0100755, 0120000, 0160000
         var size: UInt,              // file size in bytes (truncated to 32 bits)
         var mtimeSeconds: UInt,
         var mtimeNanos: UInt,
@@ -27,7 +27,7 @@ namespace Am.Git
     {
         import Am.Lang
 
-        // Stage 0..3 — bits 12-13 of `flags`. 0 = resolved/normal,
+        // Stage 0..3 - bits 12-13 of `flags`. 0 = resolved/normal,
         // 1 = merge-base, 2 = ours (HEAD), 3 = theirs (other branch).
         // Real git uses this layout when a merge leaves conflicts; we
         // do too. See GitIndex header comment for the full flag map.

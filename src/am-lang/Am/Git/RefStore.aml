@@ -18,7 +18,7 @@ namespace Am.Git
     //   ^<40-hex-sha>
     //
     // `#` lines are comments. A `^<sha>` line gives the PEELED commit
-    // of the annotated tag on the preceding line — `peeledFor` serves
+    // of the annotated tag on the preceding line - `peeledFor` serves
     // it so resolvers can skip reading the tag object.
     //
     // Also home to `peelToCommit`: follow tag objects (type 4) down
@@ -73,7 +73,7 @@ namespace Am.Git
         }
 
         // Ref NAMES under `prefix` (e.g. "refs/heads/") that exist
-        // ONLY in packed-refs — callers union this with their loose
+        // ONLY in packed-refs - callers union this with their loose
         // directory listing. Names are returned prefix-stripped
         // ("main", not "refs/heads/main").
         static fun packedNamesUnder(gitDir: String, prefix: String): List<String> {
@@ -85,7 +85,7 @@ namespace Am.Git
                 var name = RefStore.lineRefName(line)
                 if (name != null && name.startsWith(prefix)) {
                     var short = name.substringToEnd(prefix.length().toUInt())
-                    // Loose shadows packed — skip when the loose file exists.
+                    // Loose shadows packed - skip when the loose file exists.
                     var looseFile = new File(gitDir + "/" + name)
                     if (!looseFile.exists()) {
                         out.add(short)
@@ -146,7 +146,7 @@ namespace Am.Git
         }
 
         // packed-refs, split into trimmed lines with comments dropped
-        // (`^` peel lines are KEPT — peeledFor needs the adjacency).
+        // (`^` peel lines are KEPT - peeledFor needs the adjacency).
         private static fun readPackedLines(gitDir: String): List<String> {
             var out = List<String>.newList<String>()
             var path = gitDir + "/packed-refs"
@@ -181,7 +181,7 @@ namespace Am.Git
             return out
         }
 
-        // "sha refs/heads/x" → "refs/heads/x"; `^peel` lines → null.
+        // "sha refs/heads/x" -> "refs/heads/x"; `^peel` lines -> null.
         private static fun lineRefName(line: String): String? {
             if (line.startsWith("^")) {
                 return null
@@ -192,7 +192,7 @@ namespace Am.Git
             return line.substringToEnd(41UI)
         }
 
-        // "sha refs/heads/x" → sha.
+        // "sha refs/heads/x" -> sha.
         private static fun lineSha(line: String): String? {
             if (line.length() < 40 || line.startsWith("^")) {
                 return null

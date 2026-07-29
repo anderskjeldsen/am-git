@@ -14,14 +14,14 @@ namespace Am.Git
     //   stopped-sha      SHA of the commit currently waiting for
     //                     conflict resolution. Empty / file absent
     //                     means "no commit is currently mid-replay"
-    //                     — used as a sanity check by --continue.
+    //                     - used as a sanity check by --continue.
     //   git-rebase-todo  remaining commits to apply AFTER stopped-sha,
     //                     one SHA per line, in oldest-first order.
     //                     Empty file means stopped-sha was the last
     //                     one and --continue finishes the rebase.
     //
     // Lifecycle:
-    //   Phase A reaches a conflict → `save()` writes all five files.
+    //   Phase A reaches a conflict -> `save()` writes all five files.
     //   `--continue` reads them, makes the commit for stopped-sha
     //   from the resolved index, then either pops the next from
     //   todo (more work) or calls `clear()` (done).
@@ -36,7 +36,7 @@ namespace Am.Git
         var origHead: String? = null
         var headName: String? = null
         var stoppedSha: String? = null
-        // Inline initializer — runs as part of the property's default
+        // Inline initializer - runs as part of the property's default
         // setup at `new` time. AmLang's constructor-time hook is an
         // `init { ... }` block (post-primary-constructor, post-property
         // defaults); a method called `fun constructor()` looks like a
@@ -88,7 +88,7 @@ namespace Am.Git
             RebaseState.deleteIfPresent(dir + "/stopped-sha")
             RebaseState.deleteIfPresent(dir + "/git-rebase-todo")
             // Empty the dir, then remove. listFiles may catch other
-            // files real git wrote — delete those too so the rmdir
+            // files real git wrote - delete those too so the rmdir
             // succeeds.
             var f = new File(dir)
             if (f.exists() && f.isDirectory()) {
@@ -114,7 +114,7 @@ namespace Am.Git
             }
             var raw = String.readFromFile(path)
             // Trim a single trailing newline if present. We don't
-            // generic-trim — the stored value may legitimately
+            // generic-trim - the stored value may legitimately
             // contain interior whitespace (head-name = "refs/heads/<x>"
             // for example, no spaces but defensive nonetheless).
             if (raw.endsWith("\n")) {

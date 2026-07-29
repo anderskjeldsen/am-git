@@ -1,6 +1,6 @@
 namespace Am.Git
 {
-    // `git status` — three-way diff of HEAD vs index vs working tree.
+    // `git status` - three-way diff of HEAD vs index vs working tree.
     //
     // Output groups (matching `git status --short`):
     //
@@ -13,7 +13,7 @@ namespace Am.Git
     //      M  content on disk differs from index
     //      D  on-disk file missing while indexed
     //
-    //   ??     untracked — present on disk, absent from both
+    //   ??     untracked - present on disk, absent from both
     //
     // When there's no `.git/index`, we fall back to the pre-index
     // behaviour: compare worktree directly to HEAD and report
@@ -27,20 +27,20 @@ namespace Am.Git
         import Am.Crypto
 
         // When `porcelain == true`:
-        //   - Suppresses the "On branch …" header.
+        //   - Suppresses the "On branch ..." header.
         //   - Suppresses the "nothing to commit, working tree clean"
-        //     line (clean tree → no output at all).
+        //     line (clean tree -> no output at all).
         //   - Keeps the XY-prefixed lines exactly as before; the
         //     prefixes are already the porcelain v1 format
         //     (`A  path`, ` M path`, `?? path`, etc.).
         // Matches `git status --porcelain` (v1) closely enough that
         // scripts written against real git work unchanged.
         //
-        // No no-arg overload — AmLang's static-function overloading
+        // No no-arg overload - AmLang's static-function overloading
         // has produced binder collisions in the past, so every
         // caller passes the flag explicitly.
         static fun run(gitDir: String, workTreePath: String, porcelain: Bool): Int {
-            // Resolve "." / "" to an absolute path — on AmigaOS without
+            // Resolve "." / "" to an absolute path - on AmigaOS without
             // ixemul, opendir(".") isn't reliable; getcwd() is.
             workTreePath = StatusReport.resolveBase(workTreePath)
 
@@ -49,8 +49,8 @@ namespace Am.Git
                 StatusReport.printBranchHeader(head)
             }
 
-            // HEAD's tree as path → blob SHA. Empty for an unborn
-            // branch — every indexed / on-disk file then counts as a
+            // HEAD's tree as path -> blob SHA. Empty for an unborn
+            // branch - every indexed / on-disk file then counts as a
             // brand-new addition.
             var headPaths = new HashMap<String, String>()
             if (head.commitSha != null) {
@@ -64,7 +64,7 @@ namespace Am.Git
                 StatusReport.collectTreePaths(rootTreeSha, "", headPaths, store)
             }
 
-            // Working-tree state — same hashing as `am-git add`, so a
+            // Working-tree state - same hashing as `am-git add`, so a
             // file that's been staged-and-untouched compares equal.
             // We honour .gitignore at status-walk time so ignored
             // files don't show up as `??` noise.
@@ -72,7 +72,7 @@ namespace Am.Git
             var diskPaths = new HashMap<String, String>()
             StatusReport.collectDiskPaths(workTreePath, "", diskPaths, ignore)
 
-            // Index state. Absence is fine — old repos / fresh clones
+            // Index state. Absence is fine - old repos / fresh clones
             // don't have one, and we degrade to a worktree-vs-HEAD diff.
             var indexFile = new File(gitDir + "/index")
             if (!indexFile.exists()) {
@@ -84,7 +84,7 @@ namespace Am.Git
             // Unmerged paths (any path with a stage > 0 row). These
             // need their own bucket because the regular staged/unstaged
             // diff doesn't have a single "index version" to compare
-            // against — there's a base, an "ours", and a "theirs".
+            // against - there's a base, an "ours", and a "theirs".
             var unmergedList = idx.unmergedPaths()
             var unmergedSet = new HashSet<String>()
             var um = 0
@@ -94,7 +94,7 @@ namespace Am.Git
             }
 
             // Staged: differences between index and HEAD. Skip unmerged
-            // paths — they're reported separately below.
+            // paths - they're reported separately below.
             var stagedAdded = List<String>.newList<String>()
             var stagedModified = List<String>.newList<String>()
             var stagedDeleted = List<String>.newList<String>()
@@ -133,7 +133,7 @@ namespace Am.Git
 
             // Unstaged: differences between worktree and index. Files
             // in worktree but not the index land in `untracked`. Skip
-            // unmerged paths — the workdir version is the
+            // unmerged paths - the workdir version is the
             // conflict-markered file, comparing it to "the index"
             // makes no sense.
             var unstagedModified = List<String>.newList<String>()
@@ -176,7 +176,7 @@ namespace Am.Git
                 }
                 return 0
             }
-            // Print unmerged first — they're the most urgent and
+            // Print unmerged first - they're the most urgent and
             // real git lists them at the top of `git status` output
             // for the same reason. XY code per path comes from
             // GitIndex.unmergedXY (UU / AA / DU / UD).
@@ -198,8 +198,119 @@ namespace Am.Git
             return changed
         }
 
+        // Structured variant for programmatic callers (e.g. a GUI file
+        // tree): returns a map of worktree-relative path -> a single
+        // one-letter status code, for CHANGED paths only (clean files are
+        // absent). Codes: "A" added/staged-new, "M" modified (staged or
+        // unstaged), "D" deleted, "?" untracked, "U" unmerged/conflict.
+        // Same underlying computation as run(), minus the printing.
+        static fun pathStatus(gitDir: String, workTreePath: String): HashMap<String, String> {
+            var out = new HashMap<String, String>()
+            workTreePath = StatusReport.resolveBase(workTreePath)
+
+            var head = HeadReader.read(gitDir)
+            var headPaths = new HashMap<String, String>()
+            if (head.commitSha != null) {
+                var store = new ObjectStore(gitDir)
+                if (store.has(head.commitSha)) {
+                    var commitObj = store.read(head.commitSha)
+                    var rootTreeSha = WorkTree.extractRootTreeSha(commitObj.content)
+                    StatusReport.collectTreePaths(rootTreeSha, "", headPaths, store)
+                }
+            }
+
+            var ignore = GitIgnore.load(workTreePath, gitDir)
+            var diskPaths = new HashMap<String, String>()
+            StatusReport.collectDiskPaths(workTreePath, "", diskPaths, ignore)
+
+            var indexFile = new File(gitDir + "/index")
+            if (!indexFile.exists()) {
+                // No index: everything on disk not in HEAD is untracked,
+                // disk-vs-HEAD differences are modified, HEAD-only deleted.
+                var dk = diskPaths.buildKeys()
+                var d0 = 0
+                while (d0 < dk.getSize()) {
+                    var p = dk.get(d0)
+                    if (!headPaths.containsKey(p)) {
+                        out.set(p, "?")
+                    } else if (headPaths.get(p) != diskPaths.get(p)) {
+                        out.set(p, "M")
+                    }
+                    d0 = d0 + 1
+                }
+                var hk0 = headPaths.buildKeys()
+                var h0 = 0
+                while (h0 < hk0.getSize()) {
+                    var p2 = hk0.get(h0)
+                    if (!diskPaths.containsKey(p2)) {
+                        out.set(p2, "D")
+                    }
+                    h0 = h0 + 1
+                }
+                return out
+            }
+
+            var idx = GitIndex.read(gitDir)
+            var indexPaths = idx.pathToSha()
+            var unmergedList = idx.unmergedPaths()
+            var u0 = 0
+            while (u0 < unmergedList.getSize()) {
+                out.set(unmergedList.get(u0), "U")
+                u0 = u0 + 1
+            }
+
+            var indexKeys = indexPaths.buildKeys()
+            // Staged (index vs HEAD).
+            var i0 = 0
+            while (i0 < indexKeys.getSize()) {
+                var path = indexKeys.get(i0)
+                if (!out.containsKey(path)) {
+                    if (!headPaths.containsKey(path)) {
+                        out.set(path, "A")
+                    } else if (headPaths.get(path) != indexPaths.get(path)) {
+                        out.set(path, "M")
+                    }
+                }
+                i0 = i0 + 1
+            }
+            // Staged deletes (in HEAD, not in index).
+            var headKeys = headPaths.buildKeys()
+            var h1 = 0
+            while (h1 < headKeys.getSize()) {
+                var hp = headKeys.get(h1)
+                if (!out.containsKey(hp) && !indexPaths.containsKey(hp)) {
+                    out.set(hp, "D")
+                }
+                h1 = h1 + 1
+            }
+            // Unstaged (worktree vs index).
+            var i1 = 0
+            while (i1 < indexKeys.getSize()) {
+                var ip = indexKeys.get(i1)
+                if (!out.containsKey(ip)) {
+                    if (!diskPaths.containsKey(ip)) {
+                        out.set(ip, "D")
+                    } else if (diskPaths.get(ip) != indexPaths.get(ip)) {
+                        out.set(ip, "M")
+                    }
+                }
+                i1 = i1 + 1
+            }
+            // Untracked (on disk, not in index).
+            var diskKeys = diskPaths.buildKeys()
+            var d1 = 0
+            while (d1 < diskKeys.getSize()) {
+                var dp = diskKeys.get(d1)
+                if (!out.containsKey(dp) && !indexPaths.containsKey(dp)) {
+                    out.set(dp, "?")
+                }
+                d1 = d1 + 1
+            }
+            return out
+        }
+
         // No-index fallback: same shape as the old single-bucket
-        // report — everything is "unstaged". `porcelain` toggles
+        // report - everything is "unstaged". `porcelain` toggles
         // off the "nothing to commit" line on a clean tree, matching
         // the indexed path above and real git's --porcelain output.
         private static fun reportWithoutIndex(headPaths: HashMap<String, String>,
@@ -246,7 +357,7 @@ namespace Am.Git
             if (head.detached) {
                 ("HEAD detached at " + head.commitSha).println()
             } else if (head.commitSha == null) {
-                ("On branch " + head.branch + " — no commits yet").println()
+                ("On branch " + head.branch + " - no commits yet").println()
             } else {
                 ("On branch " + head.branch).println()
             }
@@ -296,7 +407,7 @@ namespace Am.Git
         }
 
         // Recursively walk HEAD's tree, building a map of relative
-        // path → blob SHA for every file (skipping submodules).
+        // path -> blob SHA for every file (skipping submodules).
         // Public so `DiffCommand` and other path-vs-tree comparers
         // can reuse the same recursion + skip rules.
         static fun collectTreePaths(treeSha: String,
@@ -325,7 +436,7 @@ namespace Am.Git
                 } else if (entry.isFile() || entry.isSymlink()) {
                     out.set(path, entry.sha)
                 }
-                // Submodules — skipped, mirrors WorkTree/CheckoutClient.
+                // Submodules - skipped, mirrors WorkTree/CheckoutClient.
                 i = i + 1
             }
         }

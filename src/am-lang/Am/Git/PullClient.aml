@@ -1,6 +1,6 @@
 namespace Am.Git
 {
-    // `git pull` — fetch + advance the current branch to the remote's
+    // `git pull` - fetch + advance the current branch to the remote's
     // tip when it's a strict descendant (fast-forward); otherwise
     // report the divergence to the caller, who runs the same 3-way
     // merge machinery `am-git merge` uses (see Program.runPull).
@@ -9,7 +9,7 @@ namespace Am.Git
     //   1. Resolve the remote URL (CLI arg, or `remote.<name>.url`
     //      from `.git/config`) and the branch to pull (CLI arg, or
     //      whatever HEAD currently points at).
-    //   2. Run FetchClient.fetch — that brings objects in and updates
+    //   2. Run FetchClient.fetch - that brings objects in and updates
     //      `refs/remotes/<remote>/<branch>`.
     //   3. Compare the remote-tracking SHA with the local branch SHA.
     //      If equal: already up-to-date.
@@ -21,13 +21,13 @@ namespace Am.Git
     // Return codes (the CLI layer merges on 2):
     //   0 = failed (bad args / missing remote / missing ref)
     //   1 = success (already up-to-date, or fast-forwarded)
-    //   2 = fetched OK but non-fast-forward — remote-tracking ref is
+    //   2 = fetched OK but non-fast-forward - remote-tracking ref is
     //       updated; the caller should 3-way merge it into HEAD.
     //
     // Limitations on purpose:
-    //   * Dirty working tree → clobbered by the checkout step. Run
+    //   * Dirty working tree -> clobbered by the checkout step. Run
     //     `am-git status` first if you care.
-    //   * Only updates the branch you're on / passed explicitly —
+    //   * Only updates the branch you're on / passed explicitly -
     //     other branches' remote-tracking refs do get updated by the
     //     fetch step, just not their local counterparts.
     class PullClient
@@ -36,9 +36,9 @@ namespace Am.Git
         import Am.Collections
         import Am.IO
 
-        // remoteUrl == null → look up `remote.<remoteName>.url` from
+        // remoteUrl == null -> look up `remote.<remoteName>.url` from
         //                    .git/config.
-        // branch    == null → use HEAD's current branch.
+        // branch    == null -> use HEAD's current branch.
         // remoteName defaults to "origin" at the CLI layer.
         static fun pull(gitDir: String, workTreePath: String,
                         remoteUrl: String, branch: String, remoteName: String): Int {
@@ -46,7 +46,7 @@ namespace Am.Git
             var head = HeadReader.read(gitDir)
             if (branch == null) {
                 if (head.detached) {
-                    "pull: HEAD is detached — pass <branch> explicitly".println()
+                    "pull: HEAD is detached - pass <branch> explicitly".println()
                     return 0
                 }
                 branch = head.branch
@@ -75,7 +75,7 @@ namespace Am.Git
             }
             var remoteSha = String.readFromFile(remoteRefPath).trim()
 
-            // Local branch — may not exist yet if we just initialised
+            // Local branch - may not exist yet if we just initialised
             // this repo against the remote. Loose or packed (RefStore).
             var localRefPath = gitDir + "/refs/heads/" + branch
             var localSha: String? = RefStore.resolve(gitDir, "refs/heads/" + branch)
@@ -88,16 +88,16 @@ namespace Am.Git
             // Fast-forward check: walk back from the remote SHA, ask
             // whether the local SHA shows up as an ancestor. Local
             // SHA == null (unborn branch) is implicitly an ancestor of
-            // anything — we treat that as a fast-forward too.
+            // anything - we treat that as a fast-forward too.
             var store = new ObjectStore(gitDir)
             if (localSha != null) {
                 if (!PullClient.isAncestor(store, localSha, remoteSha)) {
                     // Divergent histories. The fetch already happened and
                     // refs/remotes/<remote>/<branch> points at the server's
-                    // tip — hand the 3-way merge to the CLI layer, which
+                    // tip - hand the 3-way merge to the CLI layer, which
                     // reuses the same machinery as `am-git merge`.
                     ("pull: " + branch + " and " + remoteName + "/" + branch +
-                     " have diverged — merging").println()
+                     " have diverged - merging").println()
                     return 2
                 }
             }
@@ -107,7 +107,7 @@ namespace Am.Git
             Repository.ensureParentDir(localRefPath)
             (remoteSha + "\n").writeToFile(localRefPath)
             CheckoutClient.checkout(gitDir, workTreePath, branch)
-            ("Fast-forwarded " + branch + " → " + remoteSha).println()
+            ("Fast-forwarded " + branch + " -> " + remoteSha).println()
             return 1
         }
 

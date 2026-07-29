@@ -16,7 +16,7 @@ namespace Am.Git
         import Am.Lang
         import Am.Collections
 
-        // Parse a smart-HTTP info/refs body — same format for both
+        // Parse a smart-HTTP info/refs body - same format for both
         // upload-pack (clone/fetch) and receive-pack (push), only the
         // service name in the leading "# service=..." line differs.
         // Layout: Documentation/technical/http-protocol.txt.
@@ -25,7 +25,7 @@ namespace Am.Git
         }
 
         // Same, but for advertisements that DON'T carry the smart-HTTP
-        // "# service=..." banner + flush — i.e. what git-upload-pack
+        // "# service=..." banner + flush - i.e. what git-upload-pack
         // writes directly over ssh / git:// (the ref list starts at the
         // very first pkt-line).
         static fun parseNoBanner(body: UByte[]): RefAdvertisement {
@@ -71,7 +71,7 @@ namespace Am.Git
                 if (firstReal) {
                     firstReal = false
                     // First ref line: "<sha> <name>\0<cap1> <cap2> ..."
-                    // A fresh / empty repo has no refs at all — receive-
+                    // A fresh / empty repo has no refs at all - receive-
                     // pack still emits a placeholder line with the all-
                     // zeros sha and the magic name "capabilities^{}".
                     var nul = RefAdvertisement.indexOfChar(line, 0US)
@@ -169,7 +169,7 @@ namespace Am.Git
         // Best-effort: determine which `refs/heads/<x>` ref currently
         // shares HEAD's SHA. The smart-HTTP v1 advertisement doesn't
         // explicitly tell us which branch HEAD tracks, so we infer it
-        // from the SHA. Falls back to "main" when unknown — matching
+        // from the SHA. Falls back to "main" when unknown - matching
         // what `git clone` does today.
         fun defaultBranch(): String {
             var head = this.headSha()

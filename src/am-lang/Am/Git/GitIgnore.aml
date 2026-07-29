@@ -6,7 +6,7 @@ namespace Am.Git
     // have to deal with them.
     //
     // `anchored` means "must match starting from the .gitignore's
-    // directory" — true when the original pattern contained a `/`
+    // directory" - true when the original pattern contained a `/`
     // anywhere other than the trailing position. Bare patterns
     // (`*.log`, `build`) are unanchored and match by basename
     // anywhere below the .gitignore.
@@ -37,7 +37,7 @@ namespace Am.Git
     //     directories.
     //   * Glob metacharacters `*` (any chars except `/`) and `?`
     //     (single char except `/`). No `**` and no `[abc]` ranges
-    //     — those need a real glob compiler and aren't a regular
+    //     - those need a real glob compiler and aren't a regular
     //     papercut in practice.
     //
     // Match semantics follow gitignore(5): rules are tested in
@@ -60,7 +60,7 @@ namespace Am.Git
 
         // Walk the worktree from `workTreePath`, load every
         // .gitignore at every depth, plus `.git/info/exclude`. The
-        // walk uses `.git` as the skip dir — same convention as
+        // walk uses `.git` as the skip dir - same convention as
         // every other tree walk in am-git.
         static fun load(workTreePath: String, gitDir: String): GitIgnore? {
             var g = new GitIgnore()
@@ -147,7 +147,7 @@ namespace Am.Git
             }
 
             // Anchored if the (now-stripped) pattern contains a slash
-            // anywhere — including a leading one, which we then peel
+            // anywhere - including a leading one, which we then peel
             // off so the matcher doesn't have to special-case it.
             var anchored = false
             if (GitIgnore.contains(work, "/")) {
@@ -187,14 +187,14 @@ namespace Am.Git
         // True iff `rule` matches `relPath`. Handles three things at
         // once:
         //
-        //   * Base-path scoping — a rule from `subdir/.gitignore`
+        //   * Base-path scoping - a rule from `subdir/.gitignore`
         //     only applies to paths under `subdir/`.
-        //   * Dir-only restriction — applies to the leaf only. A
+        //   * Dir-only restriction - applies to the leaf only. A
         //     `logs/` rule must NOT match a sibling FILE called
         //     `logs` (isDir=false at the leaf), but MUST match a
         //     FILE under the `logs/` directory because the dir
         //     itself is ignored.
-        //   * "Ignored-directory implies ignored-contents" — if any
+        //   * "Ignored-directory implies ignored-contents" - if any
         //     directory component along `relPath` matches the
         //     pattern, the rule fires for the file too. Real git
         //     achieves the same effect by not descending into
@@ -220,7 +220,7 @@ namespace Am.Git
                 // (leaf), or a slash-separated prefix of it (a
                 // directory in the path). Either case fires the rule.
                 if (GitIgnore.globMatch(rule.pattern, localPath)) {
-                    // Full-path match — dir-only restricts to isDir.
+                    // Full-path match - dir-only restricts to isDir.
                     if (!rule.dirOnly) {
                         return true
                     }
@@ -272,7 +272,7 @@ namespace Am.Git
 
         // Glob match: `*` matches any run of non-`/` chars,
         // `?` matches a single non-`/` char. Recursive backtracking
-        // — fine for the short patterns .gitignore lines actually
+        // - fine for the short patterns .gitignore lines actually
         // contain. Returns true iff the entire `s` matches the
         // entire `pattern`.
         private static fun globMatch(pattern: String, s: String): Bool {

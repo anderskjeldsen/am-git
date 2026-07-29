@@ -1,6 +1,6 @@
 namespace Am.Git
 {
-    // Hex helpers — git identifies objects by 40-char lowercase hex SHA-1.
+    // Hex helpers - git identifies objects by 40-char lowercase hex SHA-1.
     // We round-trip those between String and the raw 20-byte form.
     class HexUtil
     {

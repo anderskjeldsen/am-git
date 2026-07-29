@@ -2,7 +2,7 @@ namespace Am.Git
 {
     // One parsed entry from a packfile. Same class is used whether
     // the entry is a full object (commit/tree/blob/tag) or a delta
-    // (OFS_DELTA / REF_DELTA) that still needs resolving — the
+    // (OFS_DELTA / REF_DELTA) that still needs resolving - the
     // `typeCode` field distinguishes, and a couple of extra fields
     // carry the base-object reference for the two delta forms.
     //
@@ -67,7 +67,7 @@ namespace Am.Git
         //     "<typename> <decimal-size>\0<raw content>"
         //
         // Constructed bytewise so the embedded NUL doesn't get mangled
-        // by any String/UTF-8 round-trip — the prefix is pure ASCII
+        // by any String/UTF-8 round-trip - the prefix is pure ASCII
         // but content is opaque bytes.
         static fun wrapForSha(typeName: String, content: UByte[]): UByte[] {
             var prefix = typeName + " " + content.length().toString()
@@ -88,7 +88,7 @@ namespace Am.Git
             return out
         }
 
-        // SHA-1 of the wrapped form, hex-encoded — git's authoritative
+        // SHA-1 of the wrapped form, hex-encoded - git's authoritative
         // id for an object of the given type and content.
         static fun computeSha(typeName: String, content: UByte[]): String {
             var wrapped = PackObject.wrapForSha(typeName, content)

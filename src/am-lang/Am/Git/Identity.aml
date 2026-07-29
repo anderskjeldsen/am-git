@@ -3,20 +3,20 @@ namespace Am.Git
     // The "who is making this commit" part of a commit object.
     // Authors and committers are formatted the same way:
     //
-    //     <name> <email> <unix-seconds> <±HHMM>
+    //     <name> <email> <unix-seconds> <+/-HHMM>
     //
     // e.g. `Anders Kjeldsen <kjeldsenanders@gmail.com> 1715520000 +0200`
     //
-    // The fields come from environment variables — same names real
+    // The fields come from environment variables - same names real
     // git checks, plus an am-git-specific fallback so users who don't
     // already have GIT_* set can configure us in one place:
     //
-    //   author:    GIT_AUTHOR_NAME    → AM_GIT_USER_NAME
-    //              GIT_AUTHOR_EMAIL   → AM_GIT_USER_EMAIL
-    //   committer: GIT_COMMITTER_NAME → AM_GIT_USER_NAME
-    //              GIT_COMMITTER_EMAIL→ AM_GIT_USER_EMAIL
+    //   author:    GIT_AUTHOR_NAME    -> AM_GIT_USER_NAME
+    //              GIT_AUTHOR_EMAIL   -> AM_GIT_USER_EMAIL
+    //   committer: GIT_COMMITTER_NAME -> AM_GIT_USER_NAME
+    //              GIT_COMMITTER_EMAIL-> AM_GIT_USER_EMAIL
     //
-    // No `~/.gitconfig` parsing yet — env vars only. `loadAuthor` /
+    // No `~/.gitconfig` parsing yet - env vars only. `loadAuthor` /
     // `loadCommitter` return null when neither override is set; the
     // CLI is expected to bail loudly rather than commit as
     // `unknown <unknown>`.
@@ -32,13 +32,13 @@ namespace Am.Git
             return Identity.loadFrom("GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")
         }
 
-        // Pinned-timestamp env overrides — mirror what real git checks.
+        // Pinned-timestamp env overrides - mirror what real git checks.
         // Format is the same as the commit-line tail:
-        // `<unix-seconds> <±HHMM>` (e.g. `"1715520000 +0200"`).
+        // `<unix-seconds> <+/-HHMM>` (e.g. `"1715520000 +0200"`).
         // Returns null when the env var isn't set; caller falls back
         // to `new DateTime()` (i.e. "now"). The other date formats
         // git accepts (`2026-05-12T15:30`, "now", relative times) are
-        // not parsed yet — the unix form is the one that round-trips
+        // not parsed yet - the unix form is the one that round-trips
         // losslessly through commit objects anyway.
         static fun loadAuthorDate(): DateTime {
             return Identity.parseDate(Environment.get("GIT_AUTHOR_DATE"))
@@ -55,7 +55,7 @@ namespace Am.Git
             var trimmed = value.trim()
             var space = trimmed.indexOf(" ")
             if (space <= 0) {
-                throw new Exception("date override must be '<unix-seconds> <±HHMM>': " + value)
+                throw new Exception("date override must be '<unix-seconds> <+/-HHMM>': " + value)
             }
             var secStr = trimmed.substring(0UI, space.toUInt())
             var tzStr = trimmed.substringToEnd((space + 1).toUInt())
@@ -68,7 +68,7 @@ namespace Am.Git
             return dt
         }
 
-        // Inverse of `formatTimezone` — turns `+HHMM` / `-HHMM` back
+        // Inverse of `formatTimezone` - turns `+HHMM` / `-HHMM` back
         // into signed minutes.
         private static fun parseTzOffset(tz: String): Int {
             if (tz.length() < 5) {
@@ -109,7 +109,7 @@ namespace Am.Git
             return this.name + " <" + this.email + "> " + unixSec + " " + tz
         }
 
-        // Render a tz offset in minutes as git's ±HHMM string:
+        // Render a tz offset in minutes as git's +/-HHMM string:
         //     0     -> "+0000"
         //     60    -> "+0100"
         //     -480  -> "-0800"   (UTC-8, e.g. PST)

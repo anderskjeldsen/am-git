@@ -4,7 +4,7 @@ namespace Am.Git
     //
     //   1. GET <remote>/info/refs?service=git-upload-pack
     //   2. For each advertised refs/heads/* and refs/tags/* whose SHA
-    //      we don't already have locally — that's a `want`.
+    //      we don't already have locally - that's a `want`.
     //   3. Collect `have` SHAs from our existing branch tips and
     //      remote-tracking refs so the server can omit shared history.
     //   4. POST <remote>/git-upload-pack and read back the pack.
@@ -14,15 +14,15 @@ namespace Am.Git
     //      advertised branch, and `refs/tags/<tag>` for each tag.
     //
     // Differences vs. real `git fetch`:
-    //   * Tags are pulled unconditionally — no `--no-tags` / refspec
+    //   * Tags are pulled unconditionally - no `--no-tags` / refspec
     //     filtering.
-    //   * Single negotiation round — we send `want…done` once and
+    //   * Single negotiation round - we send `want...done` once and
     //     accept whatever the server replies with (typically a NAK
     //     plus the pack covering the gap).
     //   * Objects are written loose, not as a pack. Real git stores
     //     fetched objects in a new pack; loose works the same for
     //     readers but is bulkier on disk.
-    //   * We don't update HEAD or fast-forward any local branch —
+    //   * We don't update HEAD or fast-forward any local branch -
     //     same semantics as `git fetch` without a refspec.
     class FetchClient
     {
@@ -31,7 +31,7 @@ namespace Am.Git
         import Am.IO
 
         // Convenience for the common case. `remoteName` is typically
-        // "origin" — used to namespace the remote-tracking refs under
+        // "origin" - used to namespace the remote-tracking refs under
         // `refs/remotes/<remoteName>/`.
         static fun fetch(gitDir: String, remoteUrl: String, remoteName: String): Int {
             var url = GitUrl.parse(remoteUrl)
@@ -44,7 +44,7 @@ namespace Am.Git
             var store = new ObjectStore(gitDir)
             var wants = FetchClient.computeWants(ad, store)
             if (wants.getSize() == 0) {
-                // Nothing to pull — release the ssh channel (if any) so we
+                // Nothing to pull - release the ssh channel (if any) so we
                 // don't leave the child ssh/git-upload-pack process hanging.
                 client.close()
                 "Already up-to-date.".println()
@@ -88,7 +88,7 @@ namespace Am.Git
         }
 
         // Wants = every advertised refs/heads/* and refs/tags/* SHA
-        // that isn't already present locally. Deduped by SHA — multiple
+        // that isn't already present locally. Deduped by SHA - multiple
         // branches often share commits.
         private static fun computeWants(ad: RefAdvertisement, store: ObjectStore): List<String> {
             var wants = List<String>.newList<String>()
@@ -129,7 +129,7 @@ namespace Am.Git
             FetchClient.walkRefDir(d, out, seen)
         }
 
-        // Recursive walk — branches like `feature/foo/bar` live in
+        // Recursive walk - branches like `feature/foo/bar` live in
         // nested subdirectories.
         private static fun walkRefDir(dir: File, out: List<String>, seen: HashMap<String, Bool>) {
             var entries = dir.listFiles()
@@ -175,7 +175,7 @@ namespace Am.Git
             return changed
         }
 
-        // Returns true when the on-disk SHA actually changed — lets us
+        // Returns true when the on-disk SHA actually changed - lets us
         // print a sensible "updated N refs" summary.
         private static fun writeRefIfChanged(refPath: String, sha: String): Bool {
             var existing: String? = null

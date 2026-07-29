@@ -1,11 +1,11 @@
 namespace Am.Git
 {
     // Materialise the working tree for a commit. Driven by the
-    // object map that `PackParser` + `DeltaResolver` produce — every
+    // object map that `PackParser` + `DeltaResolver` produce - every
     // commit / tree / blob is in there, keyed by SHA.
     //
     // Algorithm:
-    //   1. Look up the commit. Its first line is `tree <sha>\n` —
+    //   1. Look up the commit. Its first line is `tree <sha>\n` -
     //      that's the root tree's SHA.
     //   2. Recursively walk: for each `TreeEntry` in a tree, either
     //      write a blob to `<dir>/<name>` (file) or recurse into a
@@ -13,14 +13,14 @@ namespace Am.Git
     //
     // What we don't do (yet):
     //   * No `chmod +x` for executable blobs (mode 100755 is recorded
-    //     in the tree but `Repository.writeBytes` just writes 0644 —
+    //     in the tree but `Repository.writeBytes` just writes 0644 -
     //     scripts won't be directly runnable until we add a native
     //     chmod helper).
     //   * Symlinks (mode 120000) are written as regular files
     //     containing the link target string. Real symlinks need a
     //     native `symlink(2)` binding.
     //   * Submodules (mode 160000) are skipped silently.
-    //   * No collision check — the working tree must be empty when
+    //   * No collision check - the working tree must be empty when
     //     `checkout()` runs. Repository.init creates a fresh dir.
     class WorkTree(private var workTreePath: String,
                    private var objects: HashMap<String, PackObject>)
@@ -72,7 +72,7 @@ namespace Am.Git
                     Repository.writeBytes(entryPath, blob.content)
                     written = written + 1
                 } else if (entry.isSymlink()) {
-                    // No native symlink() yet — write the link target as
+                    // No native symlink() yet - write the link target as
                     // a regular file. Loses the symlink semantics but
                     // keeps the bytes addressable.
                     var blob = this.objects.get(entry.sha)
@@ -89,7 +89,7 @@ namespace Am.Git
         }
 
         // A commit's content starts with `tree <40-char hex sha>\n`.
-        // We don't need any other header here — `parent`, `author`,
+        // We don't need any other header here - `parent`, `author`,
         // and `committer` come after, but they're irrelevant for
         // materialising the working tree.
         static fun extractRootTreeSha(commitBytes: UByte[]): String {
@@ -122,7 +122,7 @@ namespace Am.Git
                 }
                 pos = pos + 1
 
-                // Filename — bytes up to the NUL. We treat the bytes
+                // Filename - bytes up to the NUL. We treat the bytes
                 // as UTF-8 (git stores names as raw bytes, but ASCII
                 // is the common case and UTF-8 names round-trip).
                 var nameSb = new StringBuilder()
@@ -132,7 +132,7 @@ namespace Am.Git
                 }
                 pos = pos + 1
 
-                // 20 raw SHA bytes — hex-encode for use as a map key.
+                // 20 raw SHA bytes - hex-encode for use as a map key.
                 var rawSha = new UByte[20UI]
                 var k = 0
                 while (k < 20) {

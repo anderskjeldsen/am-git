@@ -8,7 +8,7 @@ namespace Am.Git
     // (the same wrapped form `PackObject.computeSha` already hashes).
     //
     // The store is content-addressed: if a file at that path already
-    // exists its content is — by construction — bit-equivalent (modulo
+    // exists its content is - by construction - bit-equivalent (modulo
     // zlib compression-level choices) to what we'd write, so we skip
     // and return the SHA. That makes `write` cheap to call repeatedly
     // and harmless if two TreeBuilder branches happen to produce the
@@ -24,11 +24,11 @@ namespace Am.Git
         import Am.IO
         import Am.Z
 
-        // SHA → PackObject map of everything `write()` has produced
+        // SHA -> PackObject map of everything `write()` has produced
         // (or skipped because it was already on disk) during this
         // writer's lifetime. Callers that need to read back an object
-        // they just wrote — e.g. commit re-seeding the index from the
-        // new tree — should consult this map instead of bouncing
+        // they just wrote - e.g. commit re-seeding the index from the
+        // new tree - should consult this map instead of bouncing
         // through the on-disk loose store. The disk round-trip works
         // most places, but AmigaOS DOS doesn't reliably expose a
         // freshly-written file to a same-process reader, and the
@@ -36,7 +36,7 @@ namespace Am.Git
         var written: HashMap<String, PackObject> = new HashMap<String, PackObject>()
 
         // Write the object (or noop if already on disk). Returns the
-        // 40-char hex SHA-1 — caller plugs that into tree entries,
+        // 40-char hex SHA-1 - caller plugs that into tree entries,
         // commit headers, or refs.
         fun write(typeName: String, content: UByte[]): String {
             var sha = PackObject.computeSha(typeName, content)
@@ -48,7 +48,7 @@ namespace Am.Git
                 Repository.writeBytes(path, compressed)
             }
             // Mirror into `written` whether we actually wrote bytes or
-            // skipped — same-process readers don't care which.
+            // skipped - same-process readers don't care which.
             if (!this.written.containsKey(sha)) {
                 var obj = new PackObject(LooseObjectWriter.typeCodeOf(typeName), content)
                 obj.sha = sha

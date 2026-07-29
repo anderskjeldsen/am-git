@@ -19,8 +19,13 @@
 
 #define AM_GIT_CHAN_MAX_ARGS 128
 
+// __unwrap(this): if `this` crossed a thread the runtime handed us a
+// wrapper (class_ptr == NULL) whose real object lives in object_wrapper.
+// Reading custom_value straight off the wrapper is garbage — unwrap for
+// every DATA read. (We still refcount the raw handed pointer elsewhere;
+// the wrapper holds the ref on the real, so that stays un-unwrapped.)
 static command_channel *chan_of(aobject *this) {
-	return (command_channel *) this->object_properties.class_object_properties.object_data.value.custom_value;
+	return (command_channel *) __unwrap(this)->object_properties.class_object_properties.object_data.value.custom_value;
 }
 
 function_result Am_Git_CommandChannel__native_init_0(aobject * const this)
@@ -59,7 +64,7 @@ function_result Am_Git_CommandChannel__native_release_0(aobject * const this)
 			ch->pid = -1;
 		}
 		free(ch);
-		this->object_properties.class_object_properties.object_data.value.custom_value = NULL;
+		__unwrap(this)->object_properties.class_object_properties.object_data.value.custom_value = NULL;
 	}
 __exit: ;
 	return __result;
@@ -73,14 +78,13 @@ function_result Am_Git_CommandChannel_spawnNative_0(aobject * const this, aobjec
 {
 	function_result __result = { .has_return_value = false };
 	bool __returning = false;
-	if (this != NULL) {
-		__increase_reference_count(this);
-	}
-	if (argvLine != NULL) {
-		__increase_reference_count(argvLine);
-	}
 
-	string_holder *line_holder = (string_holder *) (argvLine + 1);
+	// No inc/dec on `this` / `argvLine`: a native call is synchronous, so
+	// the AmLang caller holds live refs to both across the whole call.
+	// We copy what we need (strdup below) and retain nothing past return,
+	// so there is no lifetime to extend. (Would only be needed if we
+	// stashed an aobject pointer for async / cross-thread use.)
+	string_holder *line_holder = (string_holder *) (__unwrap(argvLine) + 1);
 	char *buf = strdup(line_holder->string_value);
 	if (buf == NULL) {
 		__throw_simple_exception("Out of memory", "in Am_Git_CommandChannel_spawnNative_0", &__result);
@@ -155,15 +159,9 @@ function_result Am_Git_CommandChannel_spawnNative_0(aobject * const this, aobjec
 	}
 	ch->fd = sv[0];
 	ch->pid = (int) pid;
-	this->object_properties.class_object_properties.object_data.value.custom_value = ch;
+	__unwrap(this)->object_properties.class_object_properties.object_data.value.custom_value = ch;
 
 __exit: ;
-	if (this != NULL) {
-		__decrease_reference_count(this);
-	}
-	if (argvLine != NULL) {
-		__decrease_reference_count(argvLine);
-	}
 	return __result;
 }
 
@@ -171,12 +169,6 @@ function_result Am_Git_CommandChannel_read_0(aobject * const this, aobject * dat
 {
 	function_result __result = { .has_return_value = true };
 	bool __returning = false;
-	if (this != NULL) {
-		__increase_reference_count(this);
-	}
-	if (data != NULL) {
-		__increase_reference_count(data);
-	}
 
 	command_channel *ch = chan_of(this);
 	if (ch == NULL || ch->fd < 0) {
@@ -184,7 +176,7 @@ function_result Am_Git_CommandChannel_read_0(aobject * const this, aobject * dat
 		goto __exit;
 	}
 
-	array_holder *a_holder = (array_holder *) &data[1];
+	array_holder *a_holder = (array_holder *) &__unwrap(data)[1];
 	if ((unsigned long long) offset + length > a_holder->size) {
 		__throw_simple_exception("CommandChannel: read length exceeds array", "in Am_Git_CommandChannel_read_0", &__result);
 		goto __exit;
@@ -200,12 +192,6 @@ function_result Am_Git_CommandChannel_read_0(aobject * const this, aobject * dat
 	__result.return_value.flags = PRIMITIVE_UINT;
 
 __exit: ;
-	if (this != NULL) {
-		__decrease_reference_count(this);
-	}
-	if (data != NULL) {
-		__decrease_reference_count(data);
-	}
 	return __result;
 }
 
@@ -213,12 +199,6 @@ function_result Am_Git_CommandChannel_write_0(aobject * const this, aobject * da
 {
 	function_result __result = { .has_return_value = true };
 	bool __returning = false;
-	if (this != NULL) {
-		__increase_reference_count(this);
-	}
-	if (data != NULL) {
-		__increase_reference_count(data);
-	}
 
 	command_channel *ch = chan_of(this);
 	if (ch == NULL || ch->fd < 0) {
@@ -226,7 +206,7 @@ function_result Am_Git_CommandChannel_write_0(aobject * const this, aobject * da
 		goto __exit;
 	}
 
-	array_holder *a_holder = (array_holder *) &data[1];
+	array_holder *a_holder = (array_holder *) &__unwrap(data)[1];
 	if ((unsigned long long) offset + length > a_holder->size) {
 		__throw_simple_exception("CommandChannel: write length exceeds array", "in Am_Git_CommandChannel_write_0", &__result);
 		goto __exit;
@@ -242,12 +222,6 @@ function_result Am_Git_CommandChannel_write_0(aobject * const this, aobject * da
 	__result.return_value.flags = PRIMITIVE_UINT;
 
 __exit: ;
-	if (this != NULL) {
-		__decrease_reference_count(this);
-	}
-	if (data != NULL) {
-		__decrease_reference_count(data);
-	}
 	return __result;
 }
 
@@ -255,18 +229,12 @@ function_result Am_Git_CommandChannel_closeWrite_0(aobject * const this)
 {
 	function_result __result = { .has_return_value = false };
 	bool __returning = false;
-	if (this != NULL) {
-		__increase_reference_count(this);
-	}
 
 	command_channel *ch = chan_of(this);
 	if (ch != NULL && ch->fd >= 0) {
 		shutdown(ch->fd, SHUT_WR);
 	}
 
-	if (this != NULL) {
-		__decrease_reference_count(this);
-	}
 	return __result;
 }
 
@@ -274,9 +242,6 @@ function_result Am_Git_CommandChannel_close_0(aobject * const this)
 {
 	function_result __result = { .has_return_value = true };
 	bool __returning = false;
-	if (this != NULL) {
-		__increase_reference_count(this);
-	}
 
 	int exit_code = 0;
 	command_channel *ch = chan_of(this);
@@ -302,14 +267,11 @@ function_result Am_Git_CommandChannel_close_0(aobject * const this)
 			ch->pid = -1;
 		}
 		free(ch);
-		this->object_properties.class_object_properties.object_data.value.custom_value = NULL;
+		__unwrap(this)->object_properties.class_object_properties.object_data.value.custom_value = NULL;
 	}
 
 	__result.return_value.value.int_value = exit_code;
 	__result.return_value.flags = PRIMITIVE_INT;
 
-	if (this != NULL) {
-		__decrease_reference_count(this);
-	}
 	return __result;
 }

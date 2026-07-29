@@ -3,13 +3,13 @@ namespace Am.Git
     // Front door for the upload-pack (clone / fetch) side of the git
     // protocol, hiding whether the carrier is smart-HTTP or ssh. Clone
     // and fetch build one of these from the parsed URL, pull the ref
-    // advertisement, then request the pack — over the SAME connection
+    // advertisement, then request the pack - over the SAME connection
     // for ssh, or as two independent HTTP requests for http(s).
     //
     // The pkt-line negotiation (want/have/done, side-band demux) is
     // identical either way; only how the bytes move differs. For ssh we
     // run `ssh <host> git-upload-pack '<path>'` and stream the protocol
-    // over a binary-clean CommandChannel — exactly how real git does it.
+    // over a binary-clean CommandChannel - exactly how real git does it.
     class UploadPackClient(private var url: GitUrl)
     {
         import Am.Lang
@@ -57,7 +57,7 @@ namespace Am.Git
                     // nothing (e.g. already up-to-date). Send a flush-pkt
                     // to end the exchange politely, so git-upload-pack
                     // exits 0 instead of logging "the remote end hung up
-                    // unexpectedly". Best-effort — the pipe may be gone.
+                    // unexpectedly". Best-effort - the pipe may be gone.
                     try {
                         ch.writeAll(PktLine.flushPacket())
                     } catch (e: Exception) {
@@ -96,14 +96,14 @@ namespace Am.Git
             var ch = SshChannel.spawn(this.url.sshCommandLine("git-upload-pack"))
             this.channel = ch
             var advBytes = UploadPackClient.readAdvertisementBytes(ch)
-            // No "# service=" banner over ssh — the ref list starts at
+            // No "# service=" banner over ssh - the ref list starts at
             // the very first pkt-line.
             return RefAdvertisement.parseNoBanner(advBytes)
         }
 
-        // Run the ssh helper (bebbossh / ssh) interactively — inheriting
+        // Run the ssh helper (bebbossh / ssh) interactively - inheriting
         // this program's terminal, which is the amStudio CLI when am-git
-        // runs there — purely so the user can accept the host key. The
+        // runs there - purely so the user can accept the host key. The
         // helper writes its "do you trust host ...?" prompt to that
         // terminal and reads the answer from it, saving the key to
         // ENVARC:.ssh/known_hosts. The caller then retries the real
@@ -120,13 +120,13 @@ namespace Am.Git
                             depth: Int, shallowOut: List<String>): UByte[] {
             var ch = this.channel
             if (ch == null) {
-                throw new Exception("UploadPackClient: ssh channel not open — call getAdvertisement() first")
+                throw new Exception("UploadPackClient: ssh channel not open - call getAdvertisement() first")
             }
             var body = UploadPackTransport.buildBody(wants, haves, capabilities, depth)
             this.negotiated = true
             ch.writeAll(body)
             // git-upload-pack replies with NAK + the side-band packfile +
-            // a flush, then exits, closing its stdout → channel EOF. Slurp
+            // a flush, then exits, closing its stdout -> channel EOF. Slurp
             // the whole reply and hand it to the shared side-band demux.
             var reply = ch.readToEnd()
             return UploadPackTransport.extractPackWithShallow(reply, shallowOut)
@@ -144,7 +144,7 @@ namespace Am.Git
             loop {
                 var hdr = ch.readFully(4)
                 if (hdr == null) {
-                    // Clean EOF before a flush — server closed early
+                    // Clean EOF before a flush - server closed early
                     // (e.g. ssh auth failed). Return what we have; the
                     // parser will report an empty / malformed ad.
                     break

@@ -8,14 +8,14 @@ namespace Am.Git
     //
     // What each outcome does on disk:
     //
-    //   unchanged       → nothing
-    //   take-ours       → workdir already matches HEAD, so no write;
+    //   unchanged       -> nothing
+    //   take-ours       -> workdir already matches HEAD, so no write;
     //                     index stays at the existing stage-0 entry
     //                     (or is removed if `ours` is a delete)
-    //   take-theirs     → write theirs' blob to workdir (or delete
+    //   take-theirs     -> write theirs' blob to workdir (or delete
     //                     the workdir file if theirs is a delete);
     //                     upsert stage-0 index entry to theirs' SHA
-    //   conflict-*      → write three stage rows (1=base, 2=ours,
+    //   conflict-*      -> write three stage rows (1=base, 2=ours,
     //                     3=theirs) for the path; clear any stage-0;
     //                     write `<<<<<<< / ======= / >>>>>>>`
     //                     markers to the workdir file IF both sides
@@ -39,14 +39,14 @@ namespace Am.Git
 
         // Apply every entry in `plan`. Returns the paths that came out
         // as conflicts (in plan order). An empty list means a clean
-        // merge — caller can immediately create a merge commit.
+        // merge - caller can immediately create a merge commit.
         fun apply(plan: List<MergeEntry>): List<String> {
             var conflicts = List<String>.newList<String>()
             var i = 0
             while (i < plan.getSize()) {
                 var entry = plan.get(i)
                 if (entry.outcome == MergePlan.outcomeUnchanged) {
-                    // No-op. Both sides agree (or absent) — workdir
+                    // No-op. Both sides agree (or absent) - workdir
                     // and index already reflect that.
                 } else if (entry.outcome == MergePlan.outcomeTakeOurs) {
                     this.applyTakeOurs(entry)
@@ -74,7 +74,7 @@ namespace Am.Git
             }
         }
 
-        // Theirs wins — workdir gets their blob (or the file is
+        // Theirs wins - workdir gets their blob (or the file is
         // deleted), index moves to their SHA at stage 0.
         private fun applyTakeTheirs(entry: MergeEntry) {
             this.idx.clearConflictStages(entry.path)
@@ -91,11 +91,11 @@ namespace Am.Git
 
         // Conflict: write 1/2/3 stages for whichever sides exist,
         // drop stage 0, and try to write conflict markers to the
-        // workdir. Binary files skip the markers — index stages are
+        // workdir. Binary files skip the markers - index stages are
         // enough for any GUI merge tool to drive a resolution.
         private fun applyConflict(entry: MergeEntry) {
             this.idx.clearConflictStages(entry.path)
-            // Drop stage-0 if any — once we're in conflict state, the
+            // Drop stage-0 if any - once we're in conflict state, the
             // resolved version doesn't exist yet.
             MergeApplier.removeStageZero(this.idx, entry.path)
 
@@ -114,7 +114,7 @@ namespace Am.Git
 
         // Compose the workdir file for a conflict. We don't have a
         // line-level diff yet, so the "hunk" is the whole file on
-        // each side — the user sees both versions in full and edits
+        // each side - the user sees both versions in full and edits
         // the result by hand. If either side is binary we don't
         // write markers at all (a marker line inside a PNG would
         // corrupt it); we keep the workdir on ours' version and
@@ -132,11 +132,11 @@ namespace Am.Git
             var theirsBinary = MergeApplier.looksBinary(theirsContent)
             if (oursBinary || theirsBinary) {
                 // Leave workdir on ours' version (or delete if ours
-                // is null) — same as real git when a binary conflict
+                // is null) - same as real git when a binary conflict
                 // happens. The user uses `am-git checkout --theirs`
                 // / `--ours` (not implemented yet) or another tool.
                 ("warning: binary conflict in " + entry.path +
-                    " — workdir kept at HEAD; resolve via index stages").println()
+                    " - workdir kept at HEAD; resolve via index stages").println()
                 if (oursContent != null) {
                     Repository.writeBytes(fullPath, oursContent)
                 } else {
@@ -166,7 +166,7 @@ namespace Am.Git
         // overwrites the file or amends the label after if it
         // wants to (real git uses "HEAD" / "<branchname>"); kept
         // simple here.
-        private static fun buildMarkerFile(ours: UByte[], theirs: UByte[]): UByte[] {
+        private static fun buildMarkerFile(ours: UByte[]?, theirs: UByte[]?): UByte[] {
             var buf = List<UByte>.newList<UByte>()
             MergeApplier.appendString(buf, "<<<<<<< HEAD\n")
             MergeApplier.appendContentWithNewline(buf, ours)
@@ -179,7 +179,7 @@ namespace Am.Git
         // Append `content` followed by a single newline if `content`
         // didn't end with one (so the next marker line starts cleanly
         // on a new line). Null content is treated as empty.
-        private static fun appendContentWithNewline(buf: List<UByte>, content: UByte[]) {
+        private static fun appendContentWithNewline(buf: List<UByte>, content: UByte[]?) {
             if (content == null || content.length() == 0UI) {
                 buf.add(10UB)
                 return
@@ -203,11 +203,11 @@ namespace Am.Git
             }
         }
 
-        // Heuristic: any NUL byte in the first 8 KB → binary. Same
+        // Heuristic: any NUL byte in the first 8 KB -> binary. Same
         // heuristic real git uses (the `buffer_is_binary` function in
         // xdiff-interface.c). Null content (the side doesn't exist)
         // counts as "not binary".
-        private static fun looksBinary(content: UByte[]): Bool {
+        private static fun looksBinary(content: UByte[]?): Bool {
             if (content == null) {
                 return false
             }
@@ -241,7 +241,7 @@ namespace Am.Git
 
         // Insert / replace an entry at `stage` for `path` with
         // `file`'s blob SHA and mode. The IndexEntry stat fields
-        // stay zero — real git would re-hash on first status check
+        // stay zero - real git would re-hash on first status check
         // to recover, which is fine for our use.
         private fun upsertStage(path: String, file: MergeFile, stage: Int) {
             var mode = MergeApplier.modeStringToUInt(file.mode)
@@ -270,7 +270,7 @@ namespace Am.Git
             }
         }
 
-        // Tree-mode strings (ASCII octal) → on-disk index mode UInt.
+        // Tree-mode strings (ASCII octal) -> on-disk index mode UInt.
         // Mirrors IndexTreeBuilder.modeToString in the other
         // direction. Anything we don't recognise falls back to
         // regular file (0o100644 = 33188).

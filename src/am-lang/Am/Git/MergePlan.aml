@@ -11,7 +11,7 @@ namespace Am.Git
 
     // One path's verdict in a 3-way merge.
     //
-    // `baseFile`/`ours`/`theirs` are nullable — null means the file
+    // `baseFile`/`ours`/`theirs` are nullable - null means the file
     // doesn't exist in that side's tree. `outcome` is one of the
     // `MergePlan.outcome*` constants; see those for what each value
     // means and what a phase-3 applier should do.
@@ -20,9 +20,9 @@ namespace Am.Git
     // for parent-class access.)
     class MergeEntry(
         var path: String,
-        var baseFile: MergeFile,
-        var ours: MergeFile,
-        var theirs: MergeFile,
+        var baseFile: MergeFile?,
+        var ours: MergeFile?,
+        var theirs: MergeFile?,
         var outcome: Int
     )
     {
@@ -32,22 +32,22 @@ namespace Am.Git
     // Pure three-way tree classifier. Given three tree SHAs (base,
     // ours, theirs) it walks all three and produces one MergeEntry
     // per path, classifying each as either auto-resolvable or a
-    // conflict. No disk writes — the merge command consumes this
+    // conflict. No disk writes - the merge command consumes this
     // plan and decides what to write where.
     //
     // The classification rules mirror git's:
     //
-    //   ours == theirs            → take either (unchanged)
-    //   ours == base              → take theirs (only theirs changed)
-    //   theirs == base            → take ours   (only ours changed)
-    //   base == null,             → both added different content
+    //   ours == theirs            -> take either (unchanged)
+    //   ours == base              -> take theirs (only theirs changed)
+    //   theirs == base            -> take ours   (only ours changed)
+    //   base == null,             -> both added different content
     //     ours != theirs            (add/add conflict)
-    //   ours == null              → modified by them, deleted by us
+    //   ours == null              -> modified by them, deleted by us
     //                               (modify/delete conflict)
-    //   theirs == null            → modified by us, deleted by them
+    //   theirs == null            -> modified by us, deleted by them
     //                               (modify/delete conflict)
-    //   otherwise                 → both modified differently
-    //                               (content conflict — needs markers)
+    //   otherwise                 -> both modified differently
+    //                               (content conflict - needs markers)
     //
     // Without a line-level diff we can't tell whether two divergent
     // edits actually touch the same lines, so any "both modified
@@ -70,7 +70,7 @@ namespace Am.Git
         static var outcomeConflictAddAdd: Int = 6
 
         // Compute the plan. `baseTreeSha` may be null (unrelated
-        // histories — caller usually bails before getting here) which
+        // histories - caller usually bails before getting here) which
         // is treated as the empty tree.
         static fun compute(baseTreeSha: String,
                            oursTreeSha: String,
@@ -80,7 +80,7 @@ namespace Am.Git
             var oursMap = MergePlan.flattenTree(oursTreeSha, store)
             var theirsMap = MergePlan.flattenTree(theirsTreeSha, store)
 
-            // Union of all paths — walk each map's keys and dedup via
+            // Union of all paths - walk each map's keys and dedup via
             // a HashSet, then sort for deterministic output.
             var seen = new HashSet<String>()
             MergePlan.addKeys(baseMap, seen)
@@ -107,9 +107,9 @@ namespace Am.Git
 
         // Decide the outcome for one path given its three versions.
         // Each arg may be null (absent in that tree).
-        private static fun classifyOne(b: MergeFile, o: MergeFile, t: MergeFile): Int {
+        private static fun classifyOne(b: MergeFile?, o: MergeFile?, t: MergeFile?): Int {
             if (MergePlan.fileEqual(o, t)) {
-                // Same final content on both sides → not a conflict,
+                // Same final content on both sides -> not a conflict,
                 // even if it's a divergent rewrite both made the same
                 // way. Counts as "unchanged" relative to the merge.
                 return MergePlan.outcomeUnchanged
@@ -124,7 +124,7 @@ namespace Am.Git
             }
             // From here on, all three differ in some way.
             if (b == null) {
-                // Neither side inherited a base — both added different
+                // Neither side inherited a base - both added different
                 // content at the same path.
                 return MergePlan.outcomeConflictAddAdd
             }
@@ -137,15 +137,15 @@ namespace Am.Git
                 return MergePlan.outcomeConflictDeletedByThem
             }
             // Both modified, neither matches base, neither matches the
-            // other → real content conflict.
+            // other -> real content conflict.
             return MergePlan.outcomeConflictBothModified
         }
 
         // Two `MergeFile`s are equal iff both are null, or both are
         // non-null and have matching SHA + mode. Mode equality matters
-        // because a file→symlink retype is a semantic change even
+        // because a file->symlink retype is a semantic change even
         // when content hashes are identical.
-        private static fun fileEqual(a: MergeFile, b: MergeFile): Bool {
+        private static fun fileEqual(a: MergeFile?, b: MergeFile?): Bool {
             if (a == null && b == null) {
                 return true
             }
@@ -155,9 +155,9 @@ namespace Am.Git
             return a.sha == b.sha && a.mode == b.mode
         }
 
-        // Recursively flatten a tree into path → MergeFile. Empty
+        // Recursively flatten a tree into path -> MergeFile. Empty
         // trees (incl. a null SHA, treated as empty) produce an empty
-        // map — caller doesn't need to special-case that.
+        // map - caller doesn't need to special-case that.
         private static fun flattenTree(treeSha: String, store: ObjectStore): HashMap<String, MergeFile> {
             var out = new HashMap<String, MergeFile>()
             if (treeSha == null) {
@@ -187,7 +187,7 @@ namespace Am.Git
                     out.set(p, new MergeFile(e.sha, e.mode))
                 }
                 // Gitlinks (160000) and anything else we don't model
-                // are intentionally skipped — same policy as elsewhere.
+                // are intentionally skipped - same policy as elsewhere.
                 i = i + 1
             }
         }
@@ -208,7 +208,7 @@ namespace Am.Git
             }
         }
 
-        // HashSet → bytewise-sorted List<String>. Sorted output makes
+        // HashSet -> bytewise-sorted List<String>. Sorted output makes
         // the plan deterministic and easy to diff in tests.
         private static fun collectAndSort(set: HashSet<String>): List<String> {
             var raw = List<String>.newList<String>()
@@ -219,7 +219,7 @@ namespace Am.Git
                 }
                 raw.add(it.next())
             }
-            // Bubble sort — small N, keeps deps minimal.
+            // Bubble sort - small N, keeps deps minimal.
             var n = raw.getSize()
             var i = 0
             while (i < n - 1) {

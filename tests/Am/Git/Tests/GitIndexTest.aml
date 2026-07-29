@@ -280,7 +280,9 @@ namespace Am.Git.Tests {
                 }
                 i = i + 1
             }
-            return null
+            // Must-find helper: a miss is a test failure, so fail loudly
+            // instead of smuggling null through a non-null return type.
+            throw new Exception("findStage: no entry for " + path + " at stage " + stage.toString())
         }
 
         // Remove the temp index dir so consecutive disk tests don't

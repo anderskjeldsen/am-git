@@ -55,6 +55,13 @@ run:
 test:
 	$(CMD) test . -bt $(HOST_BT) -ll $(LOGLEVEL) $(LPP)
 
+# Cross-compile the test binary for m68k (amiga-gcc docker) and run the
+# whole suite under headless Amiberry (amlang-amiberry image). amlc's
+# dockerTest support stages the binary, watches for the sentinel, and
+# reports pass/fail — see the amigaos-amiberry target in package.yml.
+test-amigaos:
+	$(CMD) test . -bt amigaos-amiberry -ll $(LOGLEVEL) $(LPP)
+
 clean:
 	rm -rf builds
 

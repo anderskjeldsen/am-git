@@ -13,7 +13,7 @@ namespace Am.Git
     //          continuation bytes: bit7 = more, bits 0-6 = 7 more size bits
     //          (each step shifts in 7 more bits, starting at shift 4)
     //     2. for OFS_DELTA (type 6): a "negative-offset" varint
-    //          (different encoding from the size varint — see readOfsOffset)
+    //          (different encoding from the size varint - see readOfsOffset)
     //        for REF_DELTA (type 7): a raw 20-byte SHA-1 of the base
     //     3. zlib stream of length matching the type+size header:
     //          - full object (1..4): inflated content
@@ -23,11 +23,11 @@ namespace Am.Git
     // (we have am-z's `Zlib.inflate` for that). For full objects we
     // also compute the SHA-1 of git's `"<type> <size>\0<content>"`
     // wrapper and stash the entry in the returned map. Delta entries
-    // come back unresolved in a separate list — `DeltaResolver` walks
+    // come back unresolved in a separate list - `DeltaResolver` walks
     // that list, applies each delta to its base (recursively), and
     // adds the result to `objects`.
     //
-    // Every entry — full or delta — is also indexed by its absolute
+    // Every entry - full or delta - is also indexed by its absolute
     // pack-byte offset in `byOffset`, so OFS_DELTA's pack-position
     // references can find their bases at resolution time.
     //
@@ -99,7 +99,7 @@ namespace Am.Git
                 //       offset = ((offset + 1) << 7) | (byte[i+1] & 0x7F)
                 //
                 // The encoding is deliberately different from the
-                // size varint — using `<<= 7` per step instead of an
+                // size varint - using `<<= 7` per step instead of an
                 // ever-widening shift gives shorter representations
                 // for typical "base is N entries back" deltas.
                 var co = this.packBytes[pos.toUInt()].toInt()
@@ -147,7 +147,7 @@ namespace Am.Git
                 obj.baseSha = baseSha
                 deltas.add(obj)
             } else {
-                // Full object — SHA the git-wrapped form.
+                // Full object - SHA the git-wrapped form.
                 obj.sha = PackObject.computeSha(obj.typeName(), inflated)
                 objects.set(obj.sha, obj)
             }

@@ -3,10 +3,10 @@ namespace Am.Git
     // A binary-clean bidirectional channel to a spawned ssh process,
     // abstracting the two platform backends behind one API:
     //
-    //   * libc (macOS / Linux): Am.Git.CommandChannel — a socketpair +
+    //   * libc (macOS / Linux): Am.Git.CommandChannel - a socketpair +
     //     execvp of the system `ssh`. Blocking reads.
     //
-    //   * AmigaOS: Am.Lang.RunningProcess in binary mode — spawns
+    //   * AmigaOS: Am.Lang.RunningProcess in binary mode - spawns
     //     `bebbossh -T ...` through the dos-handler pipe and moves raw
     //     bytes with tryReadOutputBytes()/writeInputBytes() (which,
     //     unlike the String tryReadOutput/writeInput, don't NUL-truncate).
@@ -128,7 +128,7 @@ namespace Am.Git
             return 0UI
         }
 
-        // Half-close our write side (libc only — the AmigaOS handler has
+        // Half-close our write side (libc only - the AmigaOS handler has
         // no half-close; bebbossh -T + a command doesn't need stdin EOF
         // for upload-pack).
         fun closeWrite() {

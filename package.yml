@@ -1,5 +1,5 @@
 id: am-git
-version: 0.11.0
+version: 0.12.0
 type: application
 dependencies:
   - id: am-lang-core
@@ -119,6 +119,20 @@ buildTargets:
     dockerBuild:
       image: amiga-gcc
       buildPath: /host
+  # Cross-compile the test binary on m68k, then run it under headless
+  # Amiberry (amlang-amiberry image, ROM + CLIDrive baked in) so the
+  # whole am-git test suite runs on real 68k AmigaOS:
+  #   make test-amigaos   (= amlc test . -bt amigaos-amiberry)
+  - id: amigaos-amiberry
+    platform: amigaos
+    dockerBuild:
+      image: amiga-gcc
+      buildPath: /host
+    dockerTest:
+      image: amlang-amiberry:latest
+      # The suite does heavy zlib + file I/O work; emulated 68020 under
+      # Amiberry JIT needs headroom over the ~1 min host run.
+      timeoutSeconds: 1200
   - id: macos
     platform: macos
   - id: macos-arm

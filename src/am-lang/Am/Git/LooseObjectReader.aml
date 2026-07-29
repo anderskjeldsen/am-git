@@ -1,6 +1,6 @@
 namespace Am.Git
 {
-    // Reads loose objects back from disk — the inverse of
+    // Reads loose objects back from disk - the inverse of
     // `LooseObjectWriter`. Given a hex SHA, opens
     // `.git/objects/<first-2>/<rest-38>`, zlib-inflates it, parses
     // git's `"<type> <decimal-size>\0<raw bytes>"` wrapper, and
@@ -10,7 +10,7 @@ namespace Am.Git
     // and never goes through this reader. This is purely for objects
     // we wrote ourselves via `am-git commit` (and later, anything
     // exploded out of packs into loose form). The reader doesn't
-    // know about `objects/pack/*.pack` lookups — packs and loose
+    // know about `objects/pack/*.pack` lookups - packs and loose
     // objects are separate stores for our purposes.
     class LooseObjectReader(private var gitDir: String)
     {
@@ -35,7 +35,7 @@ namespace Am.Git
 
             // Read the whole compressed blob into memory and ask
             // am-z for a streaming inflate. We can't pre-size the
-            // output buffer — the inflated size lives in the
+            // output buffer - the inflated size lives in the
             // object's own header (`"tree 1234\0..."`) which is
             // *inside* the stream we're trying to inflate. The
             // unsized variant grows its output buffer on demand.
@@ -78,7 +78,7 @@ namespace Am.Git
             return obj
         }
 
-        // Same path math as the writer — kept consistent for symmetry.
+        // Same path math as the writer - kept consistent for symmetry.
         fun pathFor(sha: String): String {
             var dir = sha.substring(0UI, 2UI)
             var rest = sha.substringToEnd(2UI)

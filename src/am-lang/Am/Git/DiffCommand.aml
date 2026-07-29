@@ -2,10 +2,10 @@ namespace Am.Git
 {
     // Diff command core. Three output modes:
     //
-    //   `am-git diff`                 — full unified hunk-level diff
+    //   `am-git diff`                 - full unified hunk-level diff
     //                                    (renderUnified + LineDiff)
-    //   `am-git diff --name-only`     — paths that changed, one per line
-    //   `am-git diff --name-status`   — paths that changed, prefixed
+    //   `am-git diff --name-only`     - paths that changed, one per line
+    //   `am-git diff --name-status`   - paths that changed, prefixed
     //                                    with a one-letter code
     //                                    (A added, M modified, D deleted)
     //
@@ -19,14 +19,14 @@ namespace Am.Git
     // One file's diff classification.
     //
     // `status` is one of:
-    //   "A"   added   — absent from `left`, present in `right`
-    //   "M"   modified — present in both, different SHAs
-    //   "D"   deleted  — present in `left`, absent from `right`
+    //   "A"   added   - absent from `left`, present in `right`
+    //   "M"   modified - present in both, different SHAs
+    //   "D"   deleted  - present in `left`, absent from `right`
     //
     // Convention used throughout DiffCommand: `left` is the "old" /
     // "base" snapshot, `right` is the "new" / "current" one. For
     // `am-git diff` (worktree vs index), `left` is the index and
-    // `right` is the working tree — so a path on disk but not in
+    // `right` is the working tree - so a path on disk but not in
     // the index is "A" (newly tracked), and a path in the index
     // but not on disk is "D" (deleted from worktree).
     class DiffEntry(var path: String, var status: String)
@@ -60,7 +60,7 @@ namespace Am.Git
                     if (left.get(p) != right.get(p)) {
                         out.add(new DiffEntry(p, "M"))
                     }
-                    // Same SHA → unchanged, skip.
+                    // Same SHA -> unchanged, skip.
                 } else if (!inLeft && inRight) {
                     out.add(new DiffEntry(p, "A"))
                 } else if (inLeft && !inRight) {
@@ -72,11 +72,11 @@ namespace Am.Git
         }
 
         // Snapshot of HEAD's tree (or any commit's tree) as
-        // path → blob SHA. Reuses StatusReport's tree walker.
+        // path -> blob SHA. Reuses StatusReport's tree walker.
         static fun snapshotCommit(commitSha: String, store: ObjectStore): HashMap<String, String> {
             var out = new HashMap<String, String>()
             if (commitSha == null) {
-                return out  // unborn — empty snapshot
+                return out  // unborn - empty snapshot
             }
             if (!store.has(commitSha)) {
                 throw new Exception("diff: commit " + commitSha + " not in object store")
@@ -91,7 +91,7 @@ namespace Am.Git
         }
 
         // Snapshot of the index's resolved (stage-0) entries.
-        // Conflict-stage rows aren't included — a diff against an
+        // Conflict-stage rows aren't included - a diff against an
         // unmerged index doesn't have a sensible "current" SHA
         // anyway, and `am-git status` already shows the conflict
         // shape.
@@ -121,7 +121,7 @@ namespace Am.Git
         // Full hunk-level unified diff for the entry list. Content for
         // each side comes from the blob store (SHA from the snapshot),
         // except the RIGHT side of worktree-backed diffs, whose SHAs
-        // are computed from disk and usually aren't in the store —
+        // are computed from disk and usually aren't in the store -
         // those read the file directly.
         static fun renderUnified(entries: List<DiffEntry>,
                                  left: HashMap<String, String>,

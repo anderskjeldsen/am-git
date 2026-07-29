@@ -2,19 +2,19 @@ namespace Am.Git
 {
     // A parsed git commit object.
     //
-    // Wire format (Documentation/technical/object-format.txt — "commit"):
+    // Wire format (Documentation/technical/object-format.txt - "commit"):
     //
     //     tree <40-hex>\n
     //     parent <40-hex>\n      (zero or more)
-    //     author <name> <email> <unix-seconds> <±HHMM>\n
-    //     committer <name> <email> <unix-seconds> <±HHMM>\n
+    //     author <name> <email> <unix-seconds> <+/-HHMM>\n
+    //     committer <name> <email> <unix-seconds> <+/-HHMM>\n
     //     [<arbitrary extra headers>]
     //     \n
     //     <message>
     //
     // We keep the raw author/committer lines (everything after the
     // leading "author " / "committer ") rather than splitting them
-    // further — callers that want the timestamp parse it themselves;
+    // further - callers that want the timestamp parse it themselves;
     // callers that just want to print the line don't have to.
     class Commit(var sha: String,
                  var treeSha: String,
@@ -27,7 +27,7 @@ namespace Am.Git
         import Am.Collections
 
         // Parse the raw bytes of a commit object (the inflated content
-        // — no SHA wrapper, no zlib framing). `sha` is the caller-known
+        // - no SHA wrapper, no zlib framing). `sha` is the caller-known
         // SHA-1 hex of the same bytes; we trust it rather than recomputing.
         static fun parse(sha: String, bytes: UByte[]): Commit {
             var treeSha: String? = null
@@ -37,7 +37,7 @@ namespace Am.Git
 
             var total = bytes.length().toInt()
             var pos = 0
-            // Walk header lines until the first blank line — that's
+            // Walk header lines until the first blank line - that's
             // where git switches from key/value headers to free-form
             // commit message.
             loop {
@@ -63,8 +63,8 @@ namespace Am.Git
                 } else if (line.startsWith("committer ")) {
                     committer = line.substringToEnd(10UI)
                 }
-                // Other headers (`encoding`, `gpgsig`, mergetag…) we
-                // intentionally drop on the floor — am-git doesn't
+                // Other headers (`encoding`, `gpgsig`, mergetag...) we
+                // intentionally drop on the floor - am-git doesn't
                 // expose them anywhere yet.
                 pos = lineEnd + 1
             }

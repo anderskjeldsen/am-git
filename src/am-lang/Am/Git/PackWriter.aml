@@ -13,7 +13,7 @@ namespace Am.Git
     //         <zlib-deflated content>
     //     <SHA-1 of all bytes above>   (20 bytes)
     //
-    // We emit full objects only — no OFS_DELTA / REF_DELTA. Real git
+    // We emit full objects only - no OFS_DELTA / REF_DELTA. Real git
     // will happily index a delta-free pack, just at a higher on-the-
     // wire cost. Worth optimising later, once basic push works.
     //
@@ -94,13 +94,13 @@ namespace Am.Git
         // size into byte 0 (alongside the 3-bit type and continuation
         // bit), then 7 bits per continuation byte, low-bits-first.
         //
-        // Example — type=blob(3), size=42 (0x2A):
-        //   byte 0 = 0x3A     (cont=0, type=3, size_lo=0x0A → wait, 42 & 0x0F = 0x0A, type<<4 = 0x30 → 0x3A)
-        //   size remaining 42>>4 = 2 → 0, so single-byte form, no continuation.
+        // Example - type=blob(3), size=42 (0x2A):
+        //   byte 0 = 0x3A     (cont=0, type=3, size_lo=0x0A -> wait, 42 & 0x0F = 0x0A, type<<4 = 0x30 -> 0x3A)
+        //   size remaining 42>>4 = 2 -> 0, so single-byte form, no continuation.
         //
-        // Example — type=commit(1), size=300 (0x12C):
+        // Example - type=commit(1), size=300 (0x12C):
         //   byte 0 = 0x9C     (cont=1, type=1, size_lo=0x0C)
-        //   size remaining 300>>4 = 18 (0x12) → 0x12 fits in 7 bits, no continuation
+        //   size remaining 300>>4 = 18 (0x12) -> 0x12 fits in 7 bits, no continuation
         //   byte 1 = 0x12
         private static fun appendTypeSizeVarint(buf: List<UByte>, typeCode: Int, size: Long) {
             var first = ((typeCode & 7) * 16) + (size & 15L).toInt()

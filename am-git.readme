@@ -2,19 +2,36 @@ Short:        Native git client for AmigaOS (clone/commit/push/pull)
 Author:       Anders Kjeldsen <kjeldsenanders@gmail.com>
 Uploader:     Anders Kjeldsen <kjeldsenanders@gmail.com>
 Type:         dev/misc
-Version:      0.1.0
-Requires:     AmiSSL 4+ (for https:// remotes)
+Version:      0.12.0
+Requires:     AmiSSL 4+ (https remotes); bebbossh (optional, ssh remotes)
 Architecture: m68k-amigaos
 Distribution: Aminet
 
 am-git is a native git client for AmigaOS, written in AmLang.
-It speaks git smart-HTTP directly over TCP/TLS - there is no
-shelling out to a real git binary at runtime.
+It speaks the git smart protocol directly over TCP/TLS - there
+is no shelling out to a real git binary at runtime.
 
-Working commands: clone, commit, push, fetch, pull (ff-only),
-log, status, branch, checkout. Clone/fetch/push/pull run
-against real HTTPS remotes (validated byte-for-byte against
-reference git output on GitHub and a local git http-backend).
+Commands: init, clone, fetch, pull, push, commit, add, rm, mv,
+status, log, diff, show, branch, tag, checkout, merge, rebase,
+cherry-pick, revert, reset, merge-base, config and more.
+Clone/fetch/push/pull work over https://, http:// and ssh
+remotes (validated byte-for-byte against reference git output
+on GitHub and a local git http-backend).
 
-Requires AmiSSL for https:// URLs. See am-git.txt in the
-archive for full usage and the current command set.
+https:// remotes need AmiSSL 4+. Per-host credentials can be
+kept in ENV:AM_GIT_NETRC (netrc format), with
+AM_GIT_USERNAME/AM_GIT_PASSWORD as a simple single-login
+fallback - use a personal access token for GitHub.
+
+ssh remotes use an external ssh client - BebboSSH from Aminet:
+  1. setenv AM_GIT_SSH bebbossh
+  2. bebbosshkeygen -f ENVARC:.ssh/id_ed25519
+  3. register ENVARC:.ssh/id_ed25519.pub with the server
+     (GitHub: Settings -> SSH and GPG keys)
+On first connect am-git forwards bebbossh's trust-this-host
+question to your shell; answer yes once per host.
+
+Set stack to at least 100000 before running.
+
+See am-git.txt in the archive for full usage, the complete
+command set and credential setup.

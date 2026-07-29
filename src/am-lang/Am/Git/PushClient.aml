@@ -3,7 +3,7 @@ namespace Am.Git
     // Drives `git push` over smart-HTTP:
     //
     //   1. GET <remote>/info/refs?service=git-receive-pack
-    //   2. Parse ref advertisement → find the remote's current SHA
+    //   2. Parse ref advertisement -> find the remote's current SHA
     //      for the branch we want to push (or zeros if it's new).
     //   3. Walk objects reachable from local HEAD but not from the
     //      remote's old SHA. (For a new ref, that's everything.)
@@ -12,7 +12,7 @@ namespace Am.Git
     //   6. POST <remote>/git-receive-pack with the body.
     //   7. Read the report-status reply: per-ref `ok` / `ng <reason>`.
     //
-    // Force semantics: the wire protocol has no "force" bit — real
+    // Force semantics: the wire protocol has no "force" bit - real
     // git's `--force` merely skips the CLIENT's own fast-forward
     // check (the server only rejects when receive.denyNonFastForwards
     // is set). We mirror that: a non-fast-forward push is refused
@@ -21,7 +21,7 @@ namespace Am.Git
     // What we don't do yet:
     //   * Pushing tags as standalone refs (handled implicitly only
     //     when they happen to be reachable from the pushed commit).
-    //   * Side-band-64k progress on the response — not requested,
+    //   * Side-band-64k progress on the response - not requested,
     //     so the report comes back raw.
     class PushClient
     {
@@ -31,7 +31,7 @@ namespace Am.Git
         import Am.Web.Client
 
         // `gitDir` is typically ".git" for a non-bare repo. `remoteUrl`
-        // is the remote's HTTPS URL — the same one git would put in
+        // is the remote's HTTPS URL - the same one git would put in
         // `[remote "origin"]`. `branch` is just the leaf name
         // (e.g. "main"), without the `refs/heads/` prefix.
         //
@@ -122,7 +122,7 @@ namespace Am.Git
             return PushClient.parseReport(report, remoteRefName)
         }
 
-        // Parse the per-ref report-status reply — a stream of pkt-lines:
+        // Parse the per-ref report-status reply - a stream of pkt-lines:
         //
         //   "unpack ok\n"                or  "unpack <error-msg>\n"
         //   "ok <refname>\n"             or  "ng <refname> <reason>\n"

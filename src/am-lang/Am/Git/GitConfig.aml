@@ -2,7 +2,7 @@ namespace Am.Git
 {
     // Tiny `.git/config` reader.
     //
-    // Format (INI-ish — same as `man git-config`):
+    // Format (INI-ish - same as `man git-config`):
     //
     //     [section]
     //         key = value
@@ -10,14 +10,14 @@ namespace Am.Git
     //         key = value
     //         key2 = value
     //
-    // We flatten everything into "section[.subname].key" → value so a
+    // We flatten everything into "section[.subname].key" -> value so a
     // call like `getValue("remote.origin.url")` finds the right entry
     // without callers having to know whether the section is
     // subsectioned.
     //
     // What this doesn't do: include directives, conditional sections,
     // continuation lines, `[core]` quote-escapes inside values. Plenty
-    // for our needs — we only ever read `remote.<name>.url`.
+    // for our needs - we only ever read `remote.<name>.url`.
     class GitConfig(private var entries: HashMap<String, String>)
     {
         import Am.Lang
@@ -38,7 +38,7 @@ namespace Am.Git
             while (i < lines.length().toInt()) {
                 var line = lines[i.toUInt()]
                 // Strip a trailing CR for CRLF-line-ended files, but
-                // only when there's actually a character to look at —
+                // only when there's actually a character to look at -
                 // `endsWith("\r")` on an empty line could trigger the
                 // substring underflow if the runtime ever evaluates
                 // it eagerly.
@@ -72,7 +72,7 @@ namespace Am.Git
                 var key = trimmed.substring(0UI, eq.toUInt()).trim()
                 var value = trimmed.substringToEnd((eq + 1).toUInt()).trim()
                 // git allows quoted values to preserve trailing
-                // whitespace — strip just the wrapping quotes.
+                // whitespace - strip just the wrapping quotes.
                 if (value.startsWith("\"") && value.endsWith("\"") && value.length() >= 2) {
                     value = value.substring(1UI, (value.length() - 2).toUInt())
                 }
@@ -82,8 +82,8 @@ namespace Am.Git
             return new GitConfig(entries)
         }
 
-        // Parse a section header line: `[name]` → "name",
-        // `[name "subname"]` → "name.subname".
+        // Parse a section header line: `[name]` -> "name",
+        // `[name "subname"]` -> "name.subname".
         private static fun parseSection(line: String): String {
             // Strip the surrounding brackets first; ignore anything
             // after a trailing `#` / `;`.
@@ -126,7 +126,7 @@ namespace Am.Git
         }
 
         // Insert or overwrite a key's value. The key form mirrors the
-        // read side — `section.key` or `section.subsection.key`.
+        // read side - `section.key` or `section.subsection.key`.
         // Persisted by `write()`.
         fun setValue(key: String, value: String) {
             this.entries.set(key, value)
@@ -145,7 +145,7 @@ namespace Am.Git
         }
 
         // Serialise back to `.git/config`. The output is canonical
-        // INI — sections sorted, keys sorted within each section.
+        // INI - sections sorted, keys sorted within each section.
         // Comments and original formatting from a hand-edited file
         // are lost; users who care should edit the file directly
         // instead of going through `am-git config`.
@@ -167,7 +167,7 @@ namespace Am.Git
                 var k = keyList.get(i)
                 var lastDot = k.lastIndexOf(".")
                 if (lastDot < 0) {
-                    // Malformed key (no section) — skip rather than
+                    // Malformed key (no section) - skip rather than
                     // crash. Users should never see this from the
                     // CLI since we validate keys before storing.
                     i = i + 1
@@ -206,7 +206,7 @@ namespace Am.Git
             return "[" + section + " \"" + sub + "\"]"
         }
 
-        // Bubble sort — keys lists are short (handful of sections
+        // Bubble sort - keys lists are short (handful of sections
         // each with a handful of fields), this stays self-contained.
         // AmLang's String `<` isn't bytewise (see GitIndex's
         // compareBytewise), so we walk code units ourselves.

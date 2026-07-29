@@ -37,14 +37,17 @@ namespace Am.Git.Tests {
             MergeBaseTest.cleanupTestDir()
         }
 
-        // Either side null → null. Matches "no merge-base when one
-        // side is the unborn branch" semantics.
+        // Either side unresolvable (absent object) -> null. Matches "no
+        // merge-base when one side is the unborn branch" semantics.
+        // (Was a literal-null probe in the lax-nullability era; find()
+        // declares non-null shas now, so probe with a missing sha - it
+        // takes the same "unreadable input" path.)
         test nullSideReturnsNull() {
             var store = MergeBaseTest.freshStore()
             try {
                 var sha = MergeBaseTest.writeCommit(store, "tree-empty", List<String>.newList<String>())
-                Assert.assertNull(MergeBase.find(MergeBaseTest.nullSha(), sha, store))
-                Assert.assertNull(MergeBase.find(sha, MergeBaseTest.nullSha(), store))
+                Assert.assertNull(MergeBase.find(MergeBaseTest.missingSha(), sha, store))
+                Assert.assertNull(MergeBase.find(sha, MergeBaseTest.missingSha(), store))
             } catch (ex: Exception) {
                 MergeBaseTest.cleanupTestDir()
                 throw ex
@@ -213,11 +216,10 @@ namespace Am.Git.Tests {
             return l
         }
 
-        // Typed null for `MergeBase.find(null, ...)` — AmLang can't
-        // infer the type of a bare `null` at a call site.
-        private static fun nullSha(): String {
-            var s: String = null
-            return s
+        // A well-formed sha that exists in no store - the "unreadable
+        // side" probe for find().
+        private static fun missingSha(): String {
+            return "ffffffffffffffffffffffffffffffffffffffff"
         }
 
         private static fun cleanupTestDir() {
