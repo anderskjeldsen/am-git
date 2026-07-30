@@ -68,18 +68,29 @@ namespace Am.Git
             // file that's been staged-and-untouched compares equal.
             // We honour .gitignore at status-walk time so ignored
             // files don't show up as `??` noise.
-            var ignore = GitIgnore.load(workTreePath, gitDir)
-            var diskPaths = new HashMap<String, String>()
-            StatusReport.collectDiskPaths(workTreePath, "", diskPaths, ignore)
+            // Tracked paths (HEAD + index) so the disk walk keeps
+            // tracked-but-ignored files instead of pruning them.
+            var trackedFiles = new HashSet<String>()
+            var trackedDirs = new HashSet<String>()
+            StatusReport.addTracked(headPaths, trackedFiles, trackedDirs)
 
             // Index state. Absence is fine - old repos / fresh clones
             // don't have one, and we degrade to a worktree-vs-HEAD diff.
             var indexFile = new File(gitDir + "/index")
             if (!indexFile.exists()) {
-                return StatusReport.reportWithoutIndex(headPaths, diskPaths, porcelain)
+                var ignore0 = GitIgnore.load(workTreePath, gitDir)
+                var diskPaths0 = new HashMap<String, String>()
+                StatusReport.collectDiskPaths(workTreePath, "", diskPaths0, ignore0, trackedFiles, trackedDirs, null)
+                return StatusReport.reportWithoutIndex(headPaths, diskPaths0, porcelain)
             }
 
             var idx = GitIndex.read(gitDir)
+            StatusReport.addTracked(idx.pathToSha(), trackedFiles, trackedDirs)
+
+            var ignore = GitIgnore.load(workTreePath, gitDir)
+            var diskPaths = new HashMap<String, String>()
+            StatusReport.collectDiskPaths(workTreePath, "", diskPaths, ignore, trackedFiles, trackedDirs, idx)
+
             var indexPaths = idx.pathToSha()
             // Unmerged paths (any path with a stage > 0 row). These
             // need their own bucket because the regular staged/unstaged
@@ -219,11 +230,25 @@ namespace Am.Git
                 }
             }
 
+            // Tracked paths (HEAD + index) — tracked-but-ignored files
+            // must not be pruned by the disk walk (see run() / addTracked).
+            var trackedFiles = new HashSet<String>()
+            var trackedDirs = new HashSet<String>()
+            StatusReport.addTracked(headPaths, trackedFiles, trackedDirs)
+            var indexFile = new File(gitDir + "/index")
+            var haveIdx = indexFile.exists()
+            if (haveIdx) {
+                StatusReport.addTracked(GitIndex.read(gitDir).pathToSha(), trackedFiles, trackedDirs)
+            }
+
             var ignore = GitIgnore.load(workTreePath, gitDir)
             var diskPaths = new HashMap<String, String>()
-            StatusReport.collectDiskPaths(workTreePath, "", diskPaths, ignore)
+            var statIdx: GitIndex? = null
+            if (haveIdx) {
+                statIdx = GitIndex.read(gitDir)
+            }
+            StatusReport.collectDiskPaths(workTreePath, "", diskPaths, ignore, trackedFiles, trackedDirs, statIdx)
 
-            var indexFile = new File(gitDir + "/index")
             if (!indexFile.exists()) {
                 // No index: everything on disk not in HEAD is untracked,
                 // disk-vs-HEAD differences are modified, HEAD-only deleted.
@@ -445,10 +470,41 @@ namespace Am.Git
         // matched by `.gitignore`), hashing each file as a blob so we
         // can compare SHAs against the HEAD tree / index. Public so
         // `DiffCommand` shares the same walk + skip rules.
+        // Record every path in `paths` (a path->sha map from HEAD or the
+        // index) as a tracked file, plus each of its ancestor directories,
+        // so collectDiskPaths can tell whether an ignored entry is tracked
+        // and must therefore still be walked.
+        static fun addTracked(paths: HashMap<String, String>,
+                               trackedFiles: HashSet<String>,
+                               trackedDirs: HashSet<String>) {
+            var keys = paths.buildKeys()
+            var i = 0
+            while (i < keys.getSize()) {
+                var p = keys.get(i)
+                trackedFiles.add(p)
+                var slash = p.indexOf("/")
+                while (slash >= 0) {
+                    trackedDirs.add(p.substring(0UI, slash.toUInt()))
+                    slash = p.indexOfAfter("/", slash + 1)
+                }
+                i = i + 1
+            }
+        }
+
+        // `trackedFiles` / `trackedDirs` list the paths (and their ancestor
+        // directories) that are tracked in HEAD or the index. A tracked
+        // path is NEVER ignored — real git only applies .gitignore to
+        // untracked files — so the walk must not prune it even when it
+        // matches an ignore rule. Without this, a committed file under an
+        // ignored directory looks "missing on disk" and is mis-reported as
+        // deleted.
         static fun collectDiskPaths(workTreePath: String,
                                      relPrefix: String,
                                      out: HashMap<String, String>,
-                                     ignore: GitIgnore) {
+                                     ignore: GitIgnore,
+                                     trackedFiles: HashSet<String>,
+                                     trackedDirs: HashSet<String>,
+                                     idx: GitIndex?) {
             var dirPath: String
             if (relPrefix.length() == 0) {
                 dirPath = workTreePath
@@ -478,20 +534,60 @@ namespace Am.Git
                 // Skip ignored entries. For directories the check
                 // prunes the whole subtree (we don't descend), which
                 // matches real git's behaviour and saves us from
-                // hashing every blob under `builds/` etc.
+                // hashing every blob under `builds/` etc. — UNLESS the
+                // entry is tracked (a tracked file, or a directory that
+                // contains tracked files), which git never ignores.
                 if (ignore.isIgnored(relPath, isDir)) {
-                    i = i + 1
-                    continue
+                    var keep = false
+                    if (isDir) {
+                        keep = trackedDirs.contains(relPath)
+                    } else {
+                        keep = trackedFiles.contains(relPath)
+                    }
+                    if (!keep) {
+                        i = i + 1
+                        continue
+                    }
                 }
                 if (isDir) {
-                    StatusReport.collectDiskPaths(workTreePath, relPath, out, ignore)
+                    StatusReport.collectDiskPaths(workTreePath, relPath, out, ignore, trackedFiles, trackedDirs, idx)
                 } else {
-                    var bytes = StatusReport.readFileBytes(f.toString())
-                    var sha = PackObject.computeSha("blob", bytes)
-                    out.set(relPath, sha)
+                    // Fast path: if the index has this file at stage 0 and
+                    // its size + mtime match the working file, trust the
+                    // index's blob SHA instead of re-reading and hashing the
+                    // whole file (git's stat shortcut). Huge win on slow
+                    // filesystems where hashing every file dominates.
+                    var reused = false
+                    if (idx != null) {
+                        var entry = idx.findByPath(relPath)
+                        if (entry != null && StatusReport.statUnchanged(f, entry)) {
+                            out.set(relPath, entry.sha)
+                            reused = true
+                        }
+                    }
+                    if (!reused) {
+                        var bytes = StatusReport.readFileBytes(f.toString())
+                        var sha = PackObject.computeSha("blob", bytes)
+                        out.set(relPath, sha)
+                    }
                 }
                 i = i + 1
             }
+        }
+
+        // True when the working file's size and mtime (seconds) both match
+        // the index entry — i.e. the file almost certainly hasn't changed
+        // since it was staged, so we can skip re-hashing it. getLastModified
+        // returns milliseconds; the index stores seconds.
+        private static fun statUnchanged(f: File, entry: IndexEntry): Bool {
+            if (f.getSize().toUInt() != entry.size) {
+                return false
+            }
+            var mtimeSec = (f.getLastModified() / 1000L).toUInt()
+            if (mtimeSec != entry.mtimeSeconds) {
+                return false
+            }
+            return true
         }
 
         private static fun readFileBytes(path: String): UByte[] {

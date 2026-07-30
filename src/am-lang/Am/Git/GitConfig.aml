@@ -25,8 +25,12 @@ namespace Am.Git
         import Am.IO
 
         static fun read(gitDir: String): GitConfig {
+            return GitConfig.readPath(gitDir + "/config")
+        }
+
+        // Read a config file at an arbitrary path (e.g. `~/.gitconfig`).
+        static fun readPath(path: String): GitConfig {
             var entries = new HashMap<String, String>()
-            var path = gitDir + "/config"
             var f = new File(path)
             if (!f.exists()) {
                 return new GitConfig(entries)

@@ -1,0 +1,149 @@
+namespace Am.Git
+{
+    // A lightweight am-git-specific pack index: a sidecar `<pack>.amidx`
+    // mapping every object's SHA-1 to its byte offset in the pack, so
+    // ObjectStore can seek + inflate a single object instead of parsing
+    // and delta-resolving the entire pack on every process start.
+    //
+    // This is NOT git's v2 `.idx` format (no fanout / CRC / trailer) —
+    // it's read only by am-git. Layout:
+    //
+    //   "AMIDX1"                 6 bytes magic
+    //   count                    4 bytes BE
+    //   count × {
+    //     sha                    20 bytes (raw SHA-1)
+    //     offset                 8 bytes BE  (byte offset in the .pack)
+    //   }
+    class PackIndex
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        private static var HEADER: Int = 10   // 6 magic + 4 count
+
+        // `<pack>.pack` -> `<pack>.amidx`.
+        static fun path(packPath: String): String {
+            if (packPath.endsWith(".pack")) {
+                return packPath.substring(0UI, (packPath.length() - 5).toUInt()) + ".amidx"
+            }
+            return packPath + ".amidx"
+        }
+
+        static fun exists(packPath: String): Bool {
+            var f = new File(PackIndex.path(packPath))
+            return f.exists()
+        }
+
+        // Write the index for a fully-parsed pack (`objects` is the
+        // sha -> PackObject map, each with packOffset set).
+        static fun write(packPath: String, objects: HashMap<String, PackObject>) {
+            var keys = objects.buildKeys()
+            var count = keys.getSize()
+            var total = PackIndex.HEADER + count * 28
+            var buf = new UByte[total.toUInt()]
+
+            var p = PackIndex.putStr(buf, 0, "AMIDX1")
+            p = PackIndex.putBE32(buf, p, count)
+
+            var i = 0
+            while (i < count) {
+                var sha = keys.get(i)
+                var obj = objects.get(sha)
+                var shaBytes = HexUtil.fromHex(sha)
+                var k = 0
+                while (k < 20) {
+                    buf[(p + k).toUInt()] = shaBytes[k.toUInt()]
+                    k = k + 1
+                }
+                p = p + 20
+                p = PackIndex.putBE64(buf, p, obj.packOffset)
+                i = i + 1
+            }
+            Repository.writeBytes(PackIndex.path(packPath), buf)
+        }
+
+        // Load the index into a sha -> offset map. Empty map if missing
+        // or malformed (caller then falls back to a full parse).
+        static fun load(packPath: String): HashMap<String, Long> {
+            var map = new HashMap<String, Long>()
+            var f = new File(PackIndex.path(packPath))
+            if (!f.exists()) {
+                return map
+            }
+            var stream = new FileStream(f, FileAccess.readOnly)
+            var bytes = stream.readAll()
+            stream.close()
+            if (bytes.length().toInt() < PackIndex.HEADER) {
+                return map
+            }
+            var count = PackIndex.getBE32(bytes, 6)
+            var p = PackIndex.HEADER
+            var i = 0
+            while (i < count) {
+                var shaBytes = new UByte[20UI]
+                var k = 0
+                while (k < 20) {
+                    shaBytes[k.toUInt()] = bytes[(p + k).toUInt()]
+                    k = k + 1
+                }
+                p = p + 20
+                var sha = HexUtil.toHex(shaBytes)
+                var off = PackIndex.getBE64(bytes, p)
+                p = p + 8
+                map.set(sha, off)
+                i = i + 1
+            }
+            return map
+        }
+
+        // --- little byte helpers ---------------------------------------
+
+        private static fun putStr(buf: UByte[], p: Int, s: String): Int {
+            var sb = s.toBytes("UTF-8")
+            var k = 0
+            while (k < sb.length().toInt()) {
+                buf[(p + k).toUInt()] = sb[k.toUInt()]
+                k = k + 1
+            }
+            return p + sb.length().toInt()
+        }
+
+        private static fun putBE32(buf: UByte[], p: Int, value: Int): Int {
+            buf[p.toUInt()] = ((value / 16777216) & 255).toUByte()
+            buf[(p + 1).toUInt()] = ((value / 65536) & 255).toUByte()
+            buf[(p + 2).toUInt()] = ((value / 256) & 255).toUByte()
+            buf[(p + 3).toUInt()] = (value & 255).toUByte()
+            return p + 4
+        }
+
+        private static fun putBE64(buf: UByte[], p: Int, value: Long): Int {
+            var v = value
+            var k = 7
+            while (k >= 0) {
+                buf[(p + k).toUInt()] = (v & 255L).toInt().toUByte()
+                v = v / 256L
+                k = k - 1
+            }
+            return p + 8
+        }
+
+        private static fun getBE32(bytes: UByte[], p: Int): Int {
+            var b0 = bytes[p.toUInt()].toInt()
+            var b1 = bytes[(p + 1).toUInt()].toInt()
+            var b2 = bytes[(p + 2).toUInt()].toInt()
+            var b3 = bytes[(p + 3).toUInt()].toInt()
+            return b0 * 16777216 + b1 * 65536 + b2 * 256 + b3
+        }
+
+        private static fun getBE64(bytes: UByte[], p: Int): Long {
+            var v: Long = 0L
+            var k = 0
+            while (k < 8) {
+                v = v * 256L + bytes[(p + k).toUInt()].toInt().toLong()
+                k = k + 1
+            }
+            return v
+        }
+    }
+}

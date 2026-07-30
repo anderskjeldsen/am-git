@@ -40,15 +40,15 @@ namespace Am.Git
         // git accepts (`2026-05-12T15:30`, "now", relative times) are
         // not parsed yet - the unix form is the one that round-trips
         // losslessly through commit objects anyway.
-        static fun loadAuthorDate(): DateTime {
+        static fun loadAuthorDate(): DateTime? {
             return Identity.parseDate(Environment.get("GIT_AUTHOR_DATE"))
         }
 
-        static fun loadCommitterDate(): DateTime {
+        static fun loadCommitterDate(): DateTime? {
             return Identity.parseDate(Environment.get("GIT_COMMITTER_DATE"))
         }
 
-        private static fun parseDate(value: String): DateTime? {
+        private static fun parseDate(value: String?): DateTime? {
             if (value == null) {
                 return null
             }
@@ -94,10 +94,33 @@ namespace Am.Git
             if (email == null) {
                 email = Environment.get("AM_GIT_USER_EMAIL")
             }
+            // Fall back to git config ([user] name/email) — local
+            // `.git/config` first, then global `~/.gitconfig` — so a repo
+            // configured with `git config user.name` just works, no env
+            // vars needed. (The CLI always runs with the repo as cwd, so
+            // ".git" is the local config.)
+            if (name == null) {
+                name = Identity.configValue("user.name")
+            }
+            if (email == null) {
+                email = Identity.configValue("user.email")
+            }
             if (name == null || email == null) {
                 return null
             }
             return new Identity(name, email)
+        }
+
+        private static fun configValue(key: String): String? {
+            var local = GitConfig.read(".git").getValue(key)
+            if (local != null) {
+                return local
+            }
+            var home = Environment.get("HOME")
+            if (home != null) {
+                return GitConfig.readPath(home + "/.gitconfig").getValue(key)
+            }
+            return null
         }
 
         // Format as git expects for the author/committer line. Caller

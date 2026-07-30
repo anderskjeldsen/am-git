@@ -5,11 +5,13 @@ namespace Am.Git
     // written by `am-git commit`) and any packfile in
     // `.git/objects/pack/*.pack` (originally written by `clone`).
     //
-    // We don't have a `.idx` to do O(1) pack lookups yet, so the
-    // pack is loaded into memory once and queried by SHA from a
-    // HashMap. For typical-sized repos the pack is small enough
-    // that the cost is negligible; for huge histories a real index
-    // would be needed.
+    // Pack access is index-driven: a `<pack>.amidx` sidecar (PackIndex)
+    // maps SHA -> pack offset so we can seek + inflate a single object
+    // (via LazyPack) instead of decoding the whole pack. The first time
+    // a pack has no index we fall back to a full parse (PackParser) and
+    // write the index as a side effect, so every later process — and the
+    // shell-out callers that spawn a fresh am-git each time — reads it in
+    // milliseconds.
     //
     // The store is read-only - writes happen through
     // `LooseObjectWriter` and the pack-on-clone-disk path. Adding
@@ -28,13 +30,25 @@ namespace Am.Git
         // - clone repos won't pay parse cost until something does a
         // lookup.
         private var packLoaded: Bool = false
+        // Only populated when a pack had to be fully parsed (no index yet);
+        // serves this process while the freshly-written index speeds up the
+        // next one.
         private var packObjects: HashMap<String, PackObject> = new HashMap<String, PackObject>()
+        // Packs opened lazily through their `.amidx` index.
+        private var lazyPacks: List<LazyPack> = List<LazyPack>.newList<LazyPack>()
 
-        // True if the object exists in either store.
+        // True if the object exists in any store.
         fun has(sha: String): Bool {
             this.ensurePackLoaded()
             if (this.packObjects.containsKey(sha)) {
                 return true
+            }
+            var li = 0
+            while (li < this.lazyPacks.getSize()) {
+                if (this.lazyPacks.get(li).has(sha)) {
+                    return true
+                }
+                li = li + 1
             }
             var loosePath = this.looseReader.pathFor(sha)
             var f = new File(loosePath)
@@ -47,6 +61,14 @@ namespace Am.Git
             this.ensurePackLoaded()
             if (this.packObjects.containsKey(sha)) {
                 return this.packObjects.get(sha)
+            }
+            var li = 0
+            while (li < this.lazyPacks.getSize()) {
+                var lp = this.lazyPacks.get(li)
+                if (lp.has(sha)) {
+                    return lp.read(sha)
+                }
+                li = li + 1
             }
             return this.looseReader.read(sha)
         }
@@ -79,16 +101,24 @@ namespace Am.Git
             var f = new File(path)
             var stream = new FileStream(f, FileAccess.readOnly)
             var bytes = stream.readAll()
+            stream.close()
 
+            // Fast path: an index exists -> open the pack lazily, inflating
+            // only the objects that are actually requested.
+            if (PackIndex.exists(path)) {
+                var offsets = PackIndex.load(path)
+                this.lazyPacks.add(new LazyPack(bytes, offsets))
+                return
+            }
+
+            // Slow path (first time only): fully parse + delta-resolve, use
+            // the result for this process, and write the index so the next
+            // process takes the fast path.
             var parser = new PackParser(bytes)
             var parsed = parser.parseAll()
             if (parsed.deltas.getSize() > 0) {
                 new DeltaResolver(parsed).resolveAll()
             }
-
-            // Merge into our combined map. Multiple packs would just
-            // accumulate; same-SHA collisions are no-ops since git
-            // objects are content-addressed.
             var keys = parsed.objects.buildKeys()
             var i = 0
             while (i < keys.getSize()) {
@@ -96,6 +126,7 @@ namespace Am.Git
                 this.packObjects.set(sha, parsed.objects.get(sha))
                 i = i + 1
             }
+            PackIndex.write(path, parsed.objects)
         }
     }
 }

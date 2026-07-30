@@ -60,6 +60,61 @@ namespace Am.Git
             return new PackParseResult(objects, byOffset, deltas)
         }
 
+        // Decode a single entry at `offset` WITHOUT resolving deltas or
+        // computing SHAs — used by the lazy pack reader (LazyPack), which
+        // has the offset from the pack index and resolves deltas itself.
+        // The returned PackObject holds the inflated content (full content
+        // for a plain object, the delta-instruction stream for a delta),
+        // its packOffset, and baseOffset / baseSha for deltas.
+        static fun readEntryAt(packBytes: UByte[], offset: Int): PackObject {
+            var entryStart = offset
+
+            var b = packBytes[offset.toUInt()].toInt()
+            var typeCode = (b / 16) & 0x07
+            var size: Long = (b & 0x0F).toLong()
+            var multiplier: Long = 16L
+            var pos = offset + 1
+            while ((b & 0x80) != 0) {
+                b = packBytes[pos.toUInt()].toInt()
+                size = size + ((b & 0x7F).toLong() * multiplier)
+                multiplier = multiplier * 128L
+                pos = pos + 1
+            }
+
+            var baseOffset: Long = 0L
+            var baseSha: String? = null
+            if (typeCode == 6) {
+                var co = packBytes[pos.toUInt()].toInt()
+                pos = pos + 1
+                var relOff: Long = (co & 0x7F).toLong()
+                while ((co & 0x80) != 0) {
+                    co = packBytes[pos.toUInt()].toInt()
+                    pos = pos + 1
+                    relOff = (relOff + 1L) * 128L + (co & 0x7F).toLong()
+                }
+                baseOffset = entryStart.toLong() - relOff
+            } else if (typeCode == 7) {
+                var subBytes = new UByte[20UI]
+                var k = 0
+                while (k < 20) {
+                    subBytes[k.toUInt()] = packBytes[(pos + k).toUInt()]
+                    k = k + 1
+                }
+                baseSha = HexUtil.toHex(subBytes)
+                pos = pos + 20
+            }
+
+            var consumed = new Int[1]
+            var available = packBytes.length().toInt() - pos
+            var inflated = Zlib.inflate(packBytes, pos, available, size.toInt(), consumed)
+
+            var obj = new PackObject(typeCode, inflated)
+            obj.packOffset = entryStart.toLong()
+            obj.baseOffset = baseOffset
+            obj.baseSha = baseSha
+            return obj
+        }
+
         // Decode one entry starting at `offset`. Indexes the parsed
         // object in `byOffset` (always), `objects` (if a full object),
         // or `deltas` (if a deferred delta). Returns the offset of the

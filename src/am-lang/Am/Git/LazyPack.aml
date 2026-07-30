@@ -1,0 +1,59 @@
+namespace Am.Git
+{
+    // A packfile read lazily via a PackIndex: the pack bytes are held in
+    // memory, but individual objects are inflated (and their deltas
+    // resolved) only when requested — instead of PackParser.parseAll()
+    // decoding every object up front. Resolved objects are memoised by
+    // offset so a shared delta base is inflated once.
+    class LazyPack(private var bytes: UByte[],
+                   private var offsets: HashMap<String, Long>)
+    {
+        import Am.Lang
+        import Am.Collections
+
+        private var cache: HashMap<Long, PackObject> = new HashMap<Long, PackObject>()
+
+        fun has(sha: String): Bool {
+            return this.offsets.containsKey(sha)
+        }
+
+        // Fully-resolved object for `sha` (assumes has(sha) is true).
+        fun read(sha: String): PackObject {
+            var off = this.offsets.get(sha)
+            var obj = this.resolveAt(off)
+            obj.sha = sha
+            return obj
+        }
+
+        // Resolve the object at pack `offset`, following delta chains.
+        private fun resolveAt(offset: Long): PackObject {
+            if (this.cache.containsKey(offset)) {
+                return this.cache.get(offset)
+            }
+            var e = PackParser.readEntryAt(this.bytes, offset.toInt())
+
+            var result: PackObject
+            if (e.typeCode == 6) {
+                // OFS_DELTA — base sits at an earlier pack offset.
+                var base = this.resolveAt(e.baseOffset)
+                var applied = DeltaResolver.applyDelta(base.content, e.content)
+                result = new PackObject(base.typeCode, applied)
+            } else if (e.typeCode == 7) {
+                // REF_DELTA — base named by SHA (look up its offset).
+                var baseSha = e.baseSha
+                if (baseSha == null || !this.offsets.containsKey(baseSha)) {
+                    throw new Exception("LazyPack: REF_DELTA base not in pack")
+                }
+                var base = this.resolveAt(this.offsets.get(baseSha))
+                var applied = DeltaResolver.applyDelta(base.content, e.content)
+                result = new PackObject(base.typeCode, applied)
+            } else {
+                // Plain object — content already inflated.
+                result = e
+            }
+            result.packOffset = offset
+            this.cache.set(offset, result)
+            return result
+        }
+    }
+}

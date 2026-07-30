@@ -99,7 +99,7 @@ namespace Am.Git
         // returning the reconstructed bytes. Pure function - no state
         // from the surrounding parse. (`base` is a reserved keyword
         // in AmLang, hence `baseBytes`.)
-        private static fun applyDelta(baseBytes: UByte[], delta: UByte[]): UByte[] {
+        static fun applyDelta(baseBytes: UByte[], delta: UByte[]): UByte[] {
             var pos = 0
 
             // Read the two leading varints. The encoding is the same

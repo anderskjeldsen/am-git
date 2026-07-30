@@ -62,6 +62,8 @@ namespace AmGit
                 Program.runStatus(args)
             } else if (command == "add") {
                 Program.runAdd(args)
+            } else if (command == "unstage") {
+                Program.runUnstage(args)
             } else if (command == "rm") {
                 Program.runRm(args)
             } else if (command == "mv") {
@@ -2518,12 +2520,22 @@ namespace AmGit
         private static fun runShow(args: String[]) {
             try {
                 if (args.length() > 2UI) {
-                    "usage: am-git show [<commit>]".println()
+                    "usage: am-git show [<commit>[:<path>]]".println()
                     return
                 }
                 var commitish = "HEAD"
                 if (args.length() == 2UI) {
                     commitish = args[1UI]
+                }
+                // `show <commit>:<path>` - dump that file's blob content
+                // (like real git). Used by tools that need a file's
+                // version at a commit (e.g. a diff view's left side).
+                var colon = commitish.indexOf(":")
+                if (colon >= 0) {
+                    Program.showFileAtCommit(
+                        commitish.substring(0UI, colon.toUInt()),
+                        commitish.substringToEnd((colon + 1).toUInt()))
+                    return
                 }
                 var sha = Program.resolveCommitish(commitish)
                 if (sha == null) {
@@ -2603,6 +2615,30 @@ namespace AmGit
             } catch (ex: Exception) {
                 ("show: " + ex.message).println()
             }
+        }
+
+        // Dump the raw content of `path` as it exists in `commitish`.
+        // Prints nothing (and exits non-error) if the path isn't present
+        // in that commit's tree, so callers can treat "no output" as
+        // "absent" (e.g. a file added since HEAD).
+        private static fun showFileAtCommit(commitish: String, path: String) {
+            var sha = Program.resolveCommitish(commitish)
+            if (sha == null) {
+                ("show: cannot resolve '" + commitish + "'").println()
+                return
+            }
+            var store = new ObjectStore(".git")
+            if (!store.has(sha)) {
+                ("show: " + sha + " not in object store").println()
+                return
+            }
+            var snapshot = DiffCommand.snapshotCommit(sha, store)
+            if (!snapshot.containsKey(path)) {
+                // Absent in this commit -> emit nothing.
+                return
+            }
+            var blob = store.read(snapshot.get(path))
+            String.fromBytes(blob.content, "UTF-8").print()
         }
 
         // `am-git ls-stages` - print every index entry as
@@ -2752,6 +2788,52 @@ namespace AmGit
                 ("Staged " + n.toString() + " file(s)").println()
             } catch (ex: Exception) {
                 "add: failed".println()
+                ex.printWithStackTrace()
+            }
+        }
+
+        // `am-git unstage <path>...` - the inverse of `add` for individual
+        // paths (like `git restore --staged` / `git reset HEAD <path>`):
+        // restore each path's index entry to its HEAD version, or drop it
+        // from the index entirely when the file isn't in HEAD (newly
+        // added). The working tree is left untouched.
+        private static fun runUnstage(args: String[]) {
+            try {
+                if (args.length() < 2UI) {
+                    "usage: am-git unstage <path>...".println()
+                    return
+                }
+                var idx = GitIndex.read(".git")
+                var head = HeadReader.read(".git")
+                var headIdx: GitIndex? = null
+                if (head.commitSha != null) {
+                    var store = new ObjectStore(".git")
+                    var obj = store.read(head.commitSha)
+                    var rootTree = WorkTree.extractRootTreeSha(obj.content)
+                    headIdx = GitIndex.fromTree(rootTree, store)
+                }
+                var count = 0
+                var i = 1UI
+                while (i < args.length()) {
+                    var path = args[i]
+                    // Drop the current staged / conflict rows for this path.
+                    idx.clearConflictStages(path)
+                    idx.removeByPath(path)
+                    // Restore HEAD's version (stage 0) if it's tracked there;
+                    // otherwise the path is left untracked.
+                    if (headIdx != null) {
+                        var e = headIdx.findByPath(path)
+                        if (e != null) {
+                            idx.upsert(e)
+                        }
+                    }
+                    count = count + 1
+                    i = i + 1UI
+                }
+                idx.write(".git")
+                ("Unstaged " + count.toString() + " path(s)").println()
+            } catch (ex: Exception) {
+                "unstage: failed".println()
                 ex.printWithStackTrace()
             }
         }
@@ -2942,6 +3024,23 @@ namespace AmGit
                     var a = args[i.toUInt()]
                     if (a == "--porcelain") {
                         porcelain = true
+                    } else if (a.startsWith("--untracked-files") || a.startsWith("-u")) {
+                        // Tolerate git's `--untracked-files=<mode>` / `-u<mode>`
+                        // (and the space-separated `-u <mode>`). am-git's status
+                        // walk ALREADY recurses into untracked directories and
+                        // lists every file individually — i.e. it always behaves
+                        // as `--untracked-files=all` — so every mode is accepted
+                        // and treated as a no-op rather than erroring. Real git
+                        // needs `=all` to expand untracked dirs; accepting it
+                        // here lets one am-ide command line work against both
+                        // real git and am-git. (`--untracked-files no` splits the
+                        // mode into a separate arg — skip it too.)
+                        if (a == "--untracked-files" || a == "-u") {
+                            // mode is the next arg, if present — swallow it.
+                            if (i + 1 < args.length().toInt()) {
+                                i = i + 1
+                            }
+                        }
                     } else {
                         ("status: unknown option '" + a + "'").println()
                         return
@@ -3242,25 +3341,41 @@ namespace AmGit
         private static fun runLog(args: String[]) {
             try {
                 var limit = -1
+                var startRef: String? = null
                 var i = 1
                 while (i < args.length().toInt()) {
                     var a = args[i.toUInt()]
                     if (a == "-n" && i + 1 < args.length().toInt()) {
                         limit = Int.parse(args[(i + 1).toUInt()])
                         i = i + 2
-                    } else {
+                    } else if (a.startsWith("-")) {
                         ("log: unrecognised arg '" + a + "'").println()
                         return
+                    } else {
+                        // Positional = the commit-ish to start from
+                        // (branch, tag, or SHA). Defaults to HEAD.
+                        startRef = a
+                        i = i + 1
                     }
                 }
 
-                var head = HeadReader.read(".git")
-                if (head.commitSha == null) {
+                var start: String? = null
+                if (startRef == null) {
+                    var head = HeadReader.read(".git")
+                    start = head.commitSha
+                } else {
+                    start = Program.resolveCommitish(startRef)
+                    if (start == null) {
+                        ("log: cannot resolve '" + startRef + "'").println()
+                        return
+                    }
+                }
+                if (start == null) {
                     "log: no commits yet".println()
                     return
                 }
                 var store = new ObjectStore(".git")
-                var current = head.commitSha
+                var current = start
                 var shown = 0
                 loop {
                     if (current == null) {

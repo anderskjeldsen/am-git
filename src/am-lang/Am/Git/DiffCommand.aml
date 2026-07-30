@@ -113,8 +113,17 @@ namespace Am.Git
                 resolved = File.getCurrentDirectory()
             }
             var ignore = GitIgnore.load(resolved, gitDir)
+            // Tracked-but-ignored files must still be snapshotted, so the
+            // disk walk keeps anything recorded in the index (see
+            // StatusReport.addTracked / collectDiskPaths).
+            var trackedFiles = new HashSet<String>()
+            var trackedDirs = new HashSet<String>()
+            var indexFile = new File(gitDir + "/index")
+            if (indexFile.exists()) {
+                StatusReport.addTracked(GitIndex.read(gitDir).pathToSha(), trackedFiles, trackedDirs)
+            }
             var out = new HashMap<String, String>()
-            StatusReport.collectDiskPaths(resolved, "", out, ignore)
+            StatusReport.collectDiskPaths(resolved, "", out, ignore, trackedFiles, trackedDirs, null)
             return out
         }
 
