@@ -1,5 +1,5 @@
 id: am-git
-version: 0.12.0
+version: 0.12.2
 type: application
 dependencies:
   - id: am-lang-core
@@ -102,16 +102,19 @@ platforms:
     gccCommand: gcc
   - id: morphos-ppc
     extends: libc
-    gccCommand: ppc-morphos-gcc -O3
+    # -Os, not -O3: MorphOS' loader silently wedges on relocatable ELFs
+    # bigger than ~9-11 MB (proven via pad-canary on the QEMU rig), so
+    # binary size is a hard functional constraint here, not a tuning knob.
+    gccCommand: ppc-morphos-gcc -Os
     # Same size-shrink mechanism as the amigaos target above —
     # function/data sections + linker gc.
     gccAdditionalOptions:
       - -noixemul
-#      - -ffunction-sections
-#      - -fdata-sections
     additionalLinkerFlags:
-#      - -noixemul
-#      - -Wl,--gc-sections
+      # NOTE: do NOT add -Wl,--gc-sections here — it deletes .ctdt (the
+      # libnix constructor-table section) and .data, producing a binary
+      # that wedges pre-main. Needs KEEP() support before it's safe.
+      - -s
 
 buildTargets:
   - id: amigaos_docker

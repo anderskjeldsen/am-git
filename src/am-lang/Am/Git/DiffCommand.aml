@@ -73,7 +73,7 @@ namespace Am.Git
 
         // Snapshot of HEAD's tree (or any commit's tree) as
         // path -> blob SHA. Reuses StatusReport's tree walker.
-        static fun snapshotCommit(commitSha: String, store: ObjectStore): HashMap<String, String> {
+        static fun snapshotCommit(commitSha: String?, store: ObjectStore): HashMap<String, String> {
             var out = new HashMap<String, String>()
             if (commitSha == null) {
                 return out  // unborn - empty snapshot
@@ -182,7 +182,7 @@ namespace Am.Git
             return sb.toString()
         }
 
-        private static fun blobBytes(sha: String, store: ObjectStore): UByte[] {
+        private static fun blobBytes(sha: String?, store: ObjectStore): UByte[] {
             if (sha == null || sha.length() != 40 || !store.has(sha)) {
                 return new UByte[0]
             }

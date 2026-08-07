@@ -1,36 +1,36 @@
-Short:        Native git client for AmigaOS (clone/commit/push/pull)
+Short:        Native git client for MorphOS (clone/commit/pull/push)
 Author:       Anders Kjeldsen <kjeldsenanders@gmail.com>
 Uploader:     Anders Kjeldsen <kjeldsenanders@gmail.com>
 Type:         dev/misc
 Version:      0.12.2
-Requires:     AmiSSL 5.27 (https remotes); bebbossh (optional, ssh remotes)
-Architecture: m68k-amigaos
+Requires:     MorphOS 3.x
+Architecture: ppc-morphos
 Distribution: Aminet
 
-am-git is a native git client for AmigaOS, written in AmLang.
+am-git is a native git client for MorphOS, written in AmLang.
 It speaks the git smart protocol directly over TCP/TLS.
 
 Commands: init, clone, fetch, pull, push, commit, add, unstage,
 rm, mv, status, log, diff, show, branch, tag, checkout, merge,
 rebase, cherry-pick, revert, reset, merge-base, config and more.
-Clone/fetch/push/pull work over https://, http:// and ssh
-remotes (validated byte-for-byte against reference git output
-on GitHub and a local git http-backend).
+Clone/fetch/push/pull work over https:// and http:// remotes
+(validated byte-for-byte against reference git output on GitHub
+and a local git http-backend). TLS is linked in statically -
+no extra libraries to install.
 
-https:// remotes need AmiSSL 5.27. Per-host credentials can be
-kept in ENV:AM_GIT_NETRC (netrc format), with
-AM_GIT_USERNAME/AM_GIT_PASSWORD as a simple single-login
-fallback - use a personal access token for GitHub.
+ssh remotes are NOT supported in this MorphOS build yet - use
+an https:// remote instead (GitHub: use a personal access
+token as the password).
 
-ssh remotes use an external ssh client - BebboSSH from Aminet:
-  1. setenv AM_GIT_SSH bebbossh
-  2. bebbosshkeygen -f ENVARC:.ssh/id_ed25519
-  3. register ENVARC:.ssh/id_ed25519.pub with the server
-     (GitHub: Settings -> SSH and GPG keys)
-On first connect am-git forwards bebbossh's trust-this-host
-question to your shell; answer yes once per host.
+Per-host credentials can be kept in ENV:AM_GIT_NETRC (netrc
+format), with AM_GIT_USERNAME/AM_GIT_PASSWORD as a simple
+single-login fallback.
 
 Set stack to at least 100000 before running.
+
+This is the first MorphOS release of am-git. It matches the
+m68k AmigaOS release (am-git.lha) feature-for-feature, except
+for the ssh transport noted above.
 
 Changes in 0.12.2 (large-repo clones and stability):
  - checkout is now safe like real git: it refuses to
@@ -42,15 +42,13 @@ Changes in 0.12.2 (large-repo clones and stability):
    streamed the way real git's index-pack does it - one
    object at a time instead of unpacking the entire
    history into RAM - which fixes crashes/corruption when
-   cloning multi-megabyte packs (e.g. from GitHub) on
-   memory-constrained Amigas. Progress is printed while
-   indexing so long clones no longer look hung.
+   cloning multi-megabyte packs (e.g. from GitHub).
+   Progress is printed while indexing so long clones no
+   longer look hung.
  - Fixed a batch of crashes on empty/fresh repositories:
    the first commit in a new repo, diff/reset/merge with
    an unborn or detached HEAD, and pull without an
    explicit branch or remote URL.
- - First MorphOS release ships alongside this version
-   (am-git_mos.lha, ppc-morphos).
 
 Changes in 0.12.1 (performance and fixes):
  - Packed repositories are much faster. am-git now writes
@@ -74,5 +72,5 @@ Changes in 0.12.1 (performance and fixes):
    that commit, and log accepts a start ref
    (log <branch|tag|commit>).
 
-See am-git.txt in the archive for full usage, the complete
-command set and credential setup.
+See am-git_mos.txt in the archive for full usage, the
+complete command set and credential setup.

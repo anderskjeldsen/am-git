@@ -106,5 +106,15 @@ namespace Am.Git.Tests {
             var nameOnly = DiffCommand.render(entries, true)
             Assert.assertEquals("a\nb\n", nameOnly)
         }
+
+        // snapshotCommit takes a `String?` sha — null means "unborn HEAD"
+        // (diff in a repo with no commits yet) and must yield an empty
+        // snapshot without touching the store. Before the signature fix
+        // this crashed in the null-argument guard.
+        test snapshotCommitNullShaReturnsEmptySnapshot() {
+            var store = new ObjectStore("./no-such-gitdir")
+            var snap = DiffCommand.snapshotCommit(null, store)
+            Assert.assertEquals(0, snap.getSize())
+        }
     }
 }

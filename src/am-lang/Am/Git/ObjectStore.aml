@@ -111,22 +111,14 @@ namespace Am.Git
                 return
             }
 
-            // Slow path (first time only): fully parse + delta-resolve, use
-            // the result for this process, and write the index so the next
-            // process takes the fast path.
-            var parser = new PackParser(bytes)
-            var parsed = parser.parseAll()
-            if (parsed.deltas.getSize() > 0) {
-                new DeltaResolver(parsed).resolveAll()
-            }
-            var keys = parsed.objects.buildKeys()
-            var i = 0
-            while (i < keys.getSize()) {
-                var sha = keys.get(i)
-                this.packObjects.set(sha, parsed.objects.get(sha))
-                i = i + 1
-            }
-            PackIndex.write(path, parsed.objects)
+            // Slow path (first time only): build the index STREAMING —
+            // PackIndexer SHAs one object at a time and drops content,
+            // never expanding the whole pack into RAM (which corrupted
+            // memory on big repos on real AmigaOS). Write the .amidx for
+            // the next process, then serve this one lazily too.
+            var offsets = PackIndexer.buildIndex(bytes)
+            PackIndex.writeOffsets(path, offsets)
+            this.lazyPacks.add(new LazyPack(bytes, offsets))
         }
     }
 }

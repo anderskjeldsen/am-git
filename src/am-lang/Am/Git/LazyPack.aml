@@ -11,7 +11,14 @@ namespace Am.Git
         import Am.Lang
         import Am.Collections
 
+        // Memoised resolved objects, keyed by offset. Epoch-cleared
+        // (wholesale replacement — no per-entry remove churn) once it
+        // exceeds CACHE_LIMIT so a long command touching many objects
+        // (checkout, log --stat, ...) can't accumulate the whole pack's
+        // content in RAM — that unbounded growth is exactly what broke
+        // big clones on real AmigaOS.
         private var cache: HashMap<Long, PackObject> = new HashMap<Long, PackObject>()
+        private static const CACHE_LIMIT: Int = 48
 
         fun has(sha: String): Bool {
             return this.offsets.containsKey(sha)
@@ -30,7 +37,8 @@ namespace Am.Git
             if (this.cache.containsKey(offset)) {
                 return this.cache.get(offset)
             }
-            var e = PackParser.readEntryAt(this.bytes, offset.toInt())
+            var nextOut = new Int[1]
+            var e = PackParser.readEntryAt(this.bytes, offset.toInt(), nextOut)
 
             var result: PackObject
             if (e.typeCode == 6) {
@@ -52,6 +60,9 @@ namespace Am.Git
                 result = e
             }
             result.packOffset = offset
+            if (this.cache.getSize() >= LazyPack.CACHE_LIMIT) {
+                this.cache = new HashMap<Long, PackObject>()
+            }
             this.cache.set(offset, result)
             return result
         }

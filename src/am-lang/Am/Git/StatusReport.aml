@@ -39,7 +39,7 @@ namespace Am.Git
         // No no-arg overload - AmLang's static-function overloading
         // has produced binder collisions in the past, so every
         // caller passes the flag explicitly.
-        static fun run(gitDir: String, workTreePath: String, porcelain: Bool): Int {
+        static fun run(gitDir: String, workTreePath: String?, porcelain: Bool): Int {
             // Resolve "." / "" to an absolute path - on AmigaOS without
             // ixemul, opendir(".") isn't reliable; getcwd() is.
             workTreePath = StatusReport.resolveBase(workTreePath)
@@ -215,7 +215,7 @@ namespace Am.Git
         // absent). Codes: "A" added/staged-new, "M" modified (staged or
         // unstaged), "D" deleted, "?" untracked, "U" unmerged/conflict.
         // Same underlying computation as run(), minus the printing.
-        static fun pathStatus(gitDir: String, workTreePath: String): HashMap<String, String> {
+        static fun pathStatus(gitDir: String, workTreePath: String?): HashMap<String, String> {
             var out = new HashMap<String, String>()
             workTreePath = StatusReport.resolveBase(workTreePath)
 
@@ -596,7 +596,7 @@ namespace Am.Git
             return stream.readAll()
         }
 
-        private static fun resolveBase(workTreePath: String): String {
+        private static fun resolveBase(workTreePath: String?): String {
             if (workTreePath == null || workTreePath.length() == 0 || workTreePath == ".") {
                 return File.getCurrentDirectory()
             }

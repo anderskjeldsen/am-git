@@ -1,0 +1,152 @@
+namespace Am.Git.Tests {
+
+    // PackIndexer — the streaming sha->offset index builder that replaced
+    // the full-RAM parseAll + resolveAll path (the old way expanded the
+    // whole history at once and corrupted memory on big clones on real
+    // AmigaOS). These tests cover both entry kinds:
+    //
+    //   * full objects (PackWriter emits those), and
+    //   * an OFS_DELTA chain, hand-encoded byte by byte because
+    //     PackWriter deliberately never writes deltas — the wire packs
+    //     GitHub sends are full of them, so the resolver must be right.
+    //
+    // Each case also round-trips through LazyPack to prove the offsets
+    // the indexer records actually point where readEntryAt can decode.
+    class PackIndexerTest {
+        import Am.Lang
+        import Am.Collections
+        import Am.Git
+        import Am.Tests
+        import Am.Z
+        import Am.Crypto
+
+        // Full-objects-only pack: every sha lands in the index, and
+        // LazyPack serves back the exact content at the recorded offset.
+        test indexesFullObjectPack() {
+            var a = new PackObject(3, "hello world".toBytes("UTF-8"))
+            a.sha = PackObject.computeSha("blob", a.content)
+            var b = new PackObject(3, "second blob".toBytes("UTF-8"))
+            b.sha = PackObject.computeSha("blob", b.content)
+
+            var objs = List<PackObject>.newList<PackObject>()
+            objs.add(a)
+            objs.add(b)
+            var packBytes = PackWriter.writePack(objs)
+
+            var offsets = PackIndexer.buildIndex(packBytes)
+            Assert.assertEquals(2, offsets.getSize())
+            Assert.assertTrue(offsets.containsKey(a.sha))
+            Assert.assertTrue(offsets.containsKey(b.sha))
+            // First entry starts right after the 12-byte pack header.
+            Assert.assertEquals(12L, offsets.get(a.sha))
+
+            var lazy = new LazyPack(packBytes, offsets)
+            var readA = lazy.read(a.sha)
+            Assert.assertEquals(3, readA.typeCode)
+            Assert.assertEquals("hello world", String.fromBytes(readA.content, "UTF-8"))
+        }
+
+        // A two-entry pack: blob "hello world" + an OFS_DELTA against it
+        // that rewrites the content to "hello brave world". The indexer
+        // must SHA the RESOLVED delta (type inherited from the base), and
+        // LazyPack must reconstruct the same bytes at read time.
+        test indexesOfsDeltaPack() {
+            var baseContent = "hello world".toBytes("UTF-8")
+
+            // Delta stream: baseSize=11, resultSize=17,
+            //   COPY(offset 0, size 6)   -> "hello "
+            //   INSERT "brave " (6)      -> "brave "
+            //   COPY(offset 6, size 5)   -> "world"
+            var delta = List<UByte>.newList<UByte>()
+            delta.add(11UB)              // base size varint
+            delta.add(17UB)              // result size varint
+            delta.add(144UB)             // 0x90: COPY, size1 byte follows
+            delta.add(6UB)               //   size = 6 (offset omitted = 0)
+            delta.add(6UB)               // 0x06: INSERT next 6 bytes
+            var brave = "brave ".toBytes("UTF-8")
+            var bi = 0UI
+            while (bi < brave.length()) {
+                delta.add(brave[bi])
+                bi++
+            }
+            delta.add(145UB)             // 0x91: COPY, offset1 + size1 follow
+            delta.add(6UB)               //   offset = 6
+            delta.add(5UB)               //   size = 5
+            var deltaBytes = delta.toArray()
+
+            // --- hand-assemble the pack --------------------------------
+            var buf = List<UByte>.newList<UByte>()
+            buf.add(80UB)                // 'P'
+            buf.add(65UB)                // 'A'
+            buf.add(67UB)                // 'C'
+            buf.add(75UB)                // 'K'
+            PackIndexerTest.appendBE32(buf, 2)   // version 2
+            PackIndexerTest.appendBE32(buf, 2)   // 2 entries
+
+            // Entry 1 @ offset 12: blob, size 11 -> varint 0x3B (no cont).
+            var baseStart = buf.getSize()
+            buf.add(59UB)                // 0x3B = type 3, size 11
+            PackIndexerTest.appendAll(buf, Zlib.deflate(baseContent))
+
+            // Entry 2: OFS_DELTA, size = deltaBytes.length (< 16 -> one
+            // varint byte 0x60 | len), then the negative-offset varint
+            // (distance back to entry 1, single byte here), then zlib.
+            var deltaStart = buf.getSize()
+            var first = 96 + deltaBytes.length().toInt()   // 0x60 | size
+            buf.add(first.toUByte())
+            var dist = deltaStart - baseStart
+            buf.add(dist.toUByte())
+            PackIndexerTest.appendAll(buf, Zlib.deflate(deltaBytes))
+
+            // Trailer: SHA-1 of everything so far.
+            var body = buf.toArray()
+            var digest = Sha1.digest(body)
+            var packBytes = new UByte[body.length() + 20UI]
+            var k = 0UI
+            while (k < body.length()) {
+                packBytes[k] = body[k]
+                k++
+            }
+            var j = 0UI
+            while (j < 20UI) {
+                packBytes[body.length() + j] = digest[j]
+                j++
+            }
+
+            // --- index it ----------------------------------------------
+            var baseSha = PackObject.computeSha("blob", baseContent)
+            var targetContent = "hello brave world".toBytes("UTF-8")
+            var targetSha = PackObject.computeSha("blob", targetContent)
+
+            var offsets = PackIndexer.buildIndex(packBytes)
+            Assert.assertEquals(2, offsets.getSize())
+            Assert.assertTrue(offsets.containsKey(baseSha))
+            Assert.assertTrue(offsets.containsKey(targetSha))
+            Assert.assertEquals(baseStart.toLong(), offsets.get(baseSha))
+            Assert.assertEquals(deltaStart.toLong(), offsets.get(targetSha))
+
+            // --- and read the delta back through LazyPack --------------
+            var lazy = new LazyPack(packBytes, offsets)
+            var resolved = lazy.read(targetSha)
+            Assert.assertEquals(3, resolved.typeCode)
+            Assert.assertEquals("hello brave world", String.fromBytes(resolved.content, "UTF-8"))
+        }
+
+        // (not `private` — two private static helpers in one class can
+        // collide in codegen, see the known amlc issue)
+        static fun appendBE32(buf: List<UByte>, value: Int) {
+            buf.add(((value / 16777216) & 255).toUByte())
+            buf.add(((value / 65536) & 255).toUByte())
+            buf.add(((value / 256) & 255).toUByte())
+            buf.add((value & 255).toUByte())
+        }
+
+        private static fun appendAll(buf: List<UByte>, bytes: UByte[]) {
+            var i = 0UI
+            while (i < bytes.length()) {
+                buf.add(bytes[i])
+                i++
+            }
+        }
+    }
+}

@@ -1,0 +1,141 @@
+namespace Am.Git
+{
+    // Streaming pack indexer — the memory-friendly replacement for
+    // `PackParser.parseAll()` + `DeltaResolver.resolveAll()` when all the
+    // caller actually needs is the sha -> offset map (an .amidx).
+    //
+    // The old path reconstructed EVERY object in the pack (every version
+    // of every file in the whole history) and held them all in RAM at
+    // once — on a ~18 MB GitHub pack that's a 50-100 MB peak, which is
+    // what pushed large clones on real AmigaOS into memory corruption
+    // ("clone failed: HELP@"). This walker is the same idea as real
+    // git's `index-pack`:
+    //
+    //   Pass 1 - walk the pack body sequentially. Full objects are
+    //            inflated, SHA-1'd, recorded, and their content DROPPED
+    //            immediately. Delta entries just note their offset for
+    //            pass 2 (their instruction bytes are dropped too).
+    //   Pass 2 - resolve each delta by re-reading its base chain from
+    //            the pack bytes, apply, SHA, record, drop. A small
+    //            bounded cache keeps the most recently resolved objects
+    //            so a chain of versions (each delta based on the prior
+    //            one, the common pack layout) resolves in O(chain), not
+    //            O(chain^2) — without ever holding the whole pack's
+    //            content alive.
+    //
+    // Peak memory: the pack bytes themselves + one delta chain + the
+    // bounded cache. Nothing history-sized.
+    class PackIndexer(private var packBytes: UByte[],
+                      private var offsets: HashMap<String, Long>)
+    {
+        import Am.Lang
+        import Am.Collections
+
+        // Resolved-object cache for pass 2, keyed by pack offset. Epoch-
+        // cleared (wholesale replacement, no per-entry remove churn) when
+        // it exceeds CACHE_LIMIT entries, so memory stays bounded no
+        // matter how the pack is laid out.
+        private var cache: HashMap<Long, PackObject> = new HashMap<Long, PackObject>()
+        private static const CACHE_LIMIT: Int = 48
+
+        // Build the sha -> pack-offset map for every object in `packBytes`
+        // (full and delta entries alike). Logs progress — pass 2 on a big
+        // pack takes a while on 68k and silence looks like a hang.
+        static fun buildIndex(packBytes: UByte[]): HashMap<String, Long> {
+            var indexer = new PackIndexer(packBytes, new HashMap<String, Long>())
+
+            var header = PackHeader.parse(packBytes)
+            var total = header.objectCount.toInt()
+
+            // --- pass 1: sequential walk ------------------------------
+            var pending = List<Long>.newList<Long>()
+            var nextOut = new Int[1]
+            var off = 12
+            var i = 0
+            while (i < total) {
+                var e = PackParser.readEntryAt(packBytes, off, nextOut)
+                if (e.isDelta()) {
+                    pending.add(off.toLong())
+                } else {
+                    var sha = PackObject.computeSha(e.typeName(), e.content)
+                    indexer.offsets.set(sha, off.toLong())
+                }
+                off = nextOut[0UI]
+                i = i + 1
+                if ((i % 1000) == 0) {
+                    ("Indexed " + i.toString() + "/" + total.toString() + " pack entries").println()
+                }
+            }
+
+            // --- pass 2: resolve deltas, bounded memory ---------------
+            var d = 0
+            while (d < pending.getSize()) {
+                var obj = indexer.resolveAt(pending.get(d))
+                var sha = obj.sha
+                if (sha == null) {
+                    // resolveAt always SHAs delta results; full objects were
+                    // SHA'd in pass 1 - this is unreachable but kept explicit.
+                    sha = PackObject.computeSha(obj.typeName(), obj.content)
+                }
+                indexer.offsets.set(sha, pending.get(d))
+                d = d + 1
+                if ((d % 500) == 0) {
+                    ("Resolved " + d.toString() + "/" + pending.getSize().toString() + " deltas").println()
+                }
+            }
+
+            return indexer.offsets
+        }
+
+        // Fully resolve the entry at `offset`, following its delta chain
+        // down through the pack. Only the chain currently being resolved
+        // (plus the bounded cache) is alive at any moment.
+        private fun resolveAt(offset: Long): PackObject {
+            if (this.cache.containsKey(offset)) {
+                return this.cache.get(offset)
+            }
+
+            var nextOut = new Int[1]
+            var e = PackParser.readEntryAt(this.packBytes, offset.toInt(), nextOut)
+
+            var result: PackObject
+            if (e.typeCode == 6) {
+                // OFS_DELTA — base at an earlier absolute offset.
+                var base = this.resolveAt(e.baseOffset)
+                var applied = DeltaResolver.applyDelta(base.content, e.content)
+                result = new PackObject(base.typeCode, applied)
+                result.sha = PackObject.computeSha(result.typeName(), applied)
+            } else if (e.typeCode == 7) {
+                // REF_DELTA — base named by SHA. Pack ordering puts bases
+                // before dependants, so pass 1 / earlier pass-2 work has
+                // already recorded the base's offset.
+                var baseSha = e.baseSha
+                if (baseSha == null) {
+                    throw new Exception("PackIndexer: REF_DELTA with no base sha")
+                }
+                if (!this.offsets.containsKey(baseSha)) {
+                    throw new Exception("PackIndexer: REF_DELTA base " + baseSha +
+                                         " not present in pack (thin pack?)")
+                }
+                var base = this.resolveAt(this.offsets.get(baseSha))
+                var applied = DeltaResolver.applyDelta(base.content, e.content)
+                result = new PackObject(base.typeCode, applied)
+                result.sha = PackObject.computeSha(result.typeName(), applied)
+            } else {
+                // Plain object — content is already the real thing. No SHA
+                // here: pass 1 owns full-object hashing, and as a delta
+                // base only typeCode + content matter.
+                result = e
+            }
+            result.packOffset = offset
+
+            if (this.cache.getSize() >= PackIndexer.CACHE_LIMIT) {
+                // Epoch clear: cheap, avoids HashMap.remove churn, keeps
+                // the working set bounded.
+                this.cache = new HashMap<Long, PackObject>()
+            }
+            this.cache.set(offset, result)
+            return result
+        }
+    }
+}

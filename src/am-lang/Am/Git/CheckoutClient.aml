@@ -28,7 +28,7 @@ namespace Am.Git
 
         // workTreePath is typically "." (current working dir).
         // gitDir is typically ".git".
-        static fun checkout(gitDir: String, workTreePath: String, branch: String) {
+        static fun checkout(gitDir: String, workTreePath: String?, branch: String) {
             // Resolve "."/"" to an absolute path - see StatusReport.run
             // for the rationale (opendir(".") is unreliable on
             // amiga-gcc without ixemul).
@@ -47,8 +47,10 @@ namespace Am.Git
 
             // Apply the commit's tree to the working tree + index.
             // applyCommitToWorkTree handles object loading, orphan
-            // pruning, blob writing, and index re-seeding.
-            CheckoutClient.applyCommitToWorkTree(gitDir, workTreePath, commitSha)
+            // pruning, blob writing, and index re-seeding. `true` =
+            // refuse to clobber local changes (real-git behaviour);
+            // the force paths (reset --hard, rebase, ...) pass false.
+            CheckoutClient.applyCommitToWorkTree(gitDir, workTreePath, commitSha, true)
 
             // Update HEAD to track the branch symbolically.
             ("ref: refs/heads/" + branch + "\n").writeToFile(gitDir + "/HEAD")
@@ -59,13 +61,20 @@ namespace Am.Git
         // Apply `commitSha`'s tree to the working tree and re-seed
         // the index from it. Does NOT touch HEAD or any ref - that's
         // the caller's responsibility. Used by both `checkout`
-        // (which updates HEAD after) and `reset --hard` (which
-        // updates the branch ref before).
+        // (which updates HEAD after) and `reset --hard` / rebase /
+        // cherry-pick / revert (which update refs themselves).
+        //
+        // `guardLocalChanges` = real-git checkout safety: refuse when
+        // tracked files have local (staged or unstaged) changes, or
+        // when an untracked file would be overwritten by the target
+        // tree. The force paths (reset --hard etc.) pass false — but
+        // even they PRESERVE untracked files now: orphan removal only
+        // deletes files the current index tracks, matching git.
         //
         // Reachable objects are loaded eagerly into a map, which
         // avoids the same-process loose-read fragility on AmigaOS
         // (see GitIndex.fromTreeMap for the underlying fix).
-        static fun applyCommitToWorkTree(gitDir: String, workTreePath: String, commitSha: String) {
+        static fun applyCommitToWorkTree(gitDir: String, workTreePath: String, commitSha: String, guardLocalChanges: Bool) {
             var store = new ObjectStore(gitDir)
             var walker = new ObjectWalker(store)
             var shas = walker.collect(commitSha, "0000000000000000000000000000000000000000")
@@ -88,10 +97,50 @@ namespace Am.Git
             var rootTreeSha = WorkTree.extractRootTreeSha(commit.content)
             CheckoutClient.collectExpectedPaths(rootTreeSha, "", expected, objects)
 
+            // Real-git checkout guard: never silently clobber work.
+            //  * tracked file with staged/unstaged changes -> refuse
+            //  * untracked file that the target tree would overwrite
+            //    -> refuse
+            // (Untracked files that DON'T collide are simply kept.)
+            if (guardLocalChanges) {
+                var changes = StatusReport.pathStatus(gitDir, workTreePath)
+                var blocked = List<String>.newList<String>()
+                var ck = changes.buildKeys()
+                var c = 0
+                while (c < ck.getSize()) {
+                    var p = ck.get(c)
+                    var code = changes.get(p)
+                    if (code.equals("?")) {
+                        if (expected.containsKey(p)) {
+                            blocked.add(p + " (untracked, would be overwritten)")
+                        }
+                    } else {
+                        blocked.add(p)
+                    }
+                    c = c + 1
+                }
+                if (blocked.getSize() > 0) {
+                    var sb = new StringBuilder()
+                    sb.add("checkout: your local changes would be overwritten - commit, unstage or reset them first:")
+                    var b = 0
+                    while (b < blocked.getSize() && b < 8) {
+                        sb.add(" ").add(blocked.get(b))
+                        b = b + 1
+                    }
+                    if (blocked.getSize() > 8) {
+                        sb.add(" (+" + (blocked.getSize() - 8).toString() + " more)")
+                    }
+                    throw new Exception(sb.toString())
+                }
+            }
+
             // Wipe orphans before writing the new tree, so a file
             // that moved between directories doesn't end up
-            // duplicated.
-            CheckoutClient.removeOrphans(workTreePath, "", expected)
+            // duplicated. Only files the CURRENT index tracks are
+            // candidates - untracked files survive a branch switch
+            // (and a reset --hard), exactly like real git.
+            var trackedNow = GitIndex.read(gitDir).pathToSha()
+            CheckoutClient.removeOrphans(workTreePath, "", expected, trackedNow)
 
             // Re-use the existing tree-writer.
             var wt = new WorkTree(workTreePath, objects)
@@ -142,7 +191,8 @@ namespace Am.Git
         // our own metadata. Removes empty directories on the way up.
         private static fun removeOrphans(workTreePath: String,
                                           relPrefix: String,
-                                          expected: HashMap<String, Bool>) {
+                                          expected: HashMap<String, Bool>,
+                                          tracked: HashMap<String, String>) {
             var dirPath: String
             if (relPrefix.length() == 0) {
                 dirPath = workTreePath
@@ -169,12 +219,15 @@ namespace Am.Git
                     relPath = relPrefix + "/" + name
                 }
                 if (f.isDirectory()) {
-                    CheckoutClient.removeOrphans(workTreePath, relPath, expected)
+                    CheckoutClient.removeOrphans(workTreePath, relPath, expected, tracked)
                     // Leaving empty directories around is harmless;
                     // we could rmdir them here but listFiles returning
                     // empty is good enough for a sanity check.
                 } else {
-                    if (!expected.containsKey(relPath)) {
+                    // Delete only files the index tracks that the target
+                    // tree drops — an untracked file is the user's, not
+                    // ours to clean up.
+                    if (!expected.containsKey(relPath) && tracked.containsKey(relPath)) {
                         File.delete(f.toString())
                     }
                 }

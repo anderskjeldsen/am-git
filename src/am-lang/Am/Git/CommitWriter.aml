@@ -28,7 +28,7 @@ namespace Am.Git
         // Single-parent (or no-parent) convenience wrapper. Threads
         // the single SHA through to the multi-parent path.
         fun write(rootTreeSha: String,
-                  parentSha: String,
+                  parentSha: String?,
                   author: Identity,
                   authorTime: DateTime,
                   committer: Identity,

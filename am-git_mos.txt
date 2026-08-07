@@ -1,13 +1,16 @@
-am-git - a native git client for AmigaOS
+am-git - a native git client for MorphOS
 ========================================
 
 am-git talks to git servers directly over the network. It can clone,
-commit, push, fetch and pull against HTTPS and SSH git remotes such as
-GitHub - no separate git program needed. Local commands (log, status,
-branch, checkout, merge, rebase, diff, ...) work offline.
+commit, push, fetch and pull against HTTPS git remotes such as GitHub -
+no separate git program needed. Local commands (log, status, branch,
+checkout, merge, rebase, diff, ...) work offline.
 
-HTTPS remotes need AmiSSL 5.27 installed (amissl.library). SSH remotes use
-an external ssh client - see section 2.
+TLS is linked in statically - nothing extra to install.
+
+ssh remotes are not supported in this MorphOS build yet; use an
+https:// remote instead (GitHub: use a personal access token as the
+password).
 
 
 -------------------------------------------------------------------------
@@ -57,62 +60,7 @@ type it every time.
 
 
 -------------------------------------------------------------------------
-2. SSH REMOTES (OPTIONAL)
--------------------------------------------------------------------------
-
-am-git can also talk to ssh remotes (git@github.com:user/repo.git or
-ssh://git@host/path). It does not implement ssh itself - it runs an
-external ssh client and speaks the git protocol through it, exactly
-like desktop git does.
-
-Setup with BebboSSH (once):
-
-1. Install bebbossh from Aminet (comm/net). You need bebbossh in C:
-   and libcryptossh.library in LIBS: (use the 020 or 060 variant if
-   your CPU matches - see the bebbossh readme).
-
-2. Tell am-git to use it:
-
-     setenv AM_GIT_SSH bebbossh
-     copy ENV:AM_GIT_SSH ENVARC:
-
-3. Create a key pair (bebbossh only supports key login - hosts like
-   GitHub do not accept passwords anyway):
-
-     bebbosshkeygen -f ENVARC:.ssh/id_ed25519
-
-   This writes the private key (id_ed25519) and the public key
-   (id_ed25519.pub). bebbossh reads ENVARC:.ssh/id_ed25519 by
-   default. Note: the key file must be unencrypted (no passphrase),
-   so treat it like a password.
-
-4. Register the PUBLIC key with the server. For GitHub:
-
-     type ENVARC:.ssh/id_ed25519.pub
-
-   and paste that line at github.com -> Settings -> SSH and GPG
-   keys -> New SSH key.
-
-5. Clone:
-
-     am-git clone git@github.com:youruser/myrepo.git
-
-   On the FIRST connection to a new host, am-git forwards bebbossh's
-   "do you trust host ...?" question to your shell - type yes and
-   the key is saved to ENVARC:.ssh/known-hosts. Later connections
-   are silent.
-
-If something fails, error 23 ("password login not supported") means
-the server rejected your key (or no key was found) and bebbossh had
-nothing to fall back to - check steps 3 and 4.
-
-Any client with an "ssh <host> <command>" style interface works; the
-default program name is "ssh". Your keys and known hosts always live
-with the ssh client, not with am-git.
-
-
--------------------------------------------------------------------------
-3. A TYPICAL SESSION
+2. A TYPICAL SESSION
 -------------------------------------------------------------------------
 
   am-git clone https://github.com/youruser/myrepo.git
@@ -133,7 +81,7 @@ with the ssh client, not with am-git.
 
 
 -------------------------------------------------------------------------
-4. COMMANDS
+3. COMMANDS
 -------------------------------------------------------------------------
 
 Run `am-git help` for the full list. The everyday ones:
@@ -220,7 +168,7 @@ whoami
 
 
 -------------------------------------------------------------------------
-5. GOOD TO KNOW
+4. GOOD TO KNOW
 -------------------------------------------------------------------------
 
 - pull fast-forwards when it can, and otherwise falls back to a real
@@ -228,10 +176,10 @@ whoami
   <<<<<<< / ======= / >>>>>>> markers; resolve, add and commit.
 - merge, rebase, cherry-pick and revert all work locally, including
   --continue / --abort where a conflict stops the run.
-- Supported remotes: https://, http:// and ssh (git@host:path or
-  ssh://). git:// URLs are not supported.
+- Supported remotes: https:// and http://. ssh and git:// URLs are
+  not supported in this MorphOS build.
 - Your name, email, login and token come from the environment
-  variables shown in section 1; the ssh client from section 2.
+  variables shown in section 1.
 
 
 -------------------------------------------------------------------------

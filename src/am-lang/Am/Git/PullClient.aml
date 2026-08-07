@@ -41,7 +41,7 @@ namespace Am.Git
         // branch    == null -> use HEAD's current branch.
         // remoteName defaults to "origin" at the CLI layer.
         static fun pull(gitDir: String, workTreePath: String,
-                        remoteUrl: String, branch: String, remoteName: String): Int {
+                        remoteUrl: String?, branch: String?, remoteName: String): Int {
             // Resolve branch from HEAD if not passed.
             var head = HeadReader.read(gitDir)
             if (branch == null) {

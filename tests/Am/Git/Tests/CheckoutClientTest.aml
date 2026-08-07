@@ -1,0 +1,168 @@
+namespace Am.Git.Tests {
+
+    // CheckoutClient safety semantics — `checkout` must behave like real
+    // git, never like `checkout --force` + `clean -f` (which is what it
+    // silently was before 0.12.2):
+    //
+    //   * a tracked file with local changes  -> REFUSE, change intact
+    //   * an untracked file (no collision)   -> switch OK, file survives
+    //   * an untracked file the target tree
+    //     would overwrite                    -> REFUSE, file intact
+    //
+    // Fixture: two hand-built commits sharing history —
+    //   alt  = c1: { a.txt "one",  b.txt "extra" }
+    //   main = c2: { a.txt "two" }               (parent c1, HEAD)
+    class CheckoutClientTest {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+        import Am.Git
+        import Am.Tests
+
+        test refusesWhenTrackedFileModified() {
+            CheckoutClientTest.scaffold()
+            try {
+                "local\n".writeToFile("./testco/a.txt")
+
+                var caught = false
+                try {
+                    CheckoutClient.checkout("./testco/.git", "./testco", "alt")
+                } catch (ex: Exception) {
+                    caught = true
+                }
+                Assert.assertTrue(caught)
+                // Nothing clobbered, HEAD untouched.
+                Assert.assertEquals("local\n", String.readFromFile("./testco/a.txt"))
+                Assert.assertEquals("ref: refs/heads/main\n", String.readFromFile("./testco/.git/HEAD"))
+            } catch (ex: Exception) {
+                CheckoutClientTest.cleanup()
+                throw ex
+            }
+            CheckoutClientTest.cleanup()
+        }
+
+        test preservesUntrackedFileOnSwitch() {
+            CheckoutClientTest.scaffold()
+            try {
+                "keep me\n".writeToFile("./testco/u.txt")
+
+                CheckoutClient.checkout("./testco/.git", "./testco", "alt")
+
+                Assert.assertEquals("one\n", String.readFromFile("./testco/a.txt"))
+                Assert.assertEquals("extra\n", String.readFromFile("./testco/b.txt"))
+                // The untracked file survived the branch switch.
+                Assert.assertEquals("keep me\n", String.readFromFile("./testco/u.txt"))
+            } catch (ex: Exception) {
+                CheckoutClientTest.cleanup()
+                throw ex
+            }
+            CheckoutClientTest.cleanup()
+        }
+
+        test refusesWhenUntrackedFileWouldBeOverwritten() {
+            CheckoutClientTest.scaffold()
+            try {
+                // b.txt is untracked on main — but alt's tree contains it.
+                "mine\n".writeToFile("./testco/b.txt")
+
+                var caught = false
+                try {
+                    CheckoutClient.checkout("./testco/.git", "./testco", "alt")
+                } catch (ex: Exception) {
+                    caught = true
+                }
+                Assert.assertTrue(caught)
+                Assert.assertEquals("mine\n", String.readFromFile("./testco/b.txt"))
+            } catch (ex: Exception) {
+                CheckoutClientTest.cleanup()
+                throw ex
+            }
+            CheckoutClientTest.cleanup()
+        }
+
+        // ---- fixture ---------------------------------------------------
+
+        // Build the two-branch repo described in the class comment, with
+        // HEAD on main, a clean worktree and an index seeded from main.
+        static fun scaffold() {
+            CheckoutClientTest.cleanup()
+            Repository.init("./testco", "main", false)
+            var gitDir = "./testco/.git"
+            var writer = new LooseObjectWriter(gitDir)
+
+            var blobOne = writer.write("blob", "one\n".toBytes("UTF-8"))
+            var blobTwo = writer.write("blob", "two\n".toBytes("UTF-8"))
+            var blobExtra = writer.write("blob", "extra\n".toBytes("UTF-8"))
+
+            var t1 = List<UByte>.newList<UByte>()
+            CheckoutClientTest.treeEntry(t1, "100644", "a.txt", blobOne)
+            CheckoutClientTest.treeEntry(t1, "100644", "b.txt", blobExtra)
+            var tree1 = writer.write("tree", t1.toArray())
+
+            var t2 = List<UByte>.newList<UByte>()
+            CheckoutClientTest.treeEntry(t2, "100644", "a.txt", blobTwo)
+            var tree2 = writer.write("tree", t2.toArray())
+
+            var c1 = CheckoutClientTest.commitObj(writer, tree1, null, "c1")
+            var c2 = CheckoutClientTest.commitObj(writer, tree2, c1, "c2")
+
+            (c1 + "\n").writeToFile(gitDir + "/refs/heads/alt")
+            (c2 + "\n").writeToFile(gitDir + "/refs/heads/main")
+            "ref: refs/heads/main\n".writeToFile(gitDir + "/HEAD")
+
+            // Worktree + index mirror main's tree -> clean status.
+            "two\n".writeToFile("./testco/a.txt")
+            var store = new ObjectStore(gitDir)
+            GitIndex.fromTree(tree2, store).write(gitDir)
+        }
+
+        // Append one raw tree entry: "<mode> <name>\0" + 20 sha bytes.
+        static fun treeEntry(out: List<UByte>, mode: String, name: String, sha: String) {
+            var head = (mode + " " + name).toBytes("UTF-8")
+            var i = 0UI
+            while (i < head.length()) {
+                out.add(head[i])
+                i++
+            }
+            out.add(0UB)
+            var raw = HexUtil.fromHex(sha)
+            var k = 0UI
+            while (k < 20UI) {
+                out.add(raw[k])
+                k++
+            }
+        }
+
+        static fun commitObj(writer: LooseObjectWriter, treeSha: String,
+                             parentSha: String?, msg: String): String {
+            var body = "tree " + treeSha + "\n"
+            if (parentSha != null) {
+                body = body + "parent " + parentSha + "\n"
+            }
+            body = body + "author T <t@t> 1700000000 +0000\n"
+            body = body + "committer T <t@t> 1700000000 +0000\n"
+            body = body + "\n" + msg + "\n"
+            return writer.write("commit", body.toBytes("UTF-8"))
+        }
+
+        private static fun cleanup() {
+            CheckoutClientTest.deleteRecursive("./testco")
+        }
+
+        static fun deleteRecursive(path: String) {
+            var f = new File(path)
+            if (!f.exists()) {
+                return
+            }
+            if (f.isDirectory()) {
+                var children = f.listFiles()
+                var i = 0
+                while (i < children.length().toInt()) {
+                    CheckoutClientTest.deleteRecursive(children[i.toUInt()].toString())
+                    i = i + 1
+                }
+            }
+            f.delete()
+        }
+    }
+}

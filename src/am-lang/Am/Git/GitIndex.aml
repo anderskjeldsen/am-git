@@ -50,7 +50,7 @@ namespace Am.Git
         // mtime/ctime are left at 0. Real git would re-hash on first
         // status to recover; ours doesn't care because we never trust
         // the stat-cache.
-        static fun fromTree(treeSha: String, store: ObjectStore): GitIndex {
+        static fun fromTree(treeSha: String?, store: ObjectStore): GitIndex {
             var idx = new GitIndex()
             if (treeSha != null) {
                 GitIndex.populateFromStore(treeSha, "", store, idx)
@@ -65,12 +65,46 @@ namespace Am.Git
         // silently on AmigaOS (its pack-dir walk hit a wall there),
         // leaving the seed empty and every later `add` looking like a
         // mass delete + re-add.
-        static fun fromTreeMap(treeSha: String, objects: HashMap<String, PackObject>): GitIndex {
+        static fun fromTreeMap(treeSha: String?, objects: HashMap<String, PackObject>): GitIndex {
             var idx = new GitIndex()
             if (treeSha != null) {
                 GitIndex.populateFromMap(treeSha, "", objects, idx)
             }
             return idx
+        }
+
+        // Like `fromTreeMap`, but reads tree objects out of a LazyPack —
+        // clone's streaming path seeds the index from the pack it just
+        // wrote without expanding the whole pack into a map first.
+        static fun fromTreePack(treeSha: String?, pack: LazyPack): GitIndex {
+            var idx = new GitIndex()
+            if (treeSha != null) {
+                GitIndex.populateFromPack(treeSha, "", pack, idx)
+            }
+            return idx
+        }
+
+        private static fun populateFromPack(treeSha: String, prefix: String,
+                                             pack: LazyPack, out: GitIndex) {
+            if (!pack.has(treeSha)) {
+                return
+            }
+            var tree = pack.read(treeSha)
+            if (tree.typeCode != 2) {
+                return
+            }
+            var entries = WorkTree.parseTree(tree.content)
+            var i = 0
+            while (i < entries.getSize()) {
+                var e = entries.get(i)
+                var path = GitIndex.joinPath(prefix, e.name)
+                if (e.isTree()) {
+                    GitIndex.populateFromPack(e.sha, path, pack, out)
+                } else if (e.isFile() || e.isSymlink()) {
+                    out.entries.add(GitIndex.makeEntry(path, e))
+                }
+                i = i + 1
+            }
         }
 
         private static fun populateFromStore(treeSha: String, prefix: String,

@@ -17,6 +17,7 @@ namespace Am.Git.Tests {
     // launches the binary; we clean up after each test.
     class GitIndexTest {
         import Am.Lang
+        import Am.Collections
         import Am.IO
         import Am.Git
         import Am.Tests
@@ -296,6 +297,23 @@ namespace Am.Git.Tests {
             if (d.exists()) {
                 d.delete()
             }
+        }
+
+        // All three fromTree* variants take a `String?` tree sha — null
+        // means "unborn HEAD / no tree" and must give an empty index (the
+        // state right after `init`). Covers the map, lazy-pack, and
+        // object-store sources alike.
+        test fromTreeVariantsWithNullShaReturnEmptyIndex() {
+            var fromMap = GitIndex.fromTreeMap(null, new HashMap<String, PackObject>())
+            Assert.assertEquals(0, fromMap.entries.getSize())
+
+            var emptyPack = new LazyPack(new UByte[0UI], new HashMap<String, Long>())
+            var fromPack = GitIndex.fromTreePack(null, emptyPack)
+            Assert.assertEquals(0, fromPack.entries.getSize())
+
+            var store = new ObjectStore("./no-such-gitdir")
+            var fromStore = GitIndex.fromTree(null, store)
+            Assert.assertEquals(0, fromStore.entries.getSize())
         }
     }
 }

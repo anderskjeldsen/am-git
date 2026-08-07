@@ -12,12 +12,90 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 
+/* MorphOS's SDK headers don't define the POSIX shutdown() direction
+ * constants — the numeric values are universal (BSD lineage), so
+ * provide them when absent. */
+#ifndef SHUT_WR
+#define SHUT_WR 1
+#endif
+#ifndef SHUT_RDWR
+#define SHUT_RDWR 2
+#endif
+
 // The ssh git transport spawns `ssh <host> git-upload-pack '<path>'` and
 // streams the pkt-line pack protocol over a socketpair — plain pipes, no
 // pty, so the binary packfile passes through byte-for-byte. This mirrors
 // how real git drives ssh. See CommandChannel.aml for the AmLang side.
 
 #define AM_GIT_CHAN_MAX_ARGS 128
+
+/* MorphOS has no socketpair()/fork()/execvp() process model, so the ssh
+ * transport can't spawn its `ssh` helper there at all. Compile clean
+ * stubs that throw a clear error instead — https:// remotes (the AmiSSL
+ * path) are unaffected, and every non-network command works as normal. */
+#ifdef __MORPHOS__
+
+function_result Am_Git_CommandChannel__native_init_0(aobject * const this)
+{
+	function_result __result = { .has_return_value = false };
+	return __result;
+}
+
+function_result Am_Git_CommandChannel__native_mark_children_0(aobject * const this)
+{
+	function_result __result = { .has_return_value = false };
+	return __result;
+}
+
+function_result Am_Git_CommandChannel__native_release_0(aobject * const this)
+{
+	function_result __result = { .has_return_value = false };
+	return __result;
+}
+
+function_result Am_Git_CommandChannel_spawnNative_0(aobject * const this, aobject * argvLine)
+{
+	function_result __result = { .has_return_value = false };
+	__throw_simple_exception(
+		"ssh remotes are not supported on morphos-ppc yet - use an https:// remote",
+		"in Am_Git_CommandChannel_spawnNative_0", &__result);
+	return __result;
+}
+
+function_result Am_Git_CommandChannel_read_0(aobject * const this, aobject * data, const long long offset, const unsigned int length)
+{
+	function_result __result = { .has_return_value = true };
+	__throw_simple_exception(
+		"ssh remotes are not supported on morphos-ppc yet - use an https:// remote",
+		"in Am_Git_CommandChannel_read_0", &__result);
+	__result.return_value.value.int_value = 0;
+	return __result;
+}
+
+function_result Am_Git_CommandChannel_write_0(aobject * const this, aobject * data, const long long offset, const unsigned int length)
+{
+	function_result __result = { .has_return_value = true };
+	__throw_simple_exception(
+		"ssh remotes are not supported on morphos-ppc yet - use an https:// remote",
+		"in Am_Git_CommandChannel_write_0", &__result);
+	__result.return_value.value.int_value = 0;
+	return __result;
+}
+
+function_result Am_Git_CommandChannel_closeWrite_0(aobject * const this)
+{
+	function_result __result = { .has_return_value = false };
+	return __result;
+}
+
+function_result Am_Git_CommandChannel_close_0(aobject * const this)
+{
+	function_result __result = { .has_return_value = true };
+	__result.return_value.value.int_value = 0;
+	return __result;
+}
+
+#else /* !__MORPHOS__ — the real socketpair/fork implementation */
 
 // __unwrap(this): if `this` crossed a thread the runtime handed us a
 // wrapper (class_ptr == NULL) whose real object lives in object_wrapper.
@@ -149,7 +227,9 @@ function_result Am_Git_CommandChannel_spawnNative_0(aobject * const this, aobjec
 	free(buf);
 
 	// A dead child mid-write must return EPIPE, not kill us with SIGPIPE.
-	signal(SIGPIPE, SIG_IGN);
+	// The cast keeps MorphOS happy: its <sys/signal.h> types SIG_IGN as
+	// `void (*)(void)` while signal() expects `void (*)(int)`.
+	signal(SIGPIPE, (void (*)(int)) SIG_IGN);
 
 	command_channel *ch = (command_channel *) malloc(sizeof(command_channel));
 	if (ch == NULL) {
@@ -275,3 +355,5 @@ function_result Am_Git_CommandChannel_close_0(aobject * const this)
 
 	return __result;
 }
+
+#endif /* !__MORPHOS__ */

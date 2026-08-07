@@ -135,6 +135,46 @@ namespace Am.Git.Tests {
             CommitWriterTest.cleanup()
         }
 
+        // `write()` with `parentSha = null` (now a `String?` param, like
+        // its sibling writeRawAuthor always had) must produce a root
+        // commit — no `parent` line. This is the normal first `am-git
+        // commit` in a fresh repo; before the signature fix the call died
+        // in the null-argument guard before CommitWriter even ran.
+        test writeWithNullParentProducesRootCommit() {
+            CommitWriterTest.cleanup()
+            try {
+                var writer = new LooseObjectWriter("./testcw/.git")
+                var cw = new CommitWriter(writer)
+
+                var author = new Identity("Root", "root@example.com")
+                var authorTime = new DateTime()
+                authorTime.setEpochMillis(1700000000000UL)
+                authorTime.setTimezoneOffset(0)
+                var committer = new Identity("Root", "root@example.com")
+                var committerTime = new DateTime()
+                committerTime.setEpochMillis(1700000000000UL)
+                committerTime.setTimezoneOffset(0)
+
+                var sha = cw.write(
+                    "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+                    null,                          // root commit - no parent
+                    author, authorTime,
+                    committer, committerTime,
+                    "first commit\n")
+
+                var reader = new LooseObjectReader("./testcw/.git")
+                var obj = reader.read(sha)
+                Assert.assertEquals(1, obj.typeCode)
+                var parsed = Commit.parse(sha, obj.content)
+                Assert.assertEquals(0, parsed.parents.getSize())
+                Assert.assertEquals("first commit\n", parsed.message)
+            } catch (ex: Exception) {
+                CommitWriterTest.cleanup()
+                throw ex
+            }
+            CommitWriterTest.cleanup()
+        }
+
         // ---- helpers --------------------------------------------------
 
         private static fun cleanup() {

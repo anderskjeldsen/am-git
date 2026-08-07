@@ -1,0 +1,98 @@
+namespace Am.Git.Tests {
+
+    // PullClient — `pull(gitDir, workTreePath, remoteUrl?, branch?, remoteName)`
+    // takes OPTIONAL url and branch: null branch means "resolve from HEAD",
+    // null url means "resolve from .git/config". Those resolution paths run
+    // (and can bail out) BEFORE any network happens, which is what makes
+    // them unit-testable offline:
+    //
+    //   * branch == null + detached HEAD  -> message + return 0
+    //   * branch == null + normal HEAD    -> branch := HEAD's branch, then
+    //     url == null + no [remote] entry -> message + return 0
+    //   * branch explicit                 -> same no-remote bail-out
+    //
+    // Before the String? signature fix, passing null here didn't reach the
+    // resolution code at all - the runtime null-argument guard killed the
+    // call first. These tests pin the variants down.
+    class PullClientTest {
+        import Am.Lang
+        import Am.IO
+        import Am.Git
+        import Am.Tests
+
+        // Detached HEAD (raw sha in .git/HEAD) + branch not passed:
+        // pull must refuse politely, not crash.
+        test nullBranchDetachedHeadReturnsZero() {
+            PullClientTest.cleanup()
+            try {
+                Repository.init("./testpull", "main", false)
+                // Overwrite HEAD with a raw commit sha -> detached.
+                "ffffffffffffffffffffffffffffffffffffffff\n"
+                    .writeToFile("./testpull/.git/HEAD")
+
+                var rc = PullClient.pull("./testpull/.git", "./testpull",
+                                          null, null, "origin")
+                Assert.assertEquals(0, rc)
+            } catch (ex: Exception) {
+                PullClientTest.cleanup()
+                throw ex
+            }
+            PullClientTest.cleanup()
+        }
+
+        // Normal HEAD, branch resolved from it, but no [remote "origin"]
+        // in config and no url passed: pull bails out with 0 before any
+        // network access.
+        test nullBranchAndUrlNoRemoteReturnsZero() {
+            PullClientTest.cleanup()
+            try {
+                Repository.init("./testpull", "main", false)
+
+                var rc = PullClient.pull("./testpull/.git", "./testpull",
+                                          null, null, "origin")
+                Assert.assertEquals(0, rc)
+            } catch (ex: Exception) {
+                PullClientTest.cleanup()
+                throw ex
+            }
+            PullClientTest.cleanup()
+        }
+
+        // Branch passed explicitly (so HEAD isn't consulted for it),
+        // url still null with no configured remote: same 0 bail-out.
+        test explicitBranchNullUrlReturnsZero() {
+            PullClientTest.cleanup()
+            try {
+                Repository.init("./testpull", "main", false)
+
+                var rc = PullClient.pull("./testpull/.git", "./testpull",
+                                          null, "main", "origin")
+                Assert.assertEquals(0, rc)
+            } catch (ex: Exception) {
+                PullClientTest.cleanup()
+                throw ex
+            }
+            PullClientTest.cleanup()
+        }
+
+        private static fun cleanup() {
+            PullClientTest.deleteRecursive("./testpull")
+        }
+
+        static fun deleteRecursive(path: String) {
+            var f = new File(path)
+            if (!f.exists()) {
+                return
+            }
+            if (f.isDirectory()) {
+                var children = f.listFiles()
+                var i = 0
+                while (i < children.length().toInt()) {
+                    PullClientTest.deleteRecursive(children[i.toUInt()].toString())
+                    i = i + 1
+                }
+            }
+            f.delete()
+        }
+    }
+}

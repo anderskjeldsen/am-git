@@ -55,6 +55,24 @@ namespace Am.Git.Tests {
             MergeBaseTest.cleanupTestDir()
         }
 
+        // Literal-null sides — legal again now that find() declares
+        // `String?` shas (pull passes head.commitSha, which is null on an
+        // unborn HEAD). Must return null, not blow up in the null-argument
+        // guard.
+        test literalNullShaReturnsNull() {
+            var store = MergeBaseTest.freshStore()
+            try {
+                var sha = MergeBaseTest.writeCommit(store, "tree-empty", List<String>.newList<String>())
+                Assert.assertNull(MergeBase.find(null, sha, store))
+                Assert.assertNull(MergeBase.find(sha, null, store))
+                Assert.assertNull(MergeBase.find(null, null, store))
+            } catch (ex: Exception) {
+                MergeBaseTest.cleanupTestDir()
+                throw ex
+            }
+            MergeBaseTest.cleanupTestDir()
+        }
+
         // Linear chain: when A is an ancestor of B, merge-base(A, B)
         // is A — same as the fast-forward case (which merge phase 2
         // will rely on).

@@ -62,11 +62,15 @@ namespace Am.Git
 
         // Decode a single entry at `offset` WITHOUT resolving deltas or
         // computing SHAs — used by the lazy pack reader (LazyPack), which
-        // has the offset from the pack index and resolves deltas itself.
-        // The returned PackObject holds the inflated content (full content
-        // for a plain object, the delta-instruction stream for a delta),
-        // its packOffset, and baseOffset / baseSha for deltas.
-        static fun readEntryAt(packBytes: UByte[], offset: Int): PackObject {
+        // has the offset from the pack index and resolves deltas itself,
+        // and by PackIndexer's sequential walk. The returned PackObject
+        // holds the inflated content (full content for a plain object, the
+        // delta-instruction stream for a delta), its packOffset, and
+        // baseOffset / baseSha for deltas. `nextOut[0]` receives the byte
+        // offset of the NEXT entry (start + header + compressed stream),
+        // which is what lets PackIndexer stream the whole body without a
+        // separate size table.
+        static fun readEntryAt(packBytes: UByte[], offset: Int, nextOut: Int[]): PackObject {
             var entryStart = offset
 
             var b = packBytes[offset.toUInt()].toInt()
@@ -107,6 +111,7 @@ namespace Am.Git
             var consumed = new Int[1]
             var available = packBytes.length().toInt() - pos
             var inflated = Zlib.inflate(packBytes, pos, available, size.toInt(), consumed)
+            nextOut[0UI] = pos + consumed[0UI]
 
             var obj = new PackObject(typeCode, inflated)
             obj.packOffset = entryStart.toLong()

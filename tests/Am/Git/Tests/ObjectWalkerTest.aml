@@ -1,0 +1,101 @@
+namespace Am.Git.Tests {
+
+    // ObjectWalker.collect(newSha, haveSha?) — haveSha is optional:
+    // null (or the all-zeros sha) means "the remote has nothing, send
+    // everything reachable from newSha". Push passes a real sha,
+    // CheckoutClient passes zeroSha, and null is the no-haves variant
+    // that the `String?` signature fix made legal again.
+    //
+    // Fixtures mirror MergeBaseTest: synthetic commits written through
+    // LooseObjectWriter into a private ./testow store.
+    class ObjectWalkerTest {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+        import Am.Git
+        import Am.Tests
+
+        // haveSha == null: seeding pass is skipped entirely; the walk
+        // still collects the new commit (and whatever it references).
+        test collectWithNullHaveShaCollectsNewCommit() {
+            ObjectWalkerTest.cleanupTestDir()
+            try {
+                var store = new ObjectStore("./testow")
+                var sha = ObjectWalkerTest.writeCommit(store, "tree-a", List<String>.newList<String>())
+
+                var walker = new ObjectWalker(store)
+                var shas = walker.collect(sha, null)
+
+                Assert.assertTrue(shas.getSize() >= 1)
+                Assert.assertEquals(sha, shas.get(0))
+            } catch (ex: Exception) {
+                ObjectWalkerTest.cleanupTestDir()
+                throw ex
+            }
+            ObjectWalkerTest.cleanupTestDir()
+        }
+
+        // Sanity companion: the all-zeros sentinel behaves the same as
+        // null (both mean "no haves").
+        test collectWithZeroShaMatchesNullBehaviour() {
+            ObjectWalkerTest.cleanupTestDir()
+            try {
+                var store = new ObjectStore("./testow")
+                var sha = ObjectWalkerTest.writeCommit(store, "tree-b", List<String>.newList<String>())
+
+                var walker = new ObjectWalker(store)
+                var viaNull = walker.collect(sha, null)
+                var viaZero = walker.collect(sha, "0000000000000000000000000000000000000000")
+
+                Assert.assertEquals(viaNull.getSize(), viaZero.getSize())
+            } catch (ex: Exception) {
+                ObjectWalkerTest.cleanupTestDir()
+                throw ex
+            }
+            ObjectWalkerTest.cleanupTestDir()
+        }
+
+        // ---- helpers (MergeBaseTest style) ---------------------------
+
+        // Synthetic commit: "tree" points at a unique blob (the walker
+        // tolerates non-tree objects), parents as given.
+        static fun writeCommit(store: ObjectStore, treeMarker: String,
+                               parents: List<String>): String {
+            var writer = new LooseObjectWriter("./testow")
+            var treeBlob = writer.write("blob", treeMarker.toBytes("UTF-8"))
+
+            var body = "tree " + treeBlob + "\n"
+            var i = 0
+            while (i < parents.getSize()) {
+                body = body + "parent " + parents.get(i) + "\n"
+                i = i + 1
+            }
+            body = body + "author T <t@t> 1700000000 +0000\n"
+            body = body + "committer T <t@t> 1700000000 +0000\n"
+            body = body + "\n"
+            body = body + "msg " + treeMarker + "\n"
+
+            return writer.write("commit", body.toBytes("UTF-8"))
+        }
+
+        private static fun cleanupTestDir() {
+            ObjectWalkerTest.deleteRecursive("./testow")
+        }
+
+        static fun deleteRecursive(path: String) {
+            var f = new File(path)
+            if (!f.exists()) {
+                return
+            }
+            if (f.isDirectory()) {
+                var children = f.listFiles()
+                var i = 0
+                while (i < children.length().toInt()) {
+                    ObjectWalkerTest.deleteRecursive(children[i.toUInt()].toString())
+                    i = i + 1
+                }
+            }
+            f.delete()
+        }
+    }
+}

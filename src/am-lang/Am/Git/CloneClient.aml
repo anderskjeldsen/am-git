@@ -63,7 +63,7 @@ namespace Am.Git
             var header = PackHeader.parse(packBytes)
             ("Pack version " + header.version.toString() + " with " + header.objectCount.toString() + " objects").println()
 
-            CloneClient.writeRepository(targetDir, remoteUrl, advertisement, defaultBranch, packBytes)
+            var packPath = CloneClient.writeRepository(targetDir, remoteUrl, advertisement, defaultBranch, packBytes)
 
             // Shallow boundary: record the server-reported cut points so
             // history walks (log/merge-base) know where the repo ends.
@@ -78,54 +78,46 @@ namespace Am.Git
                 ("Shallow clone - " + shallowShas.getSize().toString() + " boundary commit(s) in .git/shallow").println()
             }
 
-            // Walk the pack and SHA every entry: full objects get
-            // hashed inline by `PackParser`; deltas are inflated
-            // there but resolved against their bases by
-            // `DeltaResolver` immediately afterwards. End state:
-            // `parsed.objects` keyed by SHA, with every entry
-            // verifiably matching what `git index-pack` would produce
-            // for the same pack.
-            "Parsing pack...".println()
-            var parser = new PackParser(packBytes)
-            var parsed = parser.parseAll()
-            ("Pack contents: " + parsed.objects.getSize().toString() +
-             " full objects, " + parsed.deltas.getSize().toString() +
-             " deltas").println()
+            // Index the pack STREAMING (PackIndexer) instead of expanding
+            // every object into RAM at once (the old parseAll+resolveAll
+            // path). On a ~18 MB GitHub pack the old way held the entire
+            // reconstructed history — 50-100 MB — which corrupted memory
+            // on real AmigaOS ("clone failed: HELP@"). The indexer SHAs
+            // each object and drops its content immediately; peak memory
+            // is the pack bytes plus one delta chain.
+            "Indexing pack (streaming)...".println()
+            var offsets = PackIndexer.buildIndex(packBytes)
+            ("Indexed " + offsets.getSize().toString() + " objects").println()
 
-            if (parsed.deltas.getSize() > 0) {
-                "Resolving deltas...".println()
-                var resolver = new DeltaResolver(parsed)
-                resolver.resolveAll()
-                ("After resolution: " + parsed.objects.getSize().toString() +
-                 " total objects").println()
-            }
+            // Persist the .amidx next to the pack so every later command
+            // (status, log, show, ...) takes ObjectStore's lazy fast path
+            // instead of re-doing this work.
+            PackIndex.writeOffsets(packPath, offsets)
 
-            // Sanity check: every advertised ref's SHA should now be
-            // reachable in `objects`. If the resolver is right, every
-            // commit in the pack - full or delta-encoded - ends up
-            // here with the same id git uses.
-            if (!parsed.objects.containsKey(headSha)) {
+            // Sanity check: the advertised HEAD commit must be in the
+            // pack we just indexed.
+            if (!offsets.containsKey(headSha)) {
                 throw new Exception("HEAD commit " + headSha +
-                                     " not found in parsed objects")
+                                     " not found in pack index")
             }
 
+            // Check out HEAD lazily: each tree/blob is inflated from the
+            // in-memory pack bytes on demand, written, and dropped. We
+            // deliberately do NOT re-read the pack from disk here — that
+            // round-trip once failed silently on AmigaOS.
             "Checking out working tree...".println()
-            var workTree = new WorkTree(targetDir, parsed.objects)
+            var lazyPack = new LazyPack(packBytes, offsets)
+            var workTree = new LazyWorkTree(targetDir, lazyPack)
             var fileCount = workTree.checkout(headSha)
             ("Wrote " + fileCount.toString() + " files into " + targetDir).println()
 
-            // Seed `.git/index` from HEAD's tree so the new repo
-            // reports clean in `am-git status` straight after clone.
-            // Without this seed, every file would later show as
-            // "staged deleted" the moment the user `am-git add`s
-            // anything (because an empty index would then claim "no
-            // files tracked"). We use the in-memory object map we
-            // already have from PackParser rather than re-reading the
-            // freshly-written pack from disk - that disk round-trip
-            // silently failed on AmigaOS and left the seed empty.
+            // Seed `.git/index` from HEAD's tree so the new repo reports
+            // clean in `am-git status` straight after clone. Without this
+            // seed, every file would later show as "staged deleted" the
+            // moment the user `am-git add`s anything.
             var gitDir = targetDir + "/.git"
-            var rootTreeSha = WorkTree.extractRootTreeSha(parsed.objects.get(headSha).content)
-            var seededIdx = GitIndex.fromTreeMap(rootTreeSha, parsed.objects)
+            var rootTreeSha = WorkTree.extractRootTreeSha(lazyPack.read(headSha).content)
+            var seededIdx = GitIndex.fromTreePack(rootTreeSha, lazyPack)
             ("Seeded index with " + seededIdx.entries.getSize().toString() + " entries").println()
             seededIdx.write(gitDir)
             // Verify the file landed: round-trip through read() so we
@@ -161,12 +153,13 @@ namespace Am.Git
             return wants
         }
 
-        // Step 5.
+        // Step 5. Returns the path the pack was written to, so the caller
+        // can drop the matching .amidx next to it.
         private static fun writeRepository(targetDir: String,
                                             remoteUrl: String,
                                             ad: RefAdvertisement,
                                             defaultBranch: String,
-                                            packBytes: UByte[]) {
+                                            packBytes: UByte[]): String {
             var repo = Repository.init(targetDir, defaultBranch, false)
             repo.writeRemoteConfig("origin", remoteUrl, defaultBranch)
 
@@ -200,6 +193,7 @@ namespace Am.Git
             var packPath = repo.objectsPackDir() + "/pack-tmp.pack"
             Repository.writeBytes(packPath, packBytes)
             ("Wrote pack to " + packPath).println()
+            return packPath
         }
     }
 }

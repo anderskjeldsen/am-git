@@ -35,7 +35,7 @@ namespace Am.Git
         // side) or "delete this ref" (when on the new side).
         private static var zeroSha: String = "0000000000000000000000000000000000000000"
 
-        fun collect(newSha: String, haveSha: String): List<String> {
+        fun collect(newSha: String, haveSha: String?): List<String> {
             var seen = new HashMap<String, Bool>()
             var toSend = List<String>.newList<String>()
 

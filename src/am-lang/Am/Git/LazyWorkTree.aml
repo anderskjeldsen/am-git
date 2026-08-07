@@ -1,0 +1,74 @@
+namespace Am.Git
+{
+    // WorkTree's memory-friendly sibling: materialise a commit's working
+    // tree by reading each tree / blob out of a LazyPack on demand,
+    // instead of requiring the caller to pre-expand the whole pack into
+    // a HashMap. Blob content is written to disk and dropped immediately
+    // (modulo LazyPack's small bounded cache), so checking out HEAD costs
+    // roughly one object at a time — not the whole history.
+    //
+    // Semantics mirror WorkTree.checkout exactly (same mode handling,
+    // same submodule/symlink caveats); tree parsing is shared via
+    // WorkTree.parseTree / extractRootTreeSha.
+    class LazyWorkTree(private var workTreePath: String,
+                       private var pack: LazyPack)
+    {
+        import Am.Lang
+        import Am.Collections
+
+        // Resolve `commitSha` to a working tree under `workTreePath`.
+        // Returns the number of blob files written.
+        fun checkout(commitSha: String): Int {
+            if (!this.pack.has(commitSha)) {
+                throw new Exception("checkout: commit " + commitSha + " not in pack")
+            }
+            var commit = this.pack.read(commitSha)
+            if (commit.typeCode != 1) {
+                throw new Exception("checkout: " + commitSha + " is not a commit (type=" +
+                                     commit.typeCode.toString() + ")")
+            }
+            var rootTreeSha = WorkTree.extractRootTreeSha(commit.content)
+            return this.checkoutTree(rootTreeSha, this.workTreePath)
+        }
+
+        private fun checkoutTree(treeSha: String, dirPath: String): Int {
+            if (!this.pack.has(treeSha)) {
+                throw new Exception("checkout: tree " + treeSha + " not in pack")
+            }
+            var tree = this.pack.read(treeSha)
+            if (tree.typeCode != 2) {
+                throw new Exception("checkout: " + treeSha + " is not a tree (type=" +
+                                     tree.typeCode.toString() + ")")
+            }
+            Repository.ensureDir(dirPath)
+
+            var entries = WorkTree.parseTree(tree.content)
+            var written = 0
+            var i = 0
+            while (i < entries.getSize()) {
+                var entry = entries.get(i)
+                var entryPath = dirPath + "/" + entry.name
+
+                if (entry.isTree()) {
+                    written = written + this.checkoutTree(entry.sha, entryPath)
+                } else if (entry.isFile()) {
+                    var blob = this.pack.read(entry.sha)
+                    Repository.writeBytes(entryPath, blob.content)
+                    written = written + 1
+                } else if (entry.isSymlink()) {
+                    // Same caveat as WorkTree: no native symlink() yet,
+                    // write the link target as a regular file.
+                    var blob = this.pack.read(entry.sha)
+                    Repository.writeBytes(entryPath, blob.content)
+                    written = written + 1
+                } else if (entry.isSubmodule()) {
+                    ("skipping submodule: " + entryPath).println()
+                } else {
+                    ("skipping unknown mode " + entry.mode + " at " + entryPath).println()
+                }
+                i = i + 1
+            }
+            return written
+        }
+    }
+}
