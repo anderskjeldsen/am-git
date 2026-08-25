@@ -112,14 +112,21 @@ namespace Am.Git
         }
 
         override fun toString(): String {
-            // scp-like ssh paths are relative (no leading "/") - insert the
-            // separator so the display doesn't fuse port and path
-            // ("ssh://host:22anderskjeldsen/..." -> "ssh://host:22/anderskjeldsen/...").
-            var sep = ""
-            if (!this.path.startsWith("/")) {
-                sep = "/"
+            // toString overrides a #noThrow function, so nothing may escape:
+            // String.startsWith can throw, and a printer that throws while
+            // reporting another failure loses the original error.
+            try {
+                // scp-like ssh paths are relative (no leading "/") - insert the
+                // separator so the display doesn't fuse port and path
+                // ("ssh://host:22anderskjeldsen/..." -> "ssh://host:22/anderskjeldsen/...").
+                var sep = ""
+                if (!this.path.startsWith("/")) {
+                    sep = "/"
+                }
+                return this.scheme + "://" + this.host + ":" + this.port.toString() + sep + this.path
+            } catch (e: Exception) {
+                return "<unprintable git url>"
             }
-            return this.scheme + "://" + this.host + ":" + this.port.toString() + sep + this.path
         }
 
         // Parse `http(s)://host[:port]/path` - returns null if the URL
