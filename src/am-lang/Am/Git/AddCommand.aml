@@ -30,9 +30,7 @@ namespace Am.Git
             // Normalise "." / "" to an absolute cwd so the file walk
             // works reliably on AmigaOS (see StatusReport for the same
             // workaround).
-            if (workTreePath == null || workTreePath.length() == 0 || workTreePath == ".") {
-                workTreePath = File.getCurrentDirectory()
-            }
+            workTreePath = Repository.resolveWorkTree(workTreePath)
 
             var idx = GitIndex.read(gitDir)
             var writer = new LooseObjectWriter(gitDir)
@@ -61,20 +59,16 @@ namespace Am.Git
         private static fun addOne(gitDir: String, workTreePath: String, rawPath: String,
                                    idx: GitIndex, writer: LooseObjectWriter,
                                    ignore: GitIgnore): Int {
-            // "." -> the work tree itself.
-            if (rawPath == "." || rawPath == "./") {
+            // "." -> the work tree itself. Normalised first so "./" and
+            // "././" mean the same thing as ".", which is what a user
+            // typing `add ./` expects.
+            if (Repository.normalizePath(rawPath).length() == 0) {
                 return AddCommand.addDir(gitDir, workTreePath, "", idx, writer, ignore)
             }
-            // Strip a leading "./" so the relative key matches the
-            // format used elsewhere (HEAD tree paths, status output).
-            var rel = rawPath
-            if (rel.startsWith("./")) {
-                rel = rel.substringToEnd(2UI)
-            }
-            // Trim any trailing slash.
-            while (rel.length() > 1 && rel.endsWith("/")) {
-                rel = rel.substring(0UI, (rel.length() - 1).toUInt())
-            }
+            // Normalise so the relative key matches the format used
+            // elsewhere (HEAD tree paths, status output) -- and so the join
+            // below cannot name a drawer "." on AmigaOS.
+            var rel = Repository.normalizePath(rawPath)
             var full = workTreePath + "/" + rel
             var f = new File(full)
             if (!f.exists()) {

@@ -322,9 +322,34 @@ namespace AmGit
                 if (args.length() >= 2UI) {
                     target = args[1UI]
                 }
-                Repository.ensureDir(target)
-                var gitDir = target + "/.git"
-                var alreadyExisted = new File(gitDir).exists()
+                // normalizePath turns "." and "./" into "", so the cwd case
+                // uses the same bare relative ".git" every reader uses, and
+                // init cannot end up pointed at a different directory than
+                // the commands that follow it. See Repository.normalizePath
+                // for why "." is a trap on AmigaOS.
+                //
+                // Relative rather than an absolute cwd on purpose: an
+                // absolute path made CreateDir fail on an FS-UAE directory
+                // mount, while the relative form works on every Amiga
+                // filesystem tested.
+                target = Repository.normalizePath(target)
+                var gitDir = ".git"
+                if (target.length() > 0) {
+                    Repository.ensureDir(target)
+                    gitDir = target + "/.git"
+                }
+                // exists() is true for a FILE called .git too, and the
+                // ensureDir below would then quietly do nothing -- leaving
+                // the failure to surface as "Failed to open '.git/HEAD'".
+                // Say what is actually wrong instead.
+                var gitDirFile = new File(gitDir)
+                var alreadyExisted = gitDirFile.exists()
+                if (alreadyExisted && !gitDirFile.isDirectory()) {
+                    ("init: '" + gitDir + "' exists but is a file, not a drawer.").println()
+                    ("init: in " + File.getCurrentDirectory()).println()
+                    "init: remove it and run init again.".println()
+                    return
+                }
 
                 // Idempotent dir creation. ensureDir is a no-op when
                 // the path already exists, so re-running init is
@@ -341,6 +366,21 @@ namespace AmGit
                 // silently move someone's checked-out branch to
                 // `main` on a re-init, which is the kind of papercut
                 // real git is careful to avoid.
+                // Confirm the directory actually appeared before writing into
+                // it. Without this the failure surfaces as "Failed to open
+                // file '.git/HEAD'", which blames the file when the real
+                // problem is that .git was never created -- a filesystem
+                // refusing the mkdir, a stale lock, a read-only volume. That
+                // wrong signal cost a long debugging detour on FS-UAE.
+                if (!new File(gitDir).exists()) {
+                    ("init: could not create '" + gitDir + "' in " +
+                     File.getCurrentDirectory()).println()
+                    "init: the filesystem refused to create the directory.".println()
+                    "init: check the volume is writable, and that no other".println()
+                    "init: program (or a host-side editor) holds it open.".println()
+                    return
+                }
+
                 var headPath = gitDir + "/HEAD"
                 if (!new File(headPath).exists()) {
                     "ref: refs/heads/main\n".writeToFile(headPath)
@@ -401,6 +441,11 @@ namespace AmGit
                     var parsed = GitUrl.parse(url)
                     target = parsed.repositoryName()
                 }
+                if (target.length() == 0) {
+                    target = "repo"
+                }
+                // A user-supplied "./name" would create a drawer "." on Amiga.
+                target = Repository.normalizePath(target)
                 if (target.length() == 0) {
                     target = "repo"
                 }
@@ -494,7 +539,7 @@ namespace AmGit
         private static fun runWriteTree(args: String[]) {
             try {
                 var writer = new LooseObjectWriter(".git")
-                var builder = new TreeBuilder(".", writer)
+                var builder = new TreeBuilder(Repository.resolveWorkTree("."), writer)
                 builder.build().println()
             } catch (ex: Exception) {
                 ("write-tree: " + ex.message).println()
@@ -677,7 +722,7 @@ namespace AmGit
                     }
                     treeSha = IndexTreeBuilder.build(idx, writer)
                 } else {
-                    treeSha = new TreeBuilder(".", writer).build()
+                    treeSha = new TreeBuilder(Repository.resolveWorkTree("."), writer).build()
                 }
 
                 // Merge-commit detection: if `.git/MERGE_HEAD` is
@@ -1217,7 +1262,7 @@ namespace AmGit
             // commit history the index may not exist yet; the applier
             // populates it with stage-0 entries for everything.
             var idx = GitIndex.read(".git")
-            var applier = new MergeApplier(".", store, idx)
+            var applier = new MergeApplier(Repository.resolveWorkTree("."), store, idx)
             var conflicts = applier.apply(plan)
             idx.write(".git")
 
@@ -1980,7 +2025,7 @@ namespace AmGit
             var plan = MergePlan.compute(baseTree, oursTree, theirsTree, store)
 
             var idx = GitIndex.read(".git")
-            var applier = new MergeApplier(".", store, idx)
+            var applier = new MergeApplier(Repository.resolveWorkTree("."), store, idx)
             var conflicts = applier.apply(plan)
             idx.write(".git")
             if (conflicts.getSize() > 0) {
@@ -2194,7 +2239,7 @@ namespace AmGit
             var plan = MergePlan.compute(baseTree, oursTree, theirsTree, store)
 
             var idx = GitIndex.read(".git")
-            var applier = new MergeApplier(".", store, idx)
+            var applier = new MergeApplier(Repository.resolveWorkTree("."), store, idx)
             var conflicts = applier.apply(plan)
             idx.write(".git")
 

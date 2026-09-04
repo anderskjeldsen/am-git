@@ -96,7 +96,12 @@ namespace Am.Git
                     i = i + 1
                     continue
                 }
-                if (f.isDirectory()) {
+                // Same guard as StatusReport's walk: a stat failure (dangling
+                // symlink, entry deleted mid-walk, unsearchable dir) would
+                // abort .gitignore discovery entirely — treat it as "not a
+                // directory" and move on.
+                var isDirEntry = either(f.isDirectory(), false)
+                if (isDirEntry) {
                     var sub: String
                     if (relPrefix.length() == 0) {
                         sub = name
@@ -287,6 +292,35 @@ namespace Am.Git
             }
             var pc = pattern.characterAt(pi.toUInt()).toInt()
             if (pc == 42) {  // '*'
+                // '**' — match zero or more characters INCLUDING '/', i.e.
+                // any number of path segments. Real git treats `**/*.o` as
+                // "*.o at any depth" and `build/**` as "everything under
+                // build/"; without this branch the single-'*' rule below
+                // stops at the first slash and those patterns silently never
+                // match (verified against real git: `**/*.o` left deep/sub/x.o
+                // reported as untracked).
+                if (pi + 1 < plen && pattern.characterAt((pi + 1).toUInt()).toInt() == 42) {
+                    var pNext = pi + 2
+                    // `**/` — the slash is part of the wildcard, so it may
+                    // also match ZERO segments ("**/x.o" matches "x.o").
+                    if (pNext < plen && pattern.characterAt(pNext.toUInt()).toInt() == 47) {
+                        if (GitIgnore.globMatchAt(pattern, pNext + 1, s, si)) {
+                            return true
+                        }
+                    }
+                    // Trailing `**` matches the entire remainder.
+                    if (pNext >= plen) {
+                        return true
+                    }
+                    var kk = si
+                    while (kk <= slen) {
+                        if (GitIgnore.globMatchAt(pattern, pNext, s, kk)) {
+                            return true
+                        }
+                        kk = kk + 1
+                    }
+                    return false
+                }
                 // Match zero or more chars (excluding '/').
                 // Try every length from 0 up.
                 var k = si

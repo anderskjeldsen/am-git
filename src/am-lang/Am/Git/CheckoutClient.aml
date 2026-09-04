@@ -32,9 +32,7 @@ namespace Am.Git
             // Resolve "."/"" to an absolute path - see StatusReport.run
             // for the rationale (opendir(".") is unreliable on
             // amiga-gcc without ixemul).
-            if (workTreePath == null || workTreePath.length() == 0 || workTreePath == ".") {
-                workTreePath = File.getCurrentDirectory()
-            }
+            workTreePath = Repository.resolveWorkTree(workTreePath)
             // Loose or packed (RefStore) - real-git clones keep branch
             // refs in packed-refs until first written.
             var commitSha = RefStore.resolve(gitDir, "refs/heads/" + branch)

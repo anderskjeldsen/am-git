@@ -530,7 +530,24 @@ namespace Am.Git
                 } else {
                     relPath = relPrefix + "/" + name
                 }
-                var isDir = f.isDirectory()
+                // isDirectory() THROWS when stat() fails, and letting that
+                // escape aborts the whole status walk — one unreadable entry
+                // and the caller sees an empty report (am-ide then renders
+                // "clean" for a dirty repo). Entries legitimately disappear
+                // mid-walk: the IDE rewrites .studio/*.json while you browse,
+                // editors drop temp files, and a protected/dangling entry
+                // stats EINVAL. Skip what we cannot stat instead of dying.
+                var isDir = false
+                var statOk = true
+                try {
+                    isDir = f.isDirectory()
+                } catch(e: Exception) {
+                    statOk = false
+                }
+                if (!statOk) {
+                    i = i + 1
+                    continue
+                }
                 // Skip ignored entries. For directories the check
                 // prunes the whole subtree (we don't descend), which
                 // matches real git's behaviour and saves us from
@@ -597,10 +614,7 @@ namespace Am.Git
         }
 
         private static fun resolveBase(workTreePath: String?): String {
-            if (workTreePath == null || workTreePath.length() == 0 || workTreePath == ".") {
-                return File.getCurrentDirectory()
-            }
-            return workTreePath
+            return Repository.resolveWorkTree(workTreePath)
         }
     }
 }

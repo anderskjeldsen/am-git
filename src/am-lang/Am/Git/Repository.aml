@@ -87,6 +87,80 @@ namespace Am.Git
 
         // mkdir -p - create every missing component along the way.
         // The native File.createDirectory only mkdirs the leaf.
+        // Strip the POSIX-isms AmigaDOS does not understand.
+        //
+        // AmigaDOS has no "." entry: "." is an ordinary filename, so a path
+        // built as `"." + "/.git"` names a DRAWER called "." with .git
+        // inside it. `init` did exactly that -- it filled in a decoy while
+        // every reader used a plain ".git", so HEAD went missing and every
+        // commit and status failed with "not a git repository". Nothing
+        // failed loudly; POSIX collapses "./" silently, so it only ever
+        // showed up on Amiga.
+        //
+        // This is am-git's job, not the runtime's: a library client knows
+        // which path forms it builds, and hands the platform what that
+        // platform expects. So every path am-git composes or accepts from
+        // the user goes through here first.
+        //
+        // ".." is deliberately NOT translated. On Amiga the parent is a
+        // leading "/", but rewriting it would be wrong on every other
+        // platform, and am-git never builds a path containing it.
+        static fun normalizePath(path: String): String {
+            var p = path
+            // Leading "./" runs, then a bare ".".
+            while (p.startsWith("./")) {
+                p = p.substringToEnd(2UI)
+            }
+            if (p == ".") {
+                return ""
+            }
+            // Interior "/./".
+            var at = p.indexOf("/./")
+            while (at >= 0) {
+                p = p.substring(0UI, at.toUInt()) + p.substringToEnd((at + 2).toUInt())
+                at = p.indexOf("/./")
+            }
+            // Trailing "/." and any trailing separator.
+            while (p.length() > 1 && p.endsWith("/.")) {
+                p = p.substring(0UI, (p.length() - 2).toUInt())
+            }
+            while (p.length() > 1 && p.endsWith("/")) {
+                p = p.substring(0UI, (p.length() - 1).toUInt())
+            }
+            return p
+        }
+
+        // Resolve a work-tree argument to a path the filesystem will
+        // actually accept.
+        //
+        // AmigaOS has no "." entry: `.` is an ordinary filename, so a
+        // path built as `"." + "/.git"` names a DRAWER called "." with
+        // `.git` inside it -- a decoy repository that init would fill
+        // in while every other command, which uses a plain `.git`,
+        // looked at the real one. That cost a working `init` on
+        // AmigaOS: HEAD landed in the decoy and every commit and
+        // status then failed with "HEAD not found". POSIX collapses
+        // `./` silently, which is why it only ever showed up on
+        // Amiga.
+        //
+        // Four classes had grown their own copy of this guard; this is
+        // the one they now share. Callers must route every work-tree
+        // path through it before joining anything onto it.
+        static fun resolveWorkTree(path: String?): String {
+            if (path == null) {
+                return File.getCurrentDirectory()
+            }
+            var p = Repository.normalizePath(path as String)
+            if (p.length() == 0) {
+                return File.getCurrentDirectory()
+            }
+            // Trailing separator would double up in `p + "/" + rel`.
+            while (p.length() > 1 && p.endsWith("/")) {
+                p = p.substring(0UI, (p.length() - 1).toUInt())
+            }
+            return p
+        }
+
         static fun ensureParentDir(path: String) {
             var lastSlash = path.lastIndexOf("/")
             if (lastSlash <= 0) {
