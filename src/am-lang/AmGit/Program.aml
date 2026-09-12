@@ -415,6 +415,7 @@ namespace AmGit
             try {
                 // Filter `--depth <n>` out of the positional args.
                 var depth = 0
+                var branch = ""
                 var positional = List<String>.newList<String>()
                 var ci: UInt = 1UI
                 while (ci < args.length()) {
@@ -424,10 +425,29 @@ namespace AmGit
                             ci++
                             depth = Int.parse(args[ci])
                         }
+                    } else if (ca == "--branch" || ca == "-b") {
+                        // Recognised so it is not mistaken for the URL. Any
+                        // unknown flag used to fall through to `positional`,
+                        // so `--branch master` made "--branch" the url and the
+                        // failure read "Unrecognised git URL … --branch",
+                        // which says nothing about the real problem.
+                        if (ci + 1UI < args.length()) {
+                            ci++
+                            branch = args[ci]
+                        }
                     } else {
                         positional.add(ca)
                     }
                     ci++
+                }
+                if (branch.length() > 0) {
+                    // Be explicit rather than silently cloning the default
+                    // branch: a caller that asked for a specific branch and
+                    // got another one produces a build from the wrong source.
+                    ("clone: --branch is not supported yet (asked for '"
+                        + branch + "'); clone the default branch and check out "
+                        + "the branch separately").println()
+                    return
                 }
                 if (positional.getSize() == 0) {
                     "usage: am-git clone <url> [target-dir] [--depth <n>]".println()
