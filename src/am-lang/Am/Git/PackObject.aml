@@ -74,26 +74,35 @@ namespace Am.Git
             var prefixBytes = prefix.toBytes("UTF-8")
             var totalLen = prefixBytes.length() + 1UI + content.length()
             var out = new UByte[totalLen]
-            var i = 0UI
-            while (i < prefixBytes.length()) {
-                out[i] = prefixBytes[i]
-                i++
-            }
+            // Bulk copies — this wraps EVERY object that gets hashed
+            // (clone indexes thousands, status hashes changed files), and
+            // the old per-byte loop re-copied the entire inflated history
+            // one byte at a time with a virtual length() call per
+            // iteration. Top entry in the clone CPU profile before.
+            prefixBytes.copyTo(out, 0UI, 0UI, prefixBytes.length())
             out[prefixBytes.length()] = 0UB
-            var j = 0UI
-            while (j < content.length()) {
-                out[prefixBytes.length() + 1UI + j] = content[j]
-                j++
-            }
+            content.copyTo(out, prefixBytes.length() + 1UI, 0UI, content.length())
             return out
         }
 
         // SHA-1 of the wrapped form, hex-encoded - git's authoritative
         // id for an object of the given type and content.
+        //
+        // Streams the "<type> <len>\0" header and the content into the
+        // hasher separately instead of materialising the wrapped copy —
+        // wrapForSha here used to re-copy the entire inflated history
+        // once over during clone indexing (and every re-hashed file in
+        // status/add), just to throw the copy away after hashing.
+        // wrapForSha itself stays for callers that need the wrapped
+        // BYTES (loose-object zlib payloads).
         static fun computeSha(typeName: String, content: UByte[]): String {
-            var wrapped = PackObject.wrapForSha(typeName, content)
-            var digest = Sha1.digest(wrapped)
-            return HexUtil.toHex(digest)
+            var prefix = (typeName + " " + content.length().toString()).toBytes("UTF-8")
+            var header = new UByte[prefix.length() + 1UI]   // +1: NUL, zero-init
+            prefix.copyTo(header, 0UI, 0UI, prefix.length())
+            var h = new Sha1()
+            h.update(header)
+            h.update(content)
+            return HexUtil.toHex(h.finish())
         }
     }
 }

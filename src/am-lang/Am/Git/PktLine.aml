@@ -157,12 +157,10 @@ namespace Am.Git
             if ((this.offset + len) > this.buffer.length()) {
                 throw new Exception("Truncated pkt-line: header says " + len.toString() + " bytes")
             }
-            var payload = new UByte[payloadLen]
-            var i = 0UI
-            while (i < payloadLen) {
-                payload[i] = this.buffer[(this.offset + 4).toUInt() + i]
-                i++
-            }
+            // Bulk slice — this runs once per pkt-line frame of a pack
+            // download (thousands of frames, 64KB each), so a per-byte
+            // copy here was a measurable chunk of clone time.
+            var payload = this.buffer.subArray((this.offset + 4).toUInt(), payloadLen)
             var frame = new PktLineFrame(len, payload, this.offset + len)
             this.offset = this.offset + len
             return frame

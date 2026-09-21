@@ -1,0 +1,388 @@
+namespace GhCli
+{
+    // ghcli - a small GitHub CLI in the shape of upstream `gh`, for
+    // hosts where `gh` doesn't exist (AmigaOS, MorphOS, AROS) and for
+    // driving from other AmLang tools.
+    //
+    // The POC covers the two things that matter:
+    //
+    //   ghcli auth login --with-token <token>   saved next to the app
+    //   ghcli api <endpoint> [...]              one request, JSON out
+    //
+    // Everything it prints on the `api` path is the server's response
+    // body verbatim, and every ghcli-level failure is itself emitted as
+    // JSON ({"error": "..."}), so a caller can always just parse stdout.
+    // There is no exit-code plumbing in AmLang yet - check the payload,
+    // or use -i to see the status line.
+    class Program
+    {
+        import Am.Lang
+        import Am.IO
+        import Am.Json
+        import Am.Collections
+        import Am.Web.Client
+        import Am.Util.Parsers.Text
+
+        // True when a global flag was malformed and already reported.
+        static var globalFailed: Bool = false
+
+        static fun main(args: String[]) {
+            var rest = Program.stripGlobals(args)
+            if (Program.globalFailed) {
+                return
+            }
+            if (rest.length() == 0UI) {
+                Program.printUsage()
+                return
+            }
+            var command = rest[0UI]
+            if (command == "api") {
+                Program.runApi(rest)
+            } else if (command == "auth") {
+                Program.runAuth(rest)
+            } else if (command == "version" || command == "--version") {
+                "ghcli 0.1.0 (AmLang)".println()
+            } else if (command == "help" || command == "--help" || command == "-h") {
+                Program.printUsage()
+            } else {
+                Program.fail("unknown command '" + command + "'")
+            }
+        }
+
+        // Global flags, which come BEFORE the command:
+        //
+        //     ghcli --token <token> api user
+        //
+        // `--token` makes the call stateless - it overrides both the
+        // environment and the saved file and nothing is written back.
+        // That is what a caller embedding ghcli wants (the Tucan Studio
+        // extension keeps the credential in its own drawer and hands it
+        // over per call); a human at a shell wants `auth login` instead.
+        //
+        // NOTE: on a multi-user POSIX box the token is then visible in
+        // `ps` for the life of the process. Prefer GH_TOKEN there.
+        static fun stripGlobals(args: String[]): String[] {
+            var start: UInt = 0UI
+            while (start < args.length()) {
+                var a = args[start]
+                if (a == "--token") {
+                    if (start + 1UI >= args.length()) {
+                        Program.fail("missing value for --token")
+                        Program.globalFailed = true
+                        return new String[0UI]
+                    }
+                    GhConfig.tokenOverride = args[start + 1UI]
+                    start = start + 2UI
+                } else {
+                    break
+                }
+            }
+            if (start == 0UI) {
+                return args
+            }
+            var out = new String[args.length() - start]
+            var i: UInt = 0UI
+            while (start + i < args.length()) {
+                out[i] = args[start + i]
+                i = i + 1UI
+            }
+            return out
+        }
+
+        // ---- api ---------------------------------------------------
+
+        // ghcli api <endpoint> [-X METHOD] [-H "K: V"]... [-f k=v]...
+        //                      [--input <file>] [-i]
+        static fun runApi(args: String[]) {
+            var endpoint = ""
+            var method = ""
+            var include = false
+            var inputFile = ""
+            var fields = new JsonObject()
+            var fieldCount = 0
+            var headers = new HashMap<String, String>()
+
+            var i: UInt = 1UI
+            while (i < args.length()) {
+                var a = args[i]
+                if (a == "-X" || a == "--method") {
+                    if (i + 1UI >= args.length()) {
+                        Program.fail("missing value for " + a)
+                        return
+                    }
+                    i = i + 1UI
+                    method = args[i].toUpperCase()
+                } else if (a == "-H" || a == "--header") {
+                    if (i + 1UI >= args.length()) {
+                        Program.fail("missing value for " + a)
+                        return
+                    }
+                    i = i + 1UI
+                    var raw = args[i]
+                    var colon = raw.indexOf(":")
+                    if (colon < 0) {
+                        Program.fail("header must be 'Key: value', got '" + raw + "'")
+                        return
+                    }
+                    var hk = raw.substring(0UI, colon as UInt).trim()
+                    var hv = raw.substringToEnd((colon + 1) as UInt).trim()
+                    headers.set(hk, hv)
+                } else if (a == "-f" || a == "--field") {
+                    if (i + 1UI >= args.length()) {
+                        Program.fail("missing value for " + a)
+                        return
+                    }
+                    i = i + 1UI
+                    var pair = args[i]
+                    var eq = pair.indexOf("=")
+                    if (eq < 0) {
+                        Program.fail("field must be 'key=value', got '" + pair + "'")
+                        return
+                    }
+                    var fk = pair.substring(0UI, eq as UInt)
+                    var fv = pair.substringToEnd((eq + 1) as UInt)
+                    fields.putString(fk, fv)
+                    fieldCount = fieldCount + 1
+                } else if (a == "--input") {
+                    if (i + 1UI >= args.length()) {
+                        Program.fail("missing value for " + a)
+                        return
+                    }
+                    i = i + 1UI
+                    inputFile = args[i]
+                } else if (a == "-i" || a == "--include") {
+                    include = true
+                } else if (a.startsWith("-")) {
+                    Program.fail("unknown flag '" + a + "'")
+                    return
+                } else if (endpoint.length() == 0) {
+                    endpoint = a
+                } else {
+                    Program.fail("unexpected argument '" + a + "'")
+                    return
+                }
+                i = i + 1UI
+            }
+
+            if (endpoint.length() == 0) {
+                Program.fail("usage: ghcli api <endpoint> [-X METHOD] [-f key=value] [-H 'K: V'] [--input file] [-i]")
+                return
+            }
+
+            // --input wins over -f: an explicit file is an explicit body.
+            var body = ""
+            if (inputFile.length() > 0) {
+                var f = new File(inputFile)
+                if (!f.exists()) {
+                    Program.fail("input file not found: " + inputFile)
+                    return
+                }
+                body = String.readFromFile(inputFile)
+            } else if (fieldCount > 0) {
+                body = fields.toJsonString()
+            }
+
+            // Same default as gh: a body implies POST.
+            if (method.length() == 0) {
+                if (body.length() > 0) {
+                    method = "POST"
+                } else {
+                    method = "GET"
+                }
+            }
+
+            try {
+                var response = GhClient.send(method, endpoint, body, headers)
+                if (include) {
+                    Program.printStatusAndHeaders(response)
+                }
+                var text = response.getBodyAsString()
+                if (text.length() > 0) {
+                    text.println()
+                }
+            } catch (ex: Exception) {
+                Program.fail("request failed: " + ex.message)
+            }
+        }
+
+        // curl -i / gh api -i style preamble. Deliberately NOT JSON -
+        // it's the opt-in debugging mode.
+        static fun printStatusAndHeaders(response: HttpResponse) {
+            ("HTTP/1.1 " + response.getStatusCode().toString() + " " +
+             response.getStatusMessage()).println()
+            var map = response.getHeaders()
+            var keys = map.buildKeys()
+            var i = 0
+            while (i < keys.getSize()) {
+                var k = keys.get(i)
+                (k + ": " + map.get(k)).println()
+                i = i + 1
+            }
+            "".println()
+        }
+
+        // ---- auth --------------------------------------------------
+
+        static fun runAuth(args: String[]) {
+            if (args.length() < 2UI) {
+                Program.fail("usage: ghcli auth <login|status|logout>")
+                return
+            }
+            var sub = args[1UI]
+            if (sub == "login") {
+                Program.runAuthLogin(args)
+            } else if (sub == "status") {
+                Program.runAuthStatus(args)
+            } else if (sub == "logout") {
+                Program.runAuthLogout(args)
+            } else {
+                Program.fail("unknown auth subcommand '" + sub + "'")
+            }
+        }
+
+        // ghcli auth login --with-token <token> [--host api.github.com]
+        //
+        // The token has to come in on the command line: AmLang has no
+        // stdin reader yet, so there's no interactive prompt to hide it
+        // behind. On a shared box, set GH_TOKEN instead and skip login.
+        static fun runAuthLogin(args: String[]) {
+            var token = ""
+            var host = ""
+            var i: UInt = 2UI
+            while (i < args.length()) {
+                var a = args[i]
+                if (a == "--with-token" || a == "-t") {
+                    if (i + 1UI >= args.length()) {
+                        Program.fail("missing value for " + a)
+                        return
+                    }
+                    i = i + 1UI
+                    token = args[i]
+                } else if (a == "--host") {
+                    if (i + 1UI >= args.length()) {
+                        Program.fail("missing value for " + a)
+                        return
+                    }
+                    i = i + 1UI
+                    host = args[i]
+                } else if (a.startsWith("-")) {
+                    Program.fail("unknown flag '" + a + "'")
+                    return
+                } else if (token.length() == 0) {
+                    // `ghcli auth login <token>` - the positional form.
+                    token = a
+                } else {
+                    Program.fail("unexpected argument '" + a + "'")
+                    return
+                }
+                i = i + 1UI
+            }
+
+            if (token.length() == 0) {
+                Program.fail("usage: ghcli auth login --with-token <token> [--host <api-host>]")
+                return
+            }
+
+            GhConfig.load()
+            if (host.length() == 0) {
+                host = GhConfig.host
+            }
+            GhConfig.host = host
+
+            // Verify before saving, so a typo'd token never lands in
+            // the file and silently 401s on every later call.
+            var headers = new HashMap<String, String>()
+            headers.set("Authorization", "Bearer " + token)
+            try {
+                var response = GhClient.send("GET", "https://" + host + "/user", "", headers)
+                if (!response.isSuccess()) {
+                    Program.fail("token rejected by " + host + " (HTTP " +
+                                 response.getStatusCode().toString() + " " +
+                                 response.getStatusMessage() + ")")
+                    return
+                }
+                var login = Program.extractLogin(response.getBodyAsString())
+                var path = GhConfig.save(host, token, login)
+                var result = new JsonObject()
+                result.putString("status", "saved")
+                result.putString("host", host)
+                result.putString("login", login)
+                result.putString("path", path)
+                result.toJsonString().println()
+            } catch (ex: Exception) {
+                Program.fail("login failed: " + ex.message)
+            }
+        }
+
+        static fun runAuthStatus(args: String[]) {
+            GhConfig.load()
+            var token = GhConfig.activeToken()
+            var result = new JsonObject()
+            result.putString("host", GhConfig.host)
+            result.putString("configPath", GhConfig.path())
+            result.putBool("loggedIn", token.length() > 0)
+            result.putString("tokenSource", GhConfig.tokenSource())
+            result.putString("login", GhConfig.login)
+            result.toJsonString().println()
+        }
+
+        static fun runAuthLogout(args: String[]) {
+            var path = GhConfig.path()
+            var removed = GhConfig.clear()
+            var result = new JsonObject()
+            result.putBool("removed", removed)
+            result.putString("path", path)
+            result.toJsonString().println()
+        }
+
+        // Pull `login` out of a /user response. Its own little parse so
+        // a shape change elsewhere in the payload can't break login.
+        static fun extractLogin(bodyText: String): String {
+            try {
+                var textParser = new TextParser(bodyText)
+                var jsonParser = new JsonParser(textParser)
+                var obj = jsonParser.parse().asObject()
+                if (obj.has("login")) {
+                    return obj.getString("login")
+                }
+            } catch (ex: Exception) {
+            }
+            return ""
+        }
+
+        // ---- shared ------------------------------------------------
+
+        // Every failure is JSON too, so stdout is parseable no matter
+        // which way the call went.
+        static fun fail(message: String) {
+            var result = new JsonObject()
+            result.putString("error", message)
+            result.toJsonString().println()
+        }
+
+        static fun printUsage() {
+            "ghcli - GitHub CLI for AmLang hosts".println()
+            "".println()
+            "usage:".println()
+            "  ghcli [--token <token>] <command> ...".println()
+            "".println()
+            "  ghcli api <endpoint> [-X METHOD] [-H 'Key: value'] [-f key=value]".println()
+            "                       [--input <file>] [-i]".println()
+            "  ghcli auth login --with-token <token> [--host <api-host>]".println()
+            "  ghcli auth status".println()
+            "  ghcli auth logout".println()
+            "  ghcli version".println()
+            "".println()
+            "examples:".println()
+            "  ghcli auth login --with-token ghp_xxx".println()
+            "  ghcli api user".println()
+            "  ghcli api repos/anderskjeldsen/am-git".println()
+            "  ghcli api repos/anderskjeldsen/am-git/issues -f title=Bug -f body=Details".println()
+            "  ghcli api repos/anderskjeldsen/am-git -X PATCH -f description='new text'".println()
+            "".println()
+            "The login is stored next to the executable (PROGDIR:ghcli.json on".println()
+            "AmigaOS/MorphOS/AROS, ./ghcli.json elsewhere; override with".println()
+            "GHCLI_CONFIG). GH_TOKEN / GITHUB_TOKEN take precedence over it.".println()
+        }
+    }
+}

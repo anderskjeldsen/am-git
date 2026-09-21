@@ -26,6 +26,15 @@ namespace Am.Git
         import Am.IO
         import Am.Crypto
 
+        // Placeholder recorded in the disk snapshot for untracked
+        // entries (files, and collapsed "dir/" rows) — the walk never
+        // reads or hashes untracked content. Can never equal a real
+        // 40-hex SHA. Only key MEMBERSHIP is ever tested for untracked
+        // paths, so the value is never compared — this exists purely so
+        // a bug that DOES compare it fails loudly ("modified") instead
+        // of silently ("unchanged").
+        static const UNTRACKED_SHA: String = "(untracked)"
+
         // When `porcelain == true`:
         //   - Suppresses the "On branch ..." header.
         //   - Suppresses the "nothing to commit, working tree clean"
@@ -80,7 +89,7 @@ namespace Am.Git
             if (!indexFile.exists()) {
                 var ignore0 = GitIgnore.load(workTreePath, gitDir)
                 var diskPaths0 = new HashMap<String, String>()
-                StatusReport.collectDiskPaths(workTreePath, "", diskPaths0, ignore0, trackedFiles, trackedDirs, null)
+                StatusReport.collectDiskPaths(workTreePath, "", diskPaths0, ignore0, trackedFiles, trackedDirs, null, null, true, true)
                 return StatusReport.reportWithoutIndex(headPaths, diskPaths0, porcelain)
             }
 
@@ -89,7 +98,14 @@ namespace Am.Git
 
             var ignore = GitIgnore.load(workTreePath, gitDir)
             var diskPaths = new HashMap<String, String>()
-            StatusReport.collectDiskPaths(workTreePath, "", diskPaths, ignore, trackedFiles, trackedDirs, idx)
+            StatusReport.collectDiskPaths(workTreePath, "", diskPaths, ignore, trackedFiles, trackedDirs, idx, idx.buildPathEntryMap(), true, true)
+            // Opportunistic index refresh (what real git does): the walk
+            // back-filled stat info on entries it re-hashed and found
+            // unchanged — persist it so the NEXT status takes the stat
+            // fast path instead of re-hashing the same files again.
+            if (idx.statsDirty) {
+                idx.write(gitDir)
+            }
 
             var indexPaths = idx.pathToSha()
             // Unmerged paths (any path with a stage > 0 row). These
@@ -235,21 +251,29 @@ namespace Am.Git
             var trackedFiles = new HashSet<String>()
             var trackedDirs = new HashSet<String>()
             StatusReport.addTracked(headPaths, trackedFiles, trackedDirs)
+            // One read serves the tracked-set, the disk walk's stat fast
+            // path AND the staged/unstaged diff below — pathStatus used
+            // to parse .git/index three times per call.
             var indexFile = new File(gitDir + "/index")
-            var haveIdx = indexFile.exists()
-            if (haveIdx) {
-                StatusReport.addTracked(GitIndex.read(gitDir).pathToSha(), trackedFiles, trackedDirs)
+            var statIdx: GitIndex? = null
+            if (indexFile.exists()) {
+                statIdx = GitIndex.read(gitDir)
+                StatusReport.addTracked(statIdx.pathToSha(), trackedFiles, trackedDirs)
             }
 
             var ignore = GitIgnore.load(workTreePath, gitDir)
             var diskPaths = new HashMap<String, String>()
-            var statIdx: GitIndex? = null
-            if (haveIdx) {
-                statIdx = GitIndex.read(gitDir)
+            var statMap: HashMap<String, IndexEntry>? = null
+            if (statIdx != null) {
+                statMap = statIdx.buildPathEntryMap()
             }
-            StatusReport.collectDiskPaths(workTreePath, "", diskPaths, ignore, trackedFiles, trackedDirs, statIdx)
+            StatusReport.collectDiskPaths(workTreePath, "", diskPaths, ignore, trackedFiles, trackedDirs, statIdx, statMap, true, false)
+            // Same opportunistic refresh as run() — see there.
+            if (statIdx != null && statIdx.statsDirty) {
+                statIdx.write(gitDir)
+            }
 
-            if (!indexFile.exists()) {
+            if (statIdx == null) {
                 // No index: everything on disk not in HEAD is untracked,
                 // disk-vs-HEAD differences are modified, HEAD-only deleted.
                 var dk = diskPaths.buildKeys()
@@ -275,7 +299,10 @@ namespace Am.Git
                 return out
             }
 
-            var idx = GitIndex.read(gitDir)
+            // statIdx is non-null past the early return above; the stat
+            // refresh only touched size/mtime, never SHAs, so diffing
+            // against the same object is identical to a fresh read.
+            var idx = statIdx
             var indexPaths = idx.pathToSha()
             var unmergedList = idx.unmergedPaths()
             var u0 = 0
@@ -389,26 +416,66 @@ namespace Am.Git
         }
 
         private static fun printGroup(prefix: String, paths: List<String>) {
-            // Bubble sort by byte order so output is stable across
-            // runs and matches `git status` ordering.
-            var n = paths.getSize()
-            var i = 0
-            while (i < n - 1) {
-                var k = 0
-                while (k < n - 1 - i) {
-                    if (StatusReport.compareBytewise(paths.get(k), paths.get(k + 1)) > 0) {
-                        var tmp = paths.get(k)
-                        paths.set(k, paths.get(k + 1))
-                        paths.set(k + 1, tmp)
-                    }
-                    k = k + 1
-                }
-                i = i + 1
-            }
+            // Sort by byte order so output is stable across runs and
+            // matches `git status` ordering.
+            StatusReport.sortBytewise(paths)
             var p = 0
             while (p < paths.getSize()) {
                 (prefix + paths.get(p)).println()
                 p = p + 1
+            }
+        }
+
+        // Bottom-up merge sort. This used to be a bubble sort, which
+        // was fine for a handful of changes but O(n^2 * strlen) on a
+        // big untracked list — 1264 untracked paths (am-lang-core with
+        // its dependencies/ dir) spent ~7 SECONDS here, dwarfing the
+        // actual tree walk. Merge sort does ~n log n comparisons.
+        private static fun sortBytewise(paths: List<String>) {
+            var n = paths.getSize()
+            if (n < 2) {
+                return
+            }
+            var aux = List<String>.newList<String>()
+            var i = 0
+            while (i < n) {
+                aux.add(paths.get(i))
+                i = i + 1
+            }
+            var width = 1
+            while (width < n) {
+                var lo = 0
+                while (lo < n) {
+                    var mid = lo + width
+                    var hi = mid + width
+                    if (mid > n) {
+                        mid = n
+                    }
+                    if (hi > n) {
+                        hi = n
+                    }
+                    // Merge paths[lo,mid) + paths[mid,hi) into aux[lo,hi).
+                    var a = lo
+                    var b = mid
+                    var k = lo
+                    while (k < hi) {
+                        if (a < mid && (b >= hi || StatusReport.compareBytewise(paths.get(a), paths.get(b)) <= 0)) {
+                            aux.set(k, paths.get(a))
+                            a = a + 1
+                        } else {
+                            aux.set(k, paths.get(b))
+                            b = b + 1
+                        }
+                        k = k + 1
+                    }
+                    lo = hi
+                }
+                var c = 0
+                while (c < n) {
+                    paths.set(c, aux.get(c))
+                    c = c + 1
+                }
+                width = width + width
             }
         }
 
@@ -498,13 +565,41 @@ namespace Am.Git
         // matches an ignore rule. Without this, a committed file under an
         // ignored directory looks "missing on disk" and is mis-reported as
         // deleted.
+        // `idx`/`idxMap` power the stat fast path: `idxMap` is
+        // idx.buildPathEntryMap() built ONCE by the caller (a per-file
+        // findByPath made the walk O(files^2)); `idx` itself is only
+        // carried for the statsDirty flag. Pass null/null when there is
+        // no index.
+        //
+        // Untracked files are NEVER read + SHA-1'd (nothing compares an
+        // untracked sha — only key membership — and real git doesn't
+        // hash them either; hashing them dominated `status` on repos
+        // carrying big untracked blobs). Two flags shape how they land
+        // in `out`:
+        //
+        //   `includeUntracked` = false drops untracked paths entirely.
+        //     DiffCommand uses this: real git's diff only covers
+        //     tracked files, and it lets the walk skip whole untracked
+        //     subtrees.
+        //   `collapseUntracked` = true reports a directory with NO
+        //     tracked files under it as a single "dir/" entry (with
+        //     UNTRACKED_SHA) instead of walking and listing every file
+        //     — exactly `git status`'s untracked-dir collapsing, and a
+        //     big walk win (a 1200-file untracked dependencies/ dir
+        //     becomes one probe). Only the CLI printing path (run)
+        //     passes true: pathStatus feeds per-file consumers (the
+        //     am-ide tree, CheckoutClient's overwrite guard) that need
+        //     every untracked path spelled out.
         static fun collectDiskPaths(workTreePath: String,
                                      relPrefix: String,
                                      out: HashMap<String, String>,
                                      ignore: GitIgnore,
                                      trackedFiles: HashSet<String>,
                                      trackedDirs: HashSet<String>,
-                                     idx: GitIndex?) {
+                                     idx: GitIndex?,
+                                     idxMap: HashMap<String, IndexEntry>?,
+                                     includeUntracked: Bool,
+                                     collapseUntracked: Bool) {
             var dirPath: String
             if (relPrefix.length() == 0) {
                 dirPath = workTreePath
@@ -567,7 +662,20 @@ namespace Am.Git
                     }
                 }
                 if (isDir) {
-                    StatusReport.collectDiskPaths(workTreePath, relPath, out, ignore, trackedFiles, trackedDirs, idx)
+                    // A directory with no tracked files under it can
+                    // only ever contribute untracked paths — so when
+                    // untracked paths are dropped (diff) skip it
+                    // outright, and when they're collapsed (status CLI)
+                    // report it as ONE "dir/" entry without walking its
+                    // contents. Both match real git and avoid
+                    // descending big untracked trees.
+                    if (!trackedDirs.contains(relPath) && (!includeUntracked || collapseUntracked)) {
+                        if (includeUntracked && StatusReport.containsVisibleFile(workTreePath, relPath, ignore)) {
+                            out.set(relPath + "/", StatusReport.UNTRACKED_SHA)
+                        }
+                    } else {
+                        StatusReport.collectDiskPaths(workTreePath, relPath, out, ignore, trackedFiles, trackedDirs, idx, idxMap, includeUntracked, collapseUntracked)
+                    }
                 } else {
                     // Fast path: if the index has this file at stage 0 and
                     // its size + mtime match the working file, trust the
@@ -575,21 +683,89 @@ namespace Am.Git
                     // whole file (git's stat shortcut). Huge win on slow
                     // filesystems where hashing every file dominates.
                     var reused = false
-                    if (idx != null) {
-                        var entry = idx.findByPath(relPath)
-                        if (entry != null && StatusReport.statUnchanged(f, entry)) {
-                            out.set(relPath, entry.sha)
-                            reused = true
+                    var entry: IndexEntry? = null
+                    if (idxMap != null && idxMap.containsKey(relPath)) {
+                        entry = idxMap.get(relPath)
+                    }
+                    if (entry != null && StatusReport.statUnchanged(f, entry)) {
+                        out.set(relPath, entry.sha)
+                        reused = true
+                    }
+                    // Untracked file: never read + hashed — recorded
+                    // with the placeholder, or dropped entirely when
+                    // the caller doesn't want untracked paths (diff).
+                    if (!reused && entry == null && !trackedFiles.contains(relPath)) {
+                        if (includeUntracked) {
+                            out.set(relPath, StatusReport.UNTRACKED_SHA)
                         }
+                        reused = true
                     }
                     if (!reused) {
                         var bytes = StatusReport.readFileBytes(f.toString())
                         var sha = PackObject.computeSha("blob", bytes)
                         out.set(relPath, sha)
+                        // The slow path just PROVED what the file's content
+                        // is. If it matches the index entry, back-fill the
+                        // entry's stat cache so the next status can take the
+                        // fast path (a seeded index starts all-zero and would
+                        // otherwise re-hash the whole tree forever). Content
+                        // that DIFFERS is left alone — the entry keeps
+                        // describing the staged blob.
+                        if (entry != null && idx != null && entry.sha == sha) {
+                            entry.size = f.getSize().toUInt()
+                            var mtimeMs = f.getLastModified()
+                            var mtimeSec: UInt = 0UI
+                            if (mtimeMs > 0L) {
+                                mtimeSec = (mtimeMs / 1000L).toUInt()
+                            }
+                            entry.mtimeSeconds = mtimeSec
+                            entry.mtimeNanos = 0UI
+                            entry.ctimeSeconds = mtimeSec
+                            entry.ctimeNanos = 0UI
+                            idx.statsDirty = true
+                        }
                     }
                 }
                 i = i + 1
             }
+        }
+
+        // True iff the directory `relPrefix` contains at least one
+        // non-ignored file at any depth — i.e. whether an entirely-
+        // untracked directory deserves a "dir/" line at all (git shows
+        // nothing for a dir whose contents are all ignored, or empty).
+        // Early-exits on the first hit, so a big untracked tree costs
+        // one path, not a full walk.
+        private static fun containsVisibleFile(workTreePath: String,
+                                                relPrefix: String,
+                                                ignore: GitIgnore): Bool {
+            var dir = new File(workTreePath + "/" + relPrefix)
+            if (!dir.exists()) {
+                return false
+            }
+            var entries = dir.listFiles()
+            var i = 0
+            while (i < entries.length().toInt()) {
+                var f = entries[i.toUInt()]
+                var name = f.getName()
+                if (name == ".git") {
+                    i = i + 1
+                    continue
+                }
+                var relPath = relPrefix + "/" + name
+                var isDir = either(f.isDirectory(), false)
+                if (!ignore.isIgnored(relPath, isDir)) {
+                    if (isDir) {
+                        if (StatusReport.containsVisibleFile(workTreePath, relPath, ignore)) {
+                            return true
+                        }
+                    } else {
+                        return true
+                    }
+                }
+                i = i + 1
+            }
+            return false
         }
 
         // True when the working file's size and mtime (seconds) both match

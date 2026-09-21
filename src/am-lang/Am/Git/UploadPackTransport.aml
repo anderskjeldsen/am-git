@@ -177,7 +177,13 @@ namespace Am.Git
         static fun extractPackWithShallow(body: UByte[], shallowOut: List<String>): UByte[] {
             var reader = new PktLineReader(body)
             var sawAck = false
-            var collected = List<UByte>.newList<UByte>()
+            // Doubling UByte[] + bulk copyTo per side-band frame. This
+            // used to be a List<UByte> fed ONE BYTE AT A TIME - 18.5M
+            // refcounted, bounds-checked add() calls for an 18.5MB pack,
+            // the single hottest spot in the clone profile. Now each
+            // 64KB frame is one memmove (~285 copies per clone).
+            var buf = new UByte[65536UI]
+            var used = 0UI
 
             loop {
                 var frame = reader.next()
@@ -219,11 +225,10 @@ namespace Am.Git
                 }
                 var band = payload[0UI].toInt()
                 if (band == 1) {
-                    var k = 1
-                    while (k < payload.length().toInt()) {
-                        collected.add(payload[k.toUInt()])
-                        k++
-                    }
+                    var chunk = payload.length() - 1UI
+                    buf = UploadPackTransport.ensureRoom(buf, used, chunk)
+                    payload.copyTo(buf, used, 1UI, chunk)
+                    used = used + chunk
                 } else if (band == 2) {
                     var msg = String.fromBytes(UploadPackTransport.sliceBytes(payload, 1, payload.length().toInt() - 1), "UTF-8")
                     ("remote: " + msg.trim()).println()
@@ -233,14 +238,30 @@ namespace Am.Git
                 } else {
                     // Servers that don't agree to side-band-64k send raw
                     // pack bytes inside pkt-lines. Accept that too.
-                    var k = 0
-                    while (k < payload.length().toInt()) {
-                        collected.add(payload[k.toUInt()])
-                        k++
-                    }
+                    var chunk = payload.length()
+                    buf = UploadPackTransport.ensureRoom(buf, used, chunk)
+                    payload.copyTo(buf, used, 0UI, chunk)
+                    used = used + chunk
                 }
             }
-            return collected.toArray()
+            return buf.subArray(0UI, used)
+        }
+
+        // Grow `buf` (by doubling) until `used + extra` fits, bulk-moving
+        // the live prefix. Returns the buffer to use (the same one when
+        // no growth was needed).
+        private static fun ensureRoom(buf: UByte[], used: UInt, extra: UInt): UByte[] {
+            var need = used + extra
+            if (need <= buf.length()) {
+                return buf
+            }
+            var cap = buf.length()
+            while (cap < need) {
+                cap = cap * 2UI
+            }
+            var bigger = new UByte[cap]
+            buf.copyTo(bigger, 0UI, 0UI, used)
+            return bigger
         }
 
         private static fun appendBytes(list: List<UByte>, bytes: UByte[]) {

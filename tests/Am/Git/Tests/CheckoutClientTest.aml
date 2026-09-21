@@ -80,6 +80,36 @@ namespace Am.Git.Tests {
             CheckoutClientTest.cleanup()
         }
 
+        // The index a checkout seeds must carry real stat info (size +
+        // mtime) for the files it just wrote. Zeroed stats mean the
+        // statUnchanged fast path never fires and every later `status`
+        // re-hashes the whole tree — which is exactly what happened on
+        // am-git-cloned repos before 0.12.3.
+        test seedsStatCacheAfterCheckout() {
+            CheckoutClientTest.scaffold()
+            try {
+                CheckoutClient.checkout("./testco/.git", "./testco", "alt")
+
+                var idx = GitIndex.read("./testco/.git")
+                var a = idx.findByPath("a.txt")
+                if (a == null) {
+                    throw new Exception("a.txt not in seeded index")
+                }
+                var b = idx.findByPath("b.txt")
+                if (b == null) {
+                    throw new Exception("b.txt not in seeded index")
+                }
+                Assert.assertTrue(a.size == 4UI)     // "one\n"
+                Assert.assertTrue(b.size == 6UI)     // "extra\n"
+                Assert.assertTrue(a.mtimeSeconds > 0UI)
+                Assert.assertTrue(b.mtimeSeconds > 0UI)
+            } catch (ex: Exception) {
+                CheckoutClientTest.cleanup()
+                throw ex
+            }
+            CheckoutClientTest.cleanup()
+        }
+
         // ---- fixture ---------------------------------------------------
 
         // Build the two-branch repo described in the class comment, with

@@ -39,6 +39,13 @@ namespace Am.Git
 
         var entries: List<IndexEntry> = List<IndexEntry>.newList<IndexEntry>()
 
+        // Set by StatusReport's disk walk when it re-hashed a file,
+        // found it UNCHANGED (hash == entry sha), and back-filled the
+        // entry's stat-cache fields. The caller then writes the index
+        // once so the next status takes the stat fast path (git's
+        // opportunistic "index refresh"). Never set by content changes.
+        var statsDirty: Bool = false
+
         // Build a fresh index whose entries mirror every blob in a
         // commit's tree. This is what `git clone` and `git checkout`
         // do internally - they seed the index so it matches HEAD's
@@ -47,9 +54,12 @@ namespace Am.Git
         // this, our index/HEAD diff would treat every file as "staged
         // deleted" the first time the user runs `am-git add`.
         //
-        // mtime/ctime are left at 0. Real git would re-hash on first
-        // status to recover; ours doesn't care because we never trust
-        // the stat-cache.
+        // mtime/ctime are left at 0 here — the tree doesn't know disk
+        // stats. Callers that just materialised the tree on disk
+        // (clone / checkout / reset --hard) MUST follow up with
+        // refreshStatsFromDisk, or every later `status` re-hashes the
+        // whole tree (the statUnchanged fast path never fires on a
+        // zeroed entry).
         static fun fromTree(treeSha: String?, store: ObjectStore): GitIndex {
             var idx = new GitIndex()
             if (treeSha != null) {
@@ -381,6 +391,63 @@ namespace Am.Git
                 i = i + 1
             }
             return null
+        }
+
+        // Stage-0 entries as path -> IndexEntry, for callers that need
+        // per-file lookups in a loop (StatusReport's disk walk does one
+        // per file — findByPath there was O(files^2) on big trees).
+        // Conflict stages are excluded for the same reason as pathToSha.
+        // The map aliases the live entries: mutating an entry through it
+        // is visible in `entries` (that's what the status stat-refresh
+        // relies on), but adding/removing entries invalidates the map.
+        fun buildPathEntryMap(): HashMap<String, IndexEntry> {
+            var m = new HashMap<String, IndexEntry>()
+            var i = 0
+            while (i < this.entries.getSize()) {
+                var e = this.entries.get(i)
+                if (e.stage() == 0) {
+                    m.set(e.path, e)
+                }
+                i = i + 1
+            }
+            return m
+        }
+
+        // Back-fill the stat-cache fields (size + mtime, ctime mirrored)
+        // of every stage-0 entry from the file on disk. ONLY valid when
+        // the working tree is known to match the entries' blob SHAs —
+        // i.e. right after clone / checkout / reset --hard wrote the
+        // files from those very blobs. Without this, a seeded index has
+        // all-zero stat fields, the statUnchanged fast path never fires,
+        // and every later `status` re-hashes the entire tree.
+        //
+        // A file that can't be stat'd (deleted mid-call, protected) is
+        // simply left zeroed — status then re-hashes just that one.
+        fun refreshStatsFromDisk(workTreePath: String) {
+            var i = 0
+            while (i < this.entries.getSize()) {
+                var e = this.entries.get(i)
+                if (e.stage() == 0) {
+                    try {
+                        var f = new File(workTreePath + "/" + e.path)
+                        if (f.exists()) {
+                            e.size = f.getSize().toUInt()
+                            var mtimeMs = f.getLastModified()
+                            var mtimeSec: UInt = 0UI
+                            if (mtimeMs > 0L) {
+                                mtimeSec = (mtimeMs / 1000L).toUInt()
+                            }
+                            e.mtimeSeconds = mtimeSec
+                            e.mtimeNanos = 0UI
+                            e.ctimeSeconds = mtimeSec
+                            e.ctimeNanos = 0UI
+                        }
+                    } catch (ex: Exception) {
+                        // leave this entry's stats zeroed
+                    }
+                }
+                i = i + 1
+            }
         }
 
         // Flatten the resolved (stage-0) entries to a path -> sha map.

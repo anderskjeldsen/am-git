@@ -16,8 +16,6 @@ namespace Am.Git
     //   6. Repoint `HEAD` at `refs/heads/<branch>`.
     //
     // What it doesn't do yet:
-    //   * Detect "dirty" working-tree files and refuse to overwrite -
-    //     we always clobber. Run `am-git status` first if you care.
     //   * Checkout by raw commit SHA (detached HEAD) - branch only.
     //   * Restore executable mode / symlinks (same gap as `clone`).
     class CheckoutClient
@@ -146,8 +144,13 @@ namespace Am.Git
 
             // Refresh the index so it mirrors the new tree. Without
             // this, `am-git status` would report every file as
-            // "staged" after the call.
-            GitIndex.fromTreeMap(rootTreeSha, objects).write(gitDir)
+            // "staged" after the call. We just wrote the working tree
+            // from these very blobs, so back-filling stat info from
+            // disk is safe — and without it every later `status` would
+            // re-hash the whole tree (zeroed stats never match).
+            var seeded = GitIndex.fromTreeMap(rootTreeSha, objects)
+            seeded.refreshStatsFromDisk(workTreePath)
+            seeded.write(gitDir)
         }
 
         // Walk the new commit's tree and record every blob's path

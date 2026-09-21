@@ -3,6 +3,22 @@
 Development helpers for am-git. Not built into the binary; not shipped
 as part of a release. Run them straight from your checkout.
 
+## `ghcli/`
+
+A small `gh` (GitHub CLI) work-alike in AmLang, for the hosts upstream
+`gh` never reached. One request in, JSON out:
+
+```sh
+cd tools/ghcli && make
+./builds/bin/macos-arm/app auth login --with-token ghp_xxx
+./builds/bin/macos-arm/app api repos/anderskjeldsen/am-git
+```
+
+HTTPS via am-web-client on am-ssl (AmiSSL on the Amiga targets); the
+login is saved next to the executable (`PROGDIR:ghcli.json`). Its own
+package with its own Makefile — `make build-amigaos` / `make
+build-morphos` cross-build it. See `ghcli/README.md`.
+
 ## `git-http-server.py`
 
 Tiny smart-HTTP git server. Wraps the real `git http-backend` CGI in

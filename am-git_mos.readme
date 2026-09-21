@@ -2,7 +2,7 @@ Short:        Native git client for MorphOS (clone/commit/pull/push)
 Author:       Anders Kjeldsen <kjeldsenanders@gmail.com>
 Uploader:     Anders Kjeldsen <kjeldsenanders@gmail.com>
 Type:         dev/misc
-Version:      0.12.2
+Version:      0.12.3
 Requires:     MorphOS 3.x
 Architecture: ppc-morphos
 Distribution: Aminet
@@ -28,9 +28,26 @@ single-login fallback.
 
 Set stack to at least 100000 before running.
 
-This is the first MorphOS release of am-git. It matches the
-m68k AmigaOS release (am-git.lha) feature-for-feature, except
-for the ssh transport noted above.
+This MorphOS build matches the m68k AmigaOS release
+(am-git.lha) feature-for-feature, except for the ssh
+transport noted above.
+
+Changes in 0.12.3 (speed):
+ - status is MUCH faster on big repositories. The file
+   info recorded at clone/checkout time is now used (and
+   kept up to date), so unchanged files are no longer
+   re-hashed on every run; .gitignore handling no longer
+   scans ignored directories; and untracked directories
+   are shown collapsed as "dir/" exactly like real git.
+ - clone is several times faster and uses far less
+   memory churn: pack download, delta reconstruction and
+   object hashing now move data in whole blocks instead
+   of one byte at a time.
+ - diff is faster and no longer lists untracked files
+   (matching real git).
+ - Fixed a latent bug in the TLS read/write path (a
+   buffer offset was ignored - harmless today, wrong
+   tomorrow).
 
 Changes in 0.12.2 (large-repo clones and stability):
  - checkout is now safe like real git: it refuses to

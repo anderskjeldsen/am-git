@@ -118,6 +118,11 @@ namespace Am.Git
             var gitDir = targetDir + "/.git"
             var rootTreeSha = WorkTree.extractRootTreeSha(lazyPack.read(headSha).content)
             var seededIdx = GitIndex.fromTreePack(rootTreeSha, lazyPack)
+            // The checkout above wrote every file from these very
+            // blobs, so stat info from disk is trustworthy. Without it
+            // the seeded entries are all-zero and every later `status`
+            // re-hashes the entire clone.
+            seededIdx.refreshStatsFromDisk(targetDir)
             ("Seeded index with " + seededIdx.entries.getSize().toString() + " entries").println()
             seededIdx.write(gitDir)
             // Verify the file landed: round-trip through read() so we

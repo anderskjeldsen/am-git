@@ -117,11 +117,21 @@ namespace Am.Git
             var trackedFiles = new HashSet<String>()
             var trackedDirs = new HashSet<String>()
             var indexFile = new File(gitDir + "/index")
+            var idx: GitIndex? = null
+            var idxMap: HashMap<String, IndexEntry>? = null
             if (indexFile.exists()) {
-                StatusReport.addTracked(GitIndex.read(gitDir).pathToSha(), trackedFiles, trackedDirs)
+                idx = GitIndex.read(gitDir)
+                StatusReport.addTracked(idx.pathToSha(), trackedFiles, trackedDirs)
+                // Same stat fast path status uses — without it every
+                // diff re-hashed the whole tree.
+                idxMap = idx.buildPathEntryMap()
             }
             var out = new HashMap<String, String>()
-            StatusReport.collectDiskPaths(resolved, "", out, ignore, trackedFiles, trackedDirs, null)
+            StatusReport.collectDiskPaths(resolved, "", out, ignore, trackedFiles, trackedDirs, idx, idxMap, false, false)
+            // Persist any stat back-fill (see StatusReport.run).
+            if (idx != null && idx.statsDirty) {
+                idx.write(gitDir)
+            }
             return out
         }
 

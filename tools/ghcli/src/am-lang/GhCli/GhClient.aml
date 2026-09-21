@@ -1,0 +1,64 @@
+namespace GhCli
+{
+    // One GitHub REST request. Everything goes over HTTPS via
+    // am-web-client's WebClient, which wraps the socket in am-ssl's
+    // SslSocketStream - there is no plaintext path to the API here.
+    class GhClient
+    {
+        import Am.Lang
+        import Am.Collections
+        import Am.Web.Client
+
+        // gh's endpoint convention: a bare path like "user" or
+        // "repos/owner/name" is resolved against the configured API
+        // host; a full URL is used as-is (GitHub Enterprise, or the
+        // `url` fields that come back inside API responses).
+        static fun resolveUrl(endpoint: String): String {
+            if (endpoint.startsWith("http://") || endpoint.startsWith("https://")) {
+                return endpoint
+            }
+            var path = endpoint
+            while (path.startsWith("/")) {
+                path = path.substringToEnd(1UI)
+            }
+            GhConfig.load()
+            return "https://" + GhConfig.host + "/" + path
+        }
+
+        // Send it. `body` is UTF-8 JSON (or "" for no body); extra
+        // headers from -H are merged last so the caller can override
+        // anything set here, Accept included.
+        static fun send(method: String, endpoint: String, body: String,
+                        extraHeaders: HashMap<String, String>): HttpResponse {
+            var headers = new HashMap<String, String>()
+            headers.set("Accept", "application/vnd.github+json")
+            headers.set("X-GitHub-Api-Version", "2022-11-28")
+            var token = GhConfig.activeToken()
+            if (token.length() > 0) {
+                headers.set("Authorization", "Bearer " + token)
+            }
+            if (body.length() > 0) {
+                headers.set("Content-Type", "application/json")
+            }
+            var extraKeys = extraHeaders.buildKeys()
+            var i = 0
+            while (i < extraKeys.getSize()) {
+                var k = extraKeys.get(i)
+                headers.set(k, extraHeaders.get(k))
+                i = i + 1
+            }
+
+            var client = new WebClient()
+            // A hung API call should fail, not wedge the shell - the
+            // Amiga side especially has no way to Ctrl-C out of a
+            // blocked socket read.
+            client.timeoutSeconds = 30
+            WebClient.userAgent = "ghcli/0.1 (AmLang)"
+            var url = GhClient.resolveUrl(endpoint)
+            if (body.length() > 0) {
+                return client.requestBytes(method, url, body.toBytes("UTF-8"), headers)
+            }
+            return client.requestBytes(method, url, new UByte[0UI], headers)
+        }
+    }
+}

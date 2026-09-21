@@ -108,7 +108,21 @@ namespace Am.Git
                     } else {
                         sub = relPrefix + "/" + name
                     }
-                    this.loadGitIgnoreUnder(f.toString(), sub)
+                    // Don't descend into ignored directories. Rules are
+                    // loaded top-down (a directory's own .gitignore before
+                    // its children are scanned), so every rule that could
+                    // ignore `sub` is already in `this.rules` here. Real
+                    // git never reads a .gitignore inside an ignored dir
+                    // either — gitignore(5): a file can't be re-included
+                    // when a parent directory is excluded, so nothing in
+                    // there could change any answer. Skipping it is what
+                    // keeps status fast on repos with a large ignored
+                    // builds/ tree: previously discovery recursed through
+                    // every build artefact just to look for .gitignore
+                    // files.
+                    if (!this.isIgnored(sub, true)) {
+                        this.loadGitIgnoreUnder(f.toString(), sub)
+                    }
                 }
                 i = i + 1
             }
@@ -173,10 +187,17 @@ namespace Am.Git
         // rules are directory-only.
         fun isIgnored(relPath: String, isDir: Bool): Bool {
             var ignored = false
+            // Split the path ONCE for all rules. ruleMatches used to
+            // splitOn per rule — with ~10 rules and a walk visiting
+            // tens of thousands of entries, those allocations were a
+            // measurable chunk of `status` wall time. Rules scoped to
+            // a subdir .gitignore (rare) still re-split their stripped
+            // localPath inside ruleMatches.
+            var fullParts = GitIgnore.splitOn(relPath, "/")
             var i = 0
             while (i < this.rules.getSize()) {
                 var rule = this.rules.get(i)
-                if (GitIgnore.ruleMatches(rule, relPath, isDir)) {
+                if (GitIgnore.ruleMatches(rule, relPath, fullParts, isDir)) {
                     var neg = rule.negate
                     if (neg) {
                         ignored = false
@@ -206,18 +227,22 @@ namespace Am.Git
         //     ignored directories during the worktree walk; we get
         //     it here so callers that test paths independently get
         //     the right answer.
-        private static fun ruleMatches(rule: GitIgnoreRule, relPath: String, isDir: Bool): Bool {
-            // Scope the rule to its base directory.
+        private static fun ruleMatches(rule: GitIgnoreRule, relPath: String, fullParts: List<String>, isDir: Bool): Bool {
+            // Scope the rule to its base directory. `fullParts` is
+            // splitOn(relPath, "/") computed once by isIgnored; only a
+            // subdir-scoped rule needs a fresh split of its stripped
+            // localPath.
             var localPath = relPath
+            var parts = fullParts
             if (rule.basePath.length() > 0) {
                 var prefix = rule.basePath + "/"
                 if (!GitIgnore.startsWith(localPath, prefix)) {
                     return false
                 }
                 localPath = localPath.substringToEnd(prefix.length().toUInt())
+                parts = GitIgnore.splitOn(localPath, "/")
             }
 
-            var parts = GitIgnore.splitOn(localPath, "/")
             var n = parts.getSize()
 
             if (rule.anchored) {

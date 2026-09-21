@@ -201,6 +201,34 @@ namespace Am.Git.Tests {
             GitIgnoreTest.cleanup()
         }
 
+        // A .gitignore INSIDE an ignored directory must not be loaded.
+        // Matches real git (gitignore(5): a file can't be re-included
+        // when a parent directory is excluded, so nothing in there can
+        // change any answer) — and skipping the descent is what keeps
+        // status fast on repos with a huge ignored builds/ tree, where
+        // discovery used to recurse through every build artefact just
+        // to look for .gitignore files.
+        test gitignoreInsideIgnoredDirNotLoaded() {
+            GitIgnoreTest.cleanup()
+            try {
+                Repository.ensureDir("./testignore/build/deep")
+                "build/\n".writeToFile("./testignore/.gitignore")
+                // If this file WERE loaded, its negation would
+                // un-ignore build/keep.txt (the old behaviour).
+                "!keep.txt\n".writeToFile("./testignore/build/.gitignore")
+
+                var ig = GitIgnore.load("./testignore", "./testignore/.git")
+
+                Assert.assertTrue(ig.isIgnored("build", true))
+                Assert.assertTrue(ig.isIgnored("build/keep.txt", false))
+                Assert.assertTrue(ig.isIgnored("build/deep/x.o", false))
+            } catch (ex: Exception) {
+                GitIgnoreTest.cleanup()
+                throw ex
+            }
+            GitIgnoreTest.cleanup()
+        }
+
         // ---- helpers --------------------------------------------------
 
         // Parse a single in-memory .gitignore body into a GitIgnore.

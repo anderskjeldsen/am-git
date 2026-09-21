@@ -8,3 +8,6 @@ examples/**/builds/*
 examples/**/dependencies/*
 src/native-c/aros-x86-64/*
 src/native-c/linux-arm64v8/*
+tools/**/builds/*
+tools/**/dependencies/*
+tools/**/test-builds/*

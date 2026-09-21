@@ -185,21 +185,19 @@ namespace Am.Git
                         // 3 size bytes can encode.
                         copySize = 65536
                     }
-                    var k = 0
-                    while (k < copySize) {
-                        out[(outPos + k).toUInt()] = baseBytes[(copyOffset + k).toUInt()]
-                        k = k + 1
-                    }
+                    // Bulk copy - COPY ops move whole ranges of the base
+                    // (up to 64KB each); the old per-byte loop here was
+                    // what remained of clone's CPU profile after the
+                    // extraction and SHA paths went bulk. copyTo also
+                    // bounds-checks the range, so a corrupt delta whose
+                    // copy op reaches outside the base still throws.
+                    baseBytes.copyTo(out, outPos.toUInt(), copyOffset.toUInt(), copySize.toUInt())
                     outPos = outPos + copySize
                 } else {
                     // INSERT - `op` bytes of literal data follow.
                     // (op == 0 is reserved and shouldn't appear.)
                     var n = op & 0x7F
-                    var k = 0
-                    while (k < n) {
-                        out[(outPos + k).toUInt()] = delta[(pos + k).toUInt()]
-                        k = k + 1
-                    }
+                    delta.copyTo(out, outPos.toUInt(), pos.toUInt(), n.toUInt())
                     pos = pos + n
                     outPos = outPos + n
                 }

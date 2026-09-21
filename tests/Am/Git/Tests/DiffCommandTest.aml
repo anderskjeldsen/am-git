@@ -116,5 +116,31 @@ namespace Am.Git.Tests {
             var snap = DiffCommand.snapshotCommit(null, store)
             Assert.assertEquals(0, snap.getSize())
         }
+
+        // Real git's diff only covers tracked files — an untracked file
+        // must not appear in the worktree snapshot (it used to show up
+        // as a bogus "A" entry in `am-git diff`, and got fully hashed
+        // for nothing on the way).
+        test snapshotWorkTreeExcludesUntracked() {
+            CheckoutClientTest.deleteRecursive("./testdiffwt")
+            try {
+                Repository.init("./testdiffwt", "main", false)
+                var gitDir = "./testdiffwt/.git"
+                "hello\n".writeToFile("./testdiffwt/a.txt")
+                "mine\n".writeToFile("./testdiffwt/u.txt")
+                // Track only a.txt.
+                var paths = List<String>.newList<String>()
+                paths.add("a.txt")
+                AddCommand.run(gitDir, "./testdiffwt", paths)
+
+                var snap = DiffCommand.snapshotWorkTree("./testdiffwt", gitDir)
+                Assert.assertTrue(snap.containsKey("a.txt"))
+                Assert.assertFalse(snap.containsKey("u.txt"))
+            } catch (ex: Exception) {
+                CheckoutClientTest.deleteRecursive("./testdiffwt")
+                throw ex
+            }
+            CheckoutClientTest.deleteRecursive("./testdiffwt")
+        }
     }
 }

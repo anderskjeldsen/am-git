@@ -1,0 +1,160 @@
+namespace Am.Git.Tests {
+
+    // StatusReport's opportunistic index refresh (git's own trick):
+    // when the disk walk has to re-hash a file (stat cache empty or
+    // stale) and the hash MATCHES the index entry, the entry's stat
+    // fields are back-filled and the index written once — so the next
+    // status takes the stat fast path. A file whose content differs
+    // must be reported modified and left untouched in the index.
+    //
+    // Fixture: one commit { a.txt "two\n" }, worktree in sync, index
+    // seeded via GitIndex.fromTree — which leaves stats all-zero, the
+    // exact state an old am-git clone/checkout produced.
+    class StatusReportTest {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+        import Am.Git
+        import Am.Tests
+
+        test statusBackfillsStatCacheWhenClean() {
+            StatusReportTest.scaffold()
+            try {
+                // Precondition: the seeded index really has zero stats.
+                var before = GitIndex.read("./testsr/.git").findByPath("a.txt")
+                if (before == null) {
+                    throw new Exception("a.txt not in seeded index")
+                }
+                Assert.assertTrue(before.size == 0UI)
+                Assert.assertTrue(before.mtimeSeconds == 0UI)
+
+                var st = StatusReport.pathStatus("./testsr/.git", "./testsr")
+                Assert.assertEquals(0, st.buildKeys().getSize())  // clean
+
+                // The walk re-hashed a.txt, matched the index SHA, and
+                // persisted the refreshed stat cache.
+                var after = GitIndex.read("./testsr/.git").findByPath("a.txt")
+                if (after == null) {
+                    throw new Exception("a.txt missing after status")
+                }
+                Assert.assertTrue(after.size == 4UI)  // "two\n"
+                Assert.assertTrue(after.mtimeSeconds > 0UI)
+            } catch (ex: Exception) {
+                StatusReportTest.cleanup()
+                throw ex
+            }
+            StatusReportTest.cleanup()
+        }
+
+        test statusLeavesModifiedEntryStatsAlone() {
+            StatusReportTest.scaffold()
+            try {
+                "changed!\n".writeToFile("./testsr/a.txt")
+
+                var st = StatusReport.pathStatus("./testsr/.git", "./testsr")
+                Assert.assertEquals("M", st.get("a.txt"))
+
+                // Content differed, so the entry still describes the
+                // staged blob with zeroed stats — the next status will
+                // (correctly) re-hash it.
+                var e = GitIndex.read("./testsr/.git").findByPath("a.txt")
+                if (e == null) {
+                    throw new Exception("a.txt missing after status")
+                }
+                Assert.assertTrue(e.size == 0UI)
+            } catch (ex: Exception) {
+                StatusReportTest.cleanup()
+                throw ex
+            }
+            StatusReportTest.cleanup()
+        }
+
+        // Second status after the refresh must still report clean —
+        // i.e. the fast path returns the same answer the hash did.
+        test statusStableAfterRefresh() {
+            StatusReportTest.scaffold()
+            try {
+                var st1 = StatusReport.pathStatus("./testsr/.git", "./testsr")
+                Assert.assertEquals(0, st1.buildKeys().getSize())
+                var st2 = StatusReport.pathStatus("./testsr/.git", "./testsr")
+                Assert.assertEquals(0, st2.buildKeys().getSize())
+            } catch (ex: Exception) {
+                StatusReportTest.cleanup()
+                throw ex
+            }
+            StatusReportTest.cleanup()
+        }
+
+        // The status CLI walk (collapseUntracked=true) must report an
+        // entirely-untracked directory as ONE "dir/" entry without
+        // walking its contents — real git's collapsing — while a dir
+        // whose contents are all ignored gets no entry at all, and
+        // tracked files keep per-file entries. pathStatus keeps the
+        // per-file behaviour (collapse=false) — the checkout guard and
+        // the am-ide tree depend on it.
+        test untrackedDirsCollapseInStatusWalk() {
+            StatusReportTest.scaffold()
+            try {
+                Repository.ensureDir("./testsr/newdir/sub")
+                "x\n".writeToFile("./testsr/newdir/sub/f.txt")
+                Repository.ensureDir("./testsr/logsonly")
+                "l\n".writeToFile("./testsr/logsonly/x.log")
+                "*.log\n".writeToFile("./testsr/.gitignore")
+
+                var gitDir = "./testsr/.git"
+                var trackedFiles = new HashSet<String>()
+                var trackedDirs = new HashSet<String>()
+                StatusReport.addTracked(GitIndex.read(gitDir).pathToSha(), trackedFiles, trackedDirs)
+                var ignore = GitIgnore.load("./testsr", gitDir)
+
+                var out = new HashMap<String, String>()
+                StatusReport.collectDiskPaths("./testsr", "", out, ignore, trackedFiles, trackedDirs, null, null, true, true)
+                Assert.assertTrue(out.containsKey("newdir/"))
+                Assert.assertFalse(out.containsKey("newdir/sub/f.txt"))
+                // Only ignored content inside -> not shown at all.
+                Assert.assertFalse(out.containsKey("logsonly/"))
+                // Tracked file still reported per-file.
+                Assert.assertTrue(out.containsKey("a.txt"))
+
+                // pathStatus (collapse=false) keeps per-file untracked.
+                var st = StatusReport.pathStatus(gitDir, "./testsr")
+                Assert.assertEquals("?", st.get("newdir/sub/f.txt"))
+            } catch (ex: Exception) {
+                StatusReportTest.cleanup()
+                throw ex
+            }
+            StatusReportTest.cleanup()
+        }
+
+        // ---- fixture ---------------------------------------------------
+
+        // Reuses CheckoutClientTest's raw-object helpers so the two
+        // fixtures can't drift apart.
+        static fun scaffold() {
+            StatusReportTest.cleanup()
+            Repository.init("./testsr", "main", false)
+            var gitDir = "./testsr/.git"
+            var writer = new LooseObjectWriter(gitDir)
+
+            var blob = writer.write("blob", "two\n".toBytes("UTF-8"))
+            var t = List<UByte>.newList<UByte>()
+            CheckoutClientTest.treeEntry(t, "100644", "a.txt", blob)
+            var tree = writer.write("tree", t.toArray())
+            var c1 = CheckoutClientTest.commitObj(writer, tree, null, "c1")
+
+            (c1 + "\n").writeToFile(gitDir + "/refs/heads/main")
+            "ref: refs/heads/main\n".writeToFile(gitDir + "/HEAD")
+
+            "two\n".writeToFile("./testsr/a.txt")
+            // fromTree leaves stat fields zeroed — deliberately NOT
+            // calling refreshStatsFromDisk here; that zero state is
+            // what these tests exercise.
+            var store = new ObjectStore(gitDir)
+            GitIndex.fromTree(tree, store).write(gitDir)
+        }
+
+        private static fun cleanup() {
+            CheckoutClientTest.deleteRecursive("./testsr")
+        }
+    }
+}

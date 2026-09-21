@@ -2,7 +2,7 @@ Short:        Native git client for AmigaOS (clone/commit/push/pull)
 Author:       Anders Kjeldsen <kjeldsenanders@gmail.com>
 Uploader:     Anders Kjeldsen <kjeldsenanders@gmail.com>
 Type:         dev/misc
-Version:      0.12.2
+Version:      0.12.3
 Requires:     AmiSSL 5.27 (https remotes); bebbossh (optional, ssh remotes)
 Architecture: m68k-amigaos
 Distribution: Aminet
@@ -31,6 +31,23 @@ On first connect am-git forwards bebbossh's trust-this-host
 question to your shell; answer yes once per host.
 
 Set stack to at least 100000 before running.
+
+Changes in 0.12.3 (speed):
+ - status is MUCH faster on big repositories. The file
+   info recorded at clone/checkout time is now used (and
+   kept up to date), so unchanged files are no longer
+   re-hashed on every run; .gitignore handling no longer
+   scans ignored directories; and untracked directories
+   are shown collapsed as "dir/" exactly like real git.
+ - clone is several times faster and uses far less
+   memory churn: pack download, delta reconstruction and
+   object hashing now move data in whole blocks instead
+   of one byte at a time.
+ - diff is faster and no longer lists untracked files
+   (matching real git).
+ - Fixed a latent bug in the TLS read/write path (a
+   buffer offset was ignored - harmless today, wrong
+   tomorrow).
 
 Changes in 0.12.2 (large-repo clones and stability):
  - checkout is now safe like real git: it refuses to

@@ -1,0 +1,146 @@
+namespace GhCli
+{
+    // The saved login. One small JSON file that lives NEXT TO THE
+    // EXECUTABLE, so a ghcli drawer you copy to another machine (or
+    // another Amiga) carries its own credential with it:
+    //
+    //     { "host": "api.github.com", "token": "ghp_...", "login": "..." }
+    //
+    // Where that file is, in order:
+    //   1. the GHCLI_CONFIG env var - its VALUE is the full path;
+    //   2. PROGDIR:ghcli.json on AmigaOS / MorphOS / AROS, where
+    //      PROGDIR: resolves to the running executable's own drawer -
+    //      exactly the "alongside the app" case;
+    //   3. ghcli.json in the current directory on POSIX hosts, where
+    //      the exe dir isn't knowable at runtime (amlang args skip
+    //      argv[0]). Set GHCLI_CONFIG if you run it from elsewhere.
+    //
+    // The token itself can always be overridden without touching the
+    // file, via GH_TOKEN / GITHUB_TOKEN - same names the real gh uses.
+    class GhConfig
+    {
+        import Am.Lang
+        import Am.IO
+        import Am.Json
+        import Am.Util.Parsers.Text
+
+        static var host: String = "api.github.com"
+        static var token: String = ""
+        static var login: String = ""
+        static var loaded: Bool = false
+
+        // Set by the global `--token` flag. Beats both the environment
+        // and the saved file, and is never written back - a caller that
+        // owns its own credential store (the Tucan Studio extension)
+        // passes it per call and ghcli stays stateless.
+        static var tokenOverride: String = ""
+
+        // Absolute-ish path of the config file for this host.
+        static fun path(): String {
+            var envPath = Environment.getOrDefault("GHCLI_CONFIG", "")
+            if (envPath.length() > 0) {
+                return envPath
+            }
+            var plat = Runtime.getPlatform()
+            if (plat == "amigaos" || plat == "morphos-ppc" || plat.startsWith("aros")) {
+                return "PROGDIR:ghcli.json"
+            }
+            return "ghcli.json"
+        }
+
+        // Read the file if it's there. Missing or unparsable file just
+        // leaves the defaults in place - `auth status` reports that.
+        static fun load() {
+            if (GhConfig.loaded) {
+                return
+            }
+            GhConfig.loaded = true
+            var p = GhConfig.path()
+            var f = new File(p)
+            if (!f.exists()) {
+                return
+            }
+            try {
+                var content = String.readFromFile(p)
+                var textParser = new TextParser(content)
+                var jsonParser = new JsonParser(textParser)
+                var obj = jsonParser.parse().asObject()
+                if (obj.has("host")) {
+                    GhConfig.host = obj.getString("host")
+                }
+                if (obj.has("token")) {
+                    GhConfig.token = obj.getString("token")
+                }
+                if (obj.has("login")) {
+                    GhConfig.login = obj.getString("login")
+                }
+            } catch (ex: Exception) {
+                // A corrupt config is not worth dying over; behave as
+                // if there were none and let `auth login` rewrite it.
+            }
+        }
+
+        // Effective token: environment first, then the saved file.
+        static fun activeToken(): String {
+            if (GhConfig.tokenOverride.length() > 0) {
+                return GhConfig.tokenOverride
+            }
+            var env = Environment.getOrDefault("GH_TOKEN", "")
+            if (env.length() > 0) {
+                return env
+            }
+            env = Environment.getOrDefault("GITHUB_TOKEN", "")
+            if (env.length() > 0) {
+                return env
+            }
+            GhConfig.load()
+            return GhConfig.token
+        }
+
+        // Where the effective token came from, for `auth status`.
+        static fun tokenSource(): String {
+            if (GhConfig.tokenOverride.length() > 0) {
+                return "--token"
+            }
+            if (Environment.getOrDefault("GH_TOKEN", "").length() > 0) {
+                return "GH_TOKEN"
+            }
+            if (Environment.getOrDefault("GITHUB_TOKEN", "").length() > 0) {
+                return "GITHUB_TOKEN"
+            }
+            GhConfig.load()
+            if (GhConfig.token.length() > 0) {
+                return GhConfig.path()
+            }
+            return ""
+        }
+
+        // Persist host/token/login. Returns the path written.
+        static fun save(newHost: String, newToken: String, newLogin: String): String {
+            GhConfig.load()
+            GhConfig.host = newHost
+            GhConfig.token = newToken
+            GhConfig.login = newLogin
+            var obj = new JsonObject()
+            obj.putString("host", newHost)
+            obj.putString("token", newToken)
+            obj.putString("login", newLogin)
+            var p = GhConfig.path()
+            obj.toJsonString().writeToFile(p)
+            return p
+        }
+
+        // Forget the saved credential. True if a file was there.
+        static fun clear(): Bool {
+            var p = GhConfig.path()
+            var f = new File(p)
+            if (!f.exists()) {
+                return false
+            }
+            var removed = f.delete()
+            GhConfig.token = ""
+            GhConfig.login = ""
+            return removed
+        }
+    }
+}

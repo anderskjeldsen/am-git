@@ -1,5 +1,5 @@
 id: am-git
-version: 0.12.2
+version: 0.12.3
 type: application
 dependencies:
   - id: am-lang-core
@@ -119,6 +119,8 @@ platforms:
 buildTargets:
   - id: amigaos_docker
     platform: amigaos
+    # Class-level dead-code elimination (amlc TreeShaker).
+    treeShake: true
     dockerBuild:
       image: amiga-gcc
       buildPath: /host
