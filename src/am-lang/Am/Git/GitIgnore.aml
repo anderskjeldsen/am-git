@@ -24,6 +24,16 @@ namespace Am.Git
     )
     {
         import Am.Lang
+
+        /** Matched by the glob matcher (has `*`/`?` in a shape the cheap kinds don't cover). */
+        static const KindGlob: Int = 0
+        /** No wildcard at all: a string compare. */
+        static const KindLiteral: Int = 1
+        /** A single leading `*` and then literal text (`*.o`): an endsWith on `suffix`. */
+        static const KindSuffix: Int = 2
+
+        var kind: Int = 0
+        var suffix: String = ""
     }
 
     // `.gitignore` parser + matcher.
@@ -218,15 +228,84 @@ namespace Am.Git
                 }
             }
 
+            // `**/name` is "name in any directory" - exactly an unanchored
+            // pattern, which the matcher tests against the basename with
+            // no wildcard search at all.
+            if (anchored && work.startsWith("**/")) {
+                var rest = work.substringToEnd(3UI)
+                if (rest.length() > 0 && !GitIgnore.contains(rest, "/")) {
+                    work = rest
+                    anchored = false
+                }
+            }
+
             if (work.length() == 0) {
                 return null
             }
-            return new GitIgnoreRule(work, negate, dirOnly, anchored, basePath)
+            var rule = new GitIgnoreRule(work, negate, dirOnly, anchored, basePath)
+            // Classify so the common shapes match by string compare:
+            //   literal - no wildcard ("builds", "extensions/am-git/am-git")
+            //   suffix  - one leading `*` then literal ("*.o", "*.pyc")
+            // Everything else goes through the glob matcher.
+            if (!GitIgnore.hasWildcard(work)) {
+                rule.kind = GitIgnoreRule.KindLiteral
+            } else if (work.characterAt(0UI).toInt() == 42 && work.length() > 1) {
+                var tail = work.substringToEnd(1UI)
+                if (!GitIgnore.hasWildcard(tail) && !GitIgnore.contains(tail, "/")) {
+                    rule.kind = GitIgnoreRule.KindSuffix
+                    rule.suffix = tail
+                }
+            }
+            return rule
         }
 
         // True iff `relPath` (slash-separated, relative to the
         // worktree root) is ignored. `isDir` is needed because some
         // rules are directory-only.
+        /**
+         * The walk's ignore test for ONE directory entry, given that its parent directory is not
+         * ignored (an ignored parent makes everything below it ignored - gitignore(5) allows no
+         * re-inclusion under an excluded directory - and the walk carries that state itself, so
+         * only the entry is matched here: unanchored rules against its name, anchored rules
+         * against its path). Same answers as isIgnored() for a walk that prunes as it goes, at a
+         * fraction of the work: no path split and no per-segment matching.
+         * @param relPath Path relative to the work tree
+         * @param name The entry's own name (the last segment of relPath)
+         * @param isDir Whether the entry is a directory
+         * @return Whether the entry is ignored
+         */
+        fun isEntryIgnored(relPath: String, name: String, isDir: Bool): Bool {
+            var ignored = false
+            var n = this.rules.getSize()
+            var i = 0
+            while (i < n) {
+                var rule = this.rules.get(i)
+                var subject = name
+                if (rule.anchored) {
+                    subject = relPath
+                }
+                var applies = true
+                if (rule.basePath.length() > 0) {
+                    // Scoped to a subdirectory's .gitignore: the entry
+                    // must be below it, and anchored patterns see the
+                    // path relative to that directory.
+                    var prefix = rule.basePath + "/"
+                    if (GitIgnore.startsWith(relPath, prefix)) {
+                        if (rule.anchored) {
+                            subject = relPath.substringToEnd(prefix.length().toUInt())
+                        }
+                    } else {
+                        applies = false
+                    }
+                }
+                if (applies && (isDir || !rule.dirOnly) && GitIgnore.patternMatches(rule, subject)) {
+                    ignored = !rule.negate
+                }
+                i = i + 1
+            }
+            return ignored
+        }
+
         fun isIgnored(relPath: String, isDir: Bool): Bool {
             var ignored = false
             if (this.rules.getSize() == 0) {
@@ -294,7 +373,7 @@ namespace Am.Git
                 // Anchored: pattern must match the FULL localPath
                 // (leaf), or a slash-separated prefix of it (a
                 // directory in the path). Either case fires the rule.
-                if (GitIgnore.globMatch(rule.pattern, localPath)) {
+                if (GitIgnore.patternMatches(rule, localPath)) {
                     // Full-path match - dir-only restricts to isDir.
                     if (!rule.dirOnly) {
                         return true
@@ -314,7 +393,7 @@ namespace Am.Git
                         rebuilt = rebuilt + "/"
                     }
                     rebuilt = rebuilt + parts.get(i)
-                    if (GitIgnore.globMatch(rule.pattern, rebuilt)) {
+                    if (GitIgnore.patternMatches(rule, rebuilt)) {
                         return true
                     }
                     i = i + 1
@@ -328,7 +407,7 @@ namespace Am.Git
             // respects dir-only.
             var j = 0
             while (j < n) {
-                if (GitIgnore.globMatch(rule.pattern, parts.get(j))) {
+                if (GitIgnore.patternMatches(rule, parts.get(j))) {
                     if (j < n - 1) {
                         return true
                     }
@@ -350,6 +429,31 @@ namespace Am.Git
         // - fine for the short patterns .gitignore lines actually
         // contain. Returns true iff the entire `s` matches the
         // entire `pattern`.
+        // Full match of `s` against the rule, by the cheapest means the
+        // rule's kind allows.
+        private static fun patternMatches(rule: GitIgnoreRule, s: String): Bool {
+            if (rule.kind == GitIgnoreRule.KindLiteral) {
+                return s == rule.pattern
+            }
+            if (rule.kind == GitIgnoreRule.KindSuffix) {
+                return s.endsWith(rule.suffix)
+            }
+            return GitIgnore.globMatch(rule.pattern, s)
+        }
+
+        private static fun hasWildcard(s: String): Bool {
+            var i = 0
+            var n = s.length()
+            while (i < n) {
+                var c = s.characterAt(i.toUInt()).toInt()
+                if (c == 42 || c == 63) {
+                    return true
+                }
+                i = i + 1
+            }
+            return false
+        }
+
         private static fun globMatch(pattern: String, s: String): Bool {
             return GitIgnore.globMatchAt(pattern, 0, s, 0)
         }

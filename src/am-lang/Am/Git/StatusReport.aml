@@ -602,10 +602,19 @@ namespace Am.Git
             while (i < keys.getSize()) {
                 var p = keys.get(i)
                 trackedFiles.add(p)
-                var slash = p.indexOf("/")
-                while (slash >= 0) {
-                    trackedDirs.add(p.substring(0UI, slash.toUInt()))
-                    slash = p.indexOfAfter("/", slash + 1)
+                // Climb from the file's own directory towards the root and
+                // stop at the first ancestor already recorded: its ancestors
+                // were recorded with it. Files share directories, so this is
+                // one lastIndexOf + one lookup per path almost always (the
+                // old front-to-back indexOfAfter scan was O(len^2) per path).
+                var slash = p.lastIndexOf("/")
+                while (slash > 0) {
+                    var dir = p.substring(0UI, slash.toUInt())
+                    if (trackedDirs.contains(dir)) {
+                        break
+                    }
+                    trackedDirs.add(dir)
+                    slash = dir.lastIndexOf("/")
                 }
                 i = i + 1
             }
@@ -653,6 +662,26 @@ namespace Am.Git
                                      idxMap: HashMap<String, IndexEntry>?,
                                      includeUntracked: Bool,
                                      collapseUntracked: Bool) {
+            StatusReport.walkDiskPaths(workTreePath, relPrefix, out, ignore, trackedFiles, trackedDirs, idx, idxMap, includeUntracked, collapseUntracked, false)
+        }
+
+        // The walk proper. `parentIgnored`: this directory is ignored
+        // (walked only because it holds tracked files), so every entry
+        // below it is ignored too - gitignore(5) allows no re-inclusion
+        // under an excluded directory. Carrying that state is what lets
+        // the per-entry test match just the entry (GitIgnore.isEntryIgnored)
+        // instead of every segment of its path.
+        private static fun walkDiskPaths(workTreePath: String,
+                                          relPrefix: String,
+                                          out: HashMap<String, String>,
+                                          ignore: GitIgnore,
+                                          trackedFiles: HashSet<String>,
+                                          trackedDirs: HashSet<String>,
+                                          idx: GitIndex?,
+                                          idxMap: HashMap<String, IndexEntry>?,
+                                          includeUntracked: Bool,
+                                          collapseUntracked: Bool,
+                                          parentIgnored: Bool) {
             var dirPath: String
             if (relPrefix.length() == 0) {
                 dirPath = workTreePath
@@ -660,15 +689,23 @@ namespace Am.Git
                 dirPath = workTreePath + "/" + relPrefix
             }
             var dir = new File(dirPath)
-            if (!dir.exists()) {
-                return
-            }
             // This directory's own .gitignore applies to everything below
             // it: read it now, on the way in (no separate discovery walk).
             ignore.loadDirectory(dirPath, relPrefix)
             // One listing pass with the entry kind from the directory itself
             // (d_type / fib_DirEntryType): no File object and no stat per entry.
-            var entries = dir.listEntries()
+            // A directory that vanished (or cannot be opened) contributes
+            // nothing - the listing throws, which replaces a stat per
+            // directory just to ask exists() first.
+            var entries: DirEntry[]
+            try {
+                entries = dir.listEntries()
+            } catch (ex: Exception) {
+                return
+            }
+            // Reusable stat result for the entries of this directory:
+            // [size, mtime seconds, kind] from File.statEntry.
+            var st = new Long[3UI]
             var i = 0
             while (i < entries.length().toInt()) {
                 var e = entries[i.toUInt()]
@@ -694,9 +731,9 @@ namespace Am.Git
                 var statOk = true
                 if (e.kind == DirEntry.KindUnknown) {
                     // The file system did not report a type: one stat for this entry.
-                    try {
-                        isDir = new File(dirPath + "/" + name).isDirectory()
-                    } catch(ex: Exception) {
+                    if (File.statEntry(dirPath, name, st)) {
+                        isDir = st[2UI] == 2L
+                    } else {
                         statOk = false
                     }
                 } else {
@@ -712,7 +749,11 @@ namespace Am.Git
                 // hashing every blob under `builds/` etc. — UNLESS the
                 // entry is tracked (a tracked file, or a directory that
                 // contains tracked files), which git never ignores.
-                if (ignore.isIgnored(relPath, isDir)) {
+                var ignored = parentIgnored
+                if (!ignored) {
+                    ignored = ignore.isEntryIgnored(relPath, name, isDir)
+                }
+                if (ignored) {
                     var keep = false
                     if (isDir) {
                         keep = trackedDirs.contains(relPath)
@@ -737,7 +778,7 @@ namespace Am.Git
                             out.set(relPath + "/", StatusReport.UNTRACKED_SHA)
                         }
                     } else {
-                        StatusReport.collectDiskPaths(workTreePath, relPath, out, ignore, trackedFiles, trackedDirs, idx, idxMap, includeUntracked, collapseUntracked)
+                        StatusReport.walkDiskPaths(workTreePath, relPath, out, ignore, trackedFiles, trackedDirs, idx, idxMap, includeUntracked, collapseUntracked, ignored)
                     }
                 } else {
                     // Fast path: if the index has this file at stage 0 and
@@ -745,13 +786,16 @@ namespace Am.Git
                     // index's blob SHA instead of re-reading and hashing the
                     // whole file (git's stat shortcut). Huge win on slow
                     // filesystems where hashing every file dominates.
-                    var f = new File(dirPath + "/" + name)
                     var reused = false
                     var entry: IndexEntry? = null
-                    if (idxMap != null && idxMap.containsKey(relPath)) {
-                        entry = idxMap.get(relPath)
+                    if (idxMap != null) {
+                        entry = idxMap.getOrNull(relPath)
                     }
-                    if (entry != null && StatusReport.statUnchanged(f, entry)) {
+                    // One lstat (size + mtime) straight into `st`: no File
+                    // object and no joined path for the common, unchanged
+                    // file. A stat failure just means the slow path below.
+                    if (entry != null && File.statEntry(dirPath, name, st)
+                            && st[0UI].toUInt() == entry.size && st[1UI].toUInt() == entry.mtimeSeconds) {
                         out.set(relPath, entry.sha)
                         reused = true
                     }
@@ -765,6 +809,7 @@ namespace Am.Git
                         reused = true
                     }
                     if (!reused) {
+                        var f = new File(dirPath + "/" + name)
                         var bytes = StatusReport.readFileBytes(f.toString())
                         var sha = PackObject.computeSha("blob", bytes)
                         out.set(relPath, sha)
@@ -803,23 +848,30 @@ namespace Am.Git
         private static fun containsVisibleFile(workTreePath: String,
                                                 relPrefix: String,
                                                 ignore: GitIgnore): Bool {
-            var dir = new File(workTreePath + "/" + relPrefix)
-            if (!dir.exists()) {
+            var dirPath = workTreePath + "/" + relPrefix
+            var dir = new File(dirPath)
+            ignore.loadDirectory(dirPath, relPrefix)
+            var entries: DirEntry[]
+            try {
+                entries = dir.listEntries()
+            } catch (ex: Exception) {
                 return false
             }
-            ignore.loadDirectory(workTreePath + "/" + relPrefix, relPrefix)
-            var entries = dir.listFiles()
+            var st = new Long[3UI]
             var i = 0
             while (i < entries.length().toInt()) {
-                var f = entries[i.toUInt()]
-                var name = f.getName()
+                var e = entries[i.toUInt()]
+                var name = e.name
                 if (name == ".git") {
                     i = i + 1
                     continue
                 }
                 var relPath = relPrefix + "/" + name
-                var isDir = either(f.isDirectory(), false)
-                if (!ignore.isIgnored(relPath, isDir)) {
+                var isDir = e.kind == DirEntry.KindDir
+                if (e.kind == DirEntry.KindUnknown && File.statEntry(dirPath, name, st)) {
+                    isDir = st[2UI] == 2L
+                }
+                if (!ignore.isEntryIgnored(relPath, name, isDir)) {
                     if (isDir) {
                         if (StatusReport.containsVisibleFile(workTreePath, relPath, ignore)) {
                             return true
@@ -837,17 +889,6 @@ namespace Am.Git
         // the index entry — i.e. the file almost certainly hasn't changed
         // since it was staged, so we can skip re-hashing it. getLastModified
         // returns milliseconds; the index stores seconds.
-        private static fun statUnchanged(f: File, entry: IndexEntry): Bool {
-            if (f.getSize().toUInt() != entry.size) {
-                return false
-            }
-            var mtimeSec = (f.getLastModified() / 1000L).toUInt()
-            if (mtimeSec != entry.mtimeSeconds) {
-                return false
-            }
-            return true
-        }
-
         private static fun readFileBytes(path: String): UByte[] {
             var f = new File(path)
             var stream = new FileStream(f, FileAccess.readOnly)
