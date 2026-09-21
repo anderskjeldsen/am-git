@@ -22,6 +22,7 @@ namespace AmGit
                 return
             }
             var command = args[0UI]
+            fast {
             if (command == "clone") {
                 Program.runClone(args)
             } else if (command == "hash-object") {
@@ -124,6 +125,7 @@ namespace AmGit
             } else {
                 ("am-git: unknown command '" + command + "'").println()
                 Program.printUsage()
+            }
             }
         }
 
@@ -741,6 +743,9 @@ namespace AmGit
                         return
                     }
                     treeSha = IndexTreeBuilder.build(idx, writer)
+                    // The build recorded the cached tree on the index:
+                    // persist it so the next status skips HEAD's trees.
+                    idx.write(".git")
                 } else {
                     treeSha = new TreeBuilder(Repository.resolveWorkTree("."), writer).build()
                 }

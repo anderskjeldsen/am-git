@@ -61,6 +61,12 @@ namespace Am.Git
             // HEAD's tree as path -> blob SHA. Empty for an unborn
             // branch - every indexed / on-disk file then counts as a
             // brand-new addition.
+            // The index is read first: its cached tree (git's TREE
+            // extension) says which of HEAD's subtrees the index already
+            // matches, so those tree objects need not be read at all.
+            // GitIndex.read returns an empty index when there is no file.
+            var indexFile = new File(gitDir + "/index")
+            var idx = GitIndex.read(gitDir)
             var headPaths = new HashMap<String, String>()
             if (head.commitSha != null) {
                 var store = new ObjectStore(gitDir)
@@ -70,7 +76,12 @@ namespace Am.Git
                 }
                 var commitObj = store.read(head.commitSha)
                 var rootTreeSha = WorkTree.extractRootTreeSha(commitObj.content)
-                StatusReport.collectTreePaths(rootTreeSha, "", headPaths, store)
+                if (idx.cacheTreeMatches(rootTreeSha)) {
+                    // Index == HEAD: HEAD's paths and SHAs are the index's.
+                    idx.copyPathsUnder("", headPaths)
+                } else {
+                    StatusReport.collectTreePathsCached(rootTreeSha, "", idx.cacheTree, idx, headPaths, store)
+                }
             }
 
             // Working-tree state - same hashing as `am-git add`, so a
@@ -85,18 +96,16 @@ namespace Am.Git
 
             // Index state. Absence is fine - old repos / fresh clones
             // don't have one, and we degrade to a worktree-vs-HEAD diff.
-            var indexFile = new File(gitDir + "/index")
             if (!indexFile.exists()) {
-                var ignore0 = GitIgnore.load(workTreePath, gitDir)
+                var ignore0 = GitIgnore.loadRoot(workTreePath, gitDir)
                 var diskPaths0 = new HashMap<String, String>()
                 StatusReport.collectDiskPaths(workTreePath, "", diskPaths0, ignore0, trackedFiles, trackedDirs, null, null, true, true)
                 return StatusReport.reportWithoutIndex(headPaths, diskPaths0, porcelain)
             }
 
-            var idx = GitIndex.read(gitDir)
             StatusReport.addTracked(idx.pathToSha(), trackedFiles, trackedDirs)
 
-            var ignore = GitIgnore.load(workTreePath, gitDir)
+            var ignore = GitIgnore.loadRoot(workTreePath, gitDir)
             var diskPaths = new HashMap<String, String>()
             StatusReport.collectDiskPaths(workTreePath, "", diskPaths, ignore, trackedFiles, trackedDirs, idx, idx.buildPathEntryMap(), true, true)
             // Opportunistic index refresh (what real git does): the walk
@@ -261,7 +270,7 @@ namespace Am.Git
                 StatusReport.addTracked(statIdx.pathToSha(), trackedFiles, trackedDirs)
             }
 
-            var ignore = GitIgnore.load(workTreePath, gitDir)
+            var ignore = GitIgnore.loadRoot(workTreePath, gitDir)
             var diskPaths = new HashMap<String, String>()
             var statMap: HashMap<String, IndexEntry>? = null
             if (statIdx != null) {
@@ -502,6 +511,50 @@ namespace Am.Git
         // path -> blob SHA for every file (skipping submodules).
         // Public so `DiffCommand` and other path-vs-tree comparers
         // can reuse the same recursion + skip rules.
+        // collectTreePaths, pruned by the index's cached tree: a subtree
+        // whose cached SHA is valid and equal to HEAD's is known to match
+        // the index below that path, so its paths come from the index
+        // (no object reads); everything else is read as before.
+        static fun collectTreePathsCached(treeSha: String,
+                                           prefix: String,
+                                           cache: CacheTree?,
+                                           idx: GitIndex,
+                                           out: HashMap<String, String>,
+                                           store: ObjectStore) {
+            if (cache != null && cache.isValid() && cache.sha == treeSha) {
+                idx.copyPathsUnder(prefix, out)
+                return
+            }
+            if (!store.has(treeSha)) {
+                return
+            }
+            var tree = store.read(treeSha)
+            if (tree.typeCode != 2) {
+                return
+            }
+            var entries = WorkTree.parseTree(tree.content)
+            var i = 0
+            while (i < entries.getSize()) {
+                var entry = entries.get(i)
+                var path: String
+                if (prefix.length() == 0) {
+                    path = entry.name
+                } else {
+                    path = prefix + "/" + entry.name
+                }
+                if (entry.isTree()) {
+                    var childCache: CacheTree? = null
+                    if (cache != null) {
+                        childCache = cache.findChild(entry.name)
+                    }
+                    StatusReport.collectTreePathsCached(entry.sha, path, childCache, idx, out, store)
+                } else if (entry.isFile() || entry.isSymlink()) {
+                    out.set(path, entry.sha)
+                }
+                i = i + 1
+            }
+        }
+
         static fun collectTreePaths(treeSha: String,
                                      prefix: String,
                                      out: HashMap<String, String>,
@@ -610,11 +663,16 @@ namespace Am.Git
             if (!dir.exists()) {
                 return
             }
-            var entries = dir.listFiles()
+            // This directory's own .gitignore applies to everything below
+            // it: read it now, on the way in (no separate discovery walk).
+            ignore.loadDirectory(dirPath, relPrefix)
+            // One listing pass with the entry kind from the directory itself
+            // (d_type / fib_DirEntryType): no File object and no stat per entry.
+            var entries = dir.listEntries()
             var i = 0
             while (i < entries.length().toInt()) {
-                var f = entries[i.toUInt()]
-                var name = f.getName()
+                var e = entries[i.toUInt()]
+                var name = e.name
                 if (name == ".git") {
                     i = i + 1
                     continue
@@ -634,10 +692,15 @@ namespace Am.Git
                 // stats EINVAL. Skip what we cannot stat instead of dying.
                 var isDir = false
                 var statOk = true
-                try {
-                    isDir = f.isDirectory()
-                } catch(e: Exception) {
-                    statOk = false
+                if (e.kind == DirEntry.KindUnknown) {
+                    // The file system did not report a type: one stat for this entry.
+                    try {
+                        isDir = new File(dirPath + "/" + name).isDirectory()
+                    } catch(ex: Exception) {
+                        statOk = false
+                    }
+                } else {
+                    isDir = e.kind == DirEntry.KindDir
                 }
                 if (!statOk) {
                     i = i + 1
@@ -682,6 +745,7 @@ namespace Am.Git
                     // index's blob SHA instead of re-reading and hashing the
                     // whole file (git's stat shortcut). Huge win on slow
                     // filesystems where hashing every file dominates.
+                    var f = new File(dirPath + "/" + name)
                     var reused = false
                     var entry: IndexEntry? = null
                     if (idxMap != null && idxMap.containsKey(relPath)) {
@@ -743,6 +807,7 @@ namespace Am.Git
             if (!dir.exists()) {
                 return false
             }
+            ignore.loadDirectory(workTreePath + "/" + relPrefix, relPrefix)
             var entries = dir.listFiles()
             var i = 0
             while (i < entries.length().toInt()) {

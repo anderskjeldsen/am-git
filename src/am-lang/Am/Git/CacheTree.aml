@@ -1,0 +1,192 @@
+namespace Am.Git
+{
+    /**
+     * One node of the index's cached tree — git's `TREE` index extension. For a directory of the
+     * index (the root has an empty name) it records how many index entries live below it and the
+     * SHA of the tree object those entries would write, or "invalid" (entryCount -1) when
+     * something under it changed since the tree was last known. `status` uses it to skip reading
+     * HEAD's tree objects: a subtree whose cached SHA equals HEAD's tree SHA is known to match
+     * without looking at a single entry.
+     *
+     * On-disk form (Documentation/technical/index-format.txt), depth first:
+     *   name NUL  entryCount SP subtreeCount LF  [20-byte SHA when entryCount >= 0]  children...
+     * @param name The directory's own name, "" for the root
+     */
+    class CacheTree(var name: String)
+    {
+        import Am.Lang
+        import Am.Collections
+
+        /** Index entries below this node, or -1 when the node is invalid. */
+        var entryCount: Int = -1
+        /** 40-char hex SHA of the tree object for this node; null when invalid. */
+        var sha: String? = null
+        /** Child directories, in the order they were read or built. */
+        var children: List<CacheTree> = List<CacheTree>.newList<CacheTree>()
+
+        /**
+         * True when this node carries a usable tree SHA.
+         * @return Whether the node is valid
+         */
+        fun isValid(): Bool {
+            return this.entryCount >= 0 && this.sha != null
+        }
+
+        /**
+         * Finds the child node for a directory name.
+         * @param childName The directory name
+         * @return The child, or null
+         */
+        fun findChild(childName: String): CacheTree? {
+            var i = 0
+            while (i < this.children.getSize()) {
+                var c = this.children.get(i)
+                if (c.name == childName) {
+                    return c
+                }
+                i = i + 1
+            }
+            return null
+        }
+
+        /**
+         * Parses the extension payload starting at `start` (exclusive end `end`).
+         * @param bytes The index file bytes
+         * @param start Offset of the first node
+         * @param end Offset just past the payload
+         * @return The root node, or null when the payload is malformed
+         */
+        static fun parse(bytes: UByte[], start: Int, end: Int): CacheTree? {
+            var cursor = new CacheTreeCursor(start)
+            var root = CacheTree.parseNode(bytes, cursor, end)
+            return root
+        }
+
+        private static fun parseNode(bytes: UByte[], cursor: CacheTreeCursor, end: Int): CacheTree? {
+            // name, NUL-terminated
+            var nameStart = cursor.pos
+            while (cursor.pos < end && bytes[cursor.pos.toUInt()] != 0UB) {
+                cursor.pos = cursor.pos + 1
+            }
+            if (cursor.pos >= end) {
+                return null
+            }
+            var name = CacheTree.bytesToString(bytes, nameStart, cursor.pos - nameStart)
+            cursor.pos = cursor.pos + 1
+            // entry count (may be -1), SP, subtree count, LF
+            var entryCount = CacheTree.parseInt(bytes, cursor, end, 32UB)
+            var subtreeCount = CacheTree.parseInt(bytes, cursor, end, 10UB)
+            if (subtreeCount < 0) {
+                return null
+            }
+            var node = new CacheTree(name)
+            node.entryCount = entryCount
+            if (entryCount >= 0) {
+                if (cursor.pos + 20 > end) {
+                    return null
+                }
+                var shaBytes = new UByte[20UI]
+                var k = 0
+                while (k < 20) {
+                    shaBytes[k.toUInt()] = bytes[(cursor.pos + k).toUInt()]
+                    k = k + 1
+                }
+                node.sha = HexUtil.toHex(shaBytes)
+                cursor.pos = cursor.pos + 20
+            }
+            var s = 0
+            while (s < subtreeCount) {
+                var child = CacheTree.parseNode(bytes, cursor, end)
+                if (child == null) {
+                    return null
+                }
+                node.children.add(child)
+                s = s + 1
+            }
+            return node
+        }
+
+        // ASCII decimal (optionally "-1") up to `terminator`, which is consumed.
+        private static fun parseInt(bytes: UByte[], cursor: CacheTreeCursor, end: Int, terminator: UByte): Int {
+            var negative = false
+            var value = 0
+            while (cursor.pos < end) {
+                var c = bytes[cursor.pos.toUInt()]
+                cursor.pos = cursor.pos + 1
+                if (c == terminator) {
+                    if (negative) {
+                        return 0 - value
+                    }
+                    return value
+                }
+                if (c == 45UB) {
+                    negative = true
+                } else if (c >= 48UB && c <= 57UB) {
+                    value = value * 10 + (c.toInt() - 48)
+                } else {
+                    return -1
+                }
+            }
+            return -1
+        }
+
+        /**
+         * Appends this node and its children in on-disk form.
+         * @param buf The byte list being built
+         */
+        fun serialize(buf: List<UByte>) {
+            var nameBytes = this.name.toBytes("UTF-8")
+            var i = 0UI
+            while (i < nameBytes.length()) {
+                buf.add(nameBytes[i])
+                i++
+            }
+            buf.add(0UB)
+            CacheTree.appendAscii(buf, this.entryCount.toString())
+            buf.add(32UB)
+            CacheTree.appendAscii(buf, this.children.getSize().toString())
+            buf.add(10UB)
+            if (this.entryCount >= 0 && this.sha != null) {
+                var shaBytes = HexUtil.fromHex(this.sha)
+                var k = 0UI
+                while (k < shaBytes.length()) {
+                    buf.add(shaBytes[k])
+                    k++
+                }
+            }
+            var c = 0
+            while (c < this.children.getSize()) {
+                this.children.get(c).serialize(buf)
+                c = c + 1
+            }
+        }
+
+        private static fun appendAscii(buf: List<UByte>, s: String) {
+            var b = s.toBytes("UTF-8")
+            var i = 0UI
+            while (i < b.length()) {
+                buf.add(b[i])
+                i++
+            }
+        }
+
+        private static fun bytesToString(bytes: UByte[], offset: Int, length: Int): String {
+            var slice = new UByte[length.toUInt()]
+            var i = 0
+            while (i < length) {
+                slice[i.toUInt()] = bytes[(offset + i).toUInt()]
+                i = i + 1
+            }
+            return String.fromBytes(slice, "UTF-8")
+        }
+    }
+
+    /**
+     * Mutable read position shared by the recursive cache-tree parser.
+     * @param pos The current offset
+     */
+    class CacheTreeCursor(var pos: Int)
+    {
+        import Am.Lang
+    }
+}

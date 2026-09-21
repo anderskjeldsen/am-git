@@ -23,8 +23,9 @@ namespace Am.Git
     //     path                 (variable, NUL-terminated)
     //     padding              (1..8 NUL bytes so entry total is %8 == 0)
     //
-    //   (extensions - we don't emit any; v2 readers are required to
-    //    tolerate their absence)
+    //   extensions: "TREE" (the cached tree, see CacheTree) is read and
+    //   written; any other extension is skipped on read and dropped on
+    //   write (they are all optional by the format's rules).
     //
     //   trailer: 20-byte SHA-1 over every preceding byte.
     //
@@ -45,6 +46,13 @@ namespace Am.Git
         // once so the next status takes the stat fast path (git's
         // opportunistic "index refresh"). Never set by content changes.
         var statsDirty: Bool = false
+        // The `TREE` extension: per directory, the tree SHA the entries
+        // below it would write, when known. Read from disk, built by
+        // fromTree*/IndexTreeBuilder, dropped by any content mutation
+        // (upsert/remove) so it can never describe entries it does not
+        // match. StatusReport skips reading HEAD's trees where it is
+        // valid and equal to HEAD's.
+        var cacheTree: CacheTree? = null
 
         // Build a fresh index whose entries mirror every blob in a
         // commit's tree. This is what `git clone` and `git checkout`
@@ -63,7 +71,9 @@ namespace Am.Git
         static fun fromTree(treeSha: String?, store: ObjectStore): GitIndex {
             var idx = new GitIndex()
             if (treeSha != null) {
-                GitIndex.populateFromStore(treeSha, "", store, idx)
+                var root = new CacheTree("")
+                GitIndex.populateFromStore(treeSha, "", store, idx, root)
+                idx.cacheTree = root
             }
             return idx
         }
@@ -78,7 +88,9 @@ namespace Am.Git
         static fun fromTreeMap(treeSha: String?, objects: HashMap<String, PackObject>): GitIndex {
             var idx = new GitIndex()
             if (treeSha != null) {
-                GitIndex.populateFromMap(treeSha, "", objects, idx)
+                var root = new CacheTree("")
+                GitIndex.populateFromMap(treeSha, "", objects, idx, root)
+                idx.cacheTree = root
             }
             return idx
         }
@@ -89,13 +101,15 @@ namespace Am.Git
         static fun fromTreePack(treeSha: String?, pack: LazyPack): GitIndex {
             var idx = new GitIndex()
             if (treeSha != null) {
-                GitIndex.populateFromPack(treeSha, "", pack, idx)
+                var root = new CacheTree("")
+                GitIndex.populateFromPack(treeSha, "", pack, idx, root)
+                idx.cacheTree = root
             }
             return idx
         }
 
         private static fun populateFromPack(treeSha: String, prefix: String,
-                                             pack: LazyPack, out: GitIndex) {
+                                             pack: LazyPack, out: GitIndex, node: CacheTree) {
             if (!pack.has(treeSha)) {
                 return
             }
@@ -104,21 +118,28 @@ namespace Am.Git
                 return
             }
             var entries = WorkTree.parseTree(tree.content)
+            var count = 0
             var i = 0
             while (i < entries.getSize()) {
                 var e = entries.get(i)
                 var path = GitIndex.joinPath(prefix, e.name)
                 if (e.isTree()) {
-                    GitIndex.populateFromPack(e.sha, path, pack, out)
+                    var child = new CacheTree(e.name)
+                    GitIndex.populateFromPack(e.sha, path, pack, out, child)
+                    node.children.add(child)
+                    count = count + child.entryCount
                 } else if (e.isFile() || e.isSymlink()) {
                     out.entries.add(GitIndex.makeEntry(path, e))
+                    count = count + 1
                 }
                 i = i + 1
             }
+            node.entryCount = count
+            node.sha = treeSha
         }
 
         private static fun populateFromStore(treeSha: String, prefix: String,
-                                              store: ObjectStore, out: GitIndex) {
+                                              store: ObjectStore, out: GitIndex, node: CacheTree) {
             if (!store.has(treeSha)) {
                 return
             }
@@ -127,21 +148,28 @@ namespace Am.Git
                 return
             }
             var entries = WorkTree.parseTree(tree.content)
+            var count = 0
             var i = 0
             while (i < entries.getSize()) {
                 var e = entries.get(i)
                 var path = GitIndex.joinPath(prefix, e.name)
                 if (e.isTree()) {
-                    GitIndex.populateFromStore(e.sha, path, store, out)
+                    var child = new CacheTree(e.name)
+                    GitIndex.populateFromStore(e.sha, path, store, out, child)
+                    node.children.add(child)
+                    count = count + child.entryCount
                 } else if (e.isFile() || e.isSymlink()) {
                     out.entries.add(GitIndex.makeEntry(path, e))
+                    count = count + 1
                 }
                 i = i + 1
             }
+            node.entryCount = count
+            node.sha = treeSha
         }
 
         private static fun populateFromMap(treeSha: String, prefix: String,
-                                            objects: HashMap<String, PackObject>, out: GitIndex) {
+                                            objects: HashMap<String, PackObject>, out: GitIndex, node: CacheTree) {
             if (!objects.containsKey(treeSha)) {
                 return
             }
@@ -150,17 +178,24 @@ namespace Am.Git
                 return
             }
             var entries = WorkTree.parseTree(tree.content)
+            var count = 0
             var i = 0
             while (i < entries.getSize()) {
                 var e = entries.get(i)
                 var path = GitIndex.joinPath(prefix, e.name)
                 if (e.isTree()) {
-                    GitIndex.populateFromMap(e.sha, path, objects, out)
+                    var child = new CacheTree(e.name)
+                    GitIndex.populateFromMap(e.sha, path, objects, out, child)
+                    node.children.add(child)
+                    count = count + child.entryCount
                 } else if (e.isFile() || e.isSymlink()) {
                     out.entries.add(GitIndex.makeEntry(path, e))
+                    count = count + 1
                 }
                 i = i + 1
             }
+            node.entryCount = count
+            node.sha = treeSha
         }
 
         private static fun joinPath(prefix: String, name: String): String {
@@ -275,7 +310,81 @@ namespace Am.Git
                 pos = entryStart + padded
                 i++
             }
+            // Extensions sit between the entries and the trailing 20-byte
+            // checksum: signature(4) size(4 BE) payload. Only TREE is used.
+            var limit = bytes.length().toInt() - 20
+            while (pos + 8 <= limit) {
+                var extSize = GitIndex.readBE32(bytes, pos + 4).toInt()
+                var payloadStart = pos + 8
+                var payloadEnd = payloadStart + extSize
+                if (extSize < 0 || payloadEnd > limit) {
+                    break
+                }
+                if (bytes[pos.toUInt()] == 84UB && bytes[(pos + 1).toUInt()] == 82UB
+                        && bytes[(pos + 2).toUInt()] == 69UB && bytes[(pos + 3).toUInt()] == 69UB) {
+                    idx.cacheTree = CacheTree.parse(bytes, payloadStart, payloadEnd)
+                }
+                pos = payloadEnd
+            }
             return idx
+        }
+
+        /**
+         * True when the cached tree is valid at the root and names `treeSha`: the index then
+         * matches that tree exactly, so its entries ARE the tree's paths and SHAs.
+         * @param treeSha 40-char hex SHA of a tree
+         * @return Whether the whole index is known to equal that tree
+         */
+        fun cacheTreeMatches(treeSha: String): Bool {
+            var ct = this.cacheTree
+            if (ct == null) {
+                return false
+            }
+            return ct.isValid() && ct.sha == treeSha
+        }
+
+        /**
+         * Copies path -> sha for every stage-0 entry under `prefix` ("" for all) into `out`.
+         * Entries are sorted by path, so the run under a prefix is contiguous: binary-search its
+         * start, then copy until the prefix stops matching.
+         * @param prefix Directory path without trailing slash, or ""
+         * @param out The map to fill
+         */
+        fun copyPathsUnder(prefix: String, out: HashMap<String, String>) {
+            var n = this.entries.getSize()
+            if (prefix.length() == 0) {
+                var a = 0
+                while (a < n) {
+                    var ea = this.entries.get(a)
+                    if (ea.stage() == 0) {
+                        out.set(ea.path, ea.sha)
+                    }
+                    a = a + 1
+                }
+                return
+            }
+            var dirPrefix = prefix + "/"
+            var lo = 0
+            var hi = n
+            while (lo < hi) {
+                var mid = (lo + hi) / 2
+                if (GitIndex.compareBytewise(this.entries.get(mid).path, dirPrefix) < 0) {
+                    lo = mid + 1
+                } else {
+                    hi = mid
+                }
+            }
+            var i = lo
+            while (i < n) {
+                var e = this.entries.get(i)
+                if (!e.path.startsWith(dirPrefix)) {
+                    return
+                }
+                if (e.stage() == 0) {
+                    out.set(e.path, e.sha)
+                }
+                i = i + 1
+            }
         }
 
         // Serialize to `.git/index`. Sorts entries by path first so
@@ -297,6 +406,21 @@ namespace Am.Git
             while (i < this.entries.getSize()) {
                 this.appendEntry(buf, this.entries.get(i))
                 i = i + 1
+            }
+            var ct = this.cacheTree
+            if (ct != null) {
+                var payload = List<UByte>.newList<UByte>()
+                ct.serialize(payload)
+                buf.add(84UB)
+                buf.add(82UB)
+                buf.add(69UB)
+                buf.add(69UB)
+                GitIndex.appendBE32(buf, payload.getSize().toUInt())
+                var p = 0
+                while (p < payload.getSize()) {
+                    buf.add(payload.get(p))
+                    p = p + 1
+                }
             }
 
             var body = buf.toArray()
@@ -321,6 +445,7 @@ namespace Am.Git
         // stages 1/2/3 simultaneously, and they must not clobber each
         // other.
         fun upsert(entry: IndexEntry) {
+            this.cacheTree = null
             var s = entry.stage()
             var i = 0
             while (i < this.entries.getSize()) {
@@ -339,6 +464,7 @@ namespace Am.Git
         // resolves a conflict and we're about to write the resolved
         // blob at stage 0.
         fun clearConflictStages(path: String): Int {
+            this.cacheTree = null
             var removed = 0
             var i = 0
             while (i < this.entries.getSize()) {
@@ -371,6 +497,7 @@ namespace Am.Git
         // Remove the entry for `path`. Returns true if anything was
         // removed.
         fun removeByPath(path: String): Bool {
+            this.cacheTree = null
             var i = 0
             while (i < this.entries.getSize()) {
                 if (this.entries.get(i).path == path) {

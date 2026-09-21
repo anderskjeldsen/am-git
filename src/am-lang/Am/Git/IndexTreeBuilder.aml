@@ -28,14 +28,21 @@ namespace Am.Git
                 root.insert(e.path, e.sha, e.mode)
                 i = i + 1
             }
-            return IndexTreeBuilder.writeNode(root, writer)
+            // The trees just computed are exactly what the cached tree
+            // records: keep them on the index so a later status can skip
+            // reading them back.
+            var cache = new CacheTree("")
+            var sha = IndexTreeBuilder.writeNode(root, writer, cache)
+            idx.cacheTree = cache
+            return sha
         }
 
         // Walk one node, write child trees recursively, emit our own
         // tree object. Empty subdirs produce no tree object (TreeBuilder
         // does the same) - the root is always emitted, even when empty.
-        private static fun writeNode(node: IndexDirNode, writer: LooseObjectWriter): String? {
+        private static fun writeNode(node: IndexDirNode, writer: LooseObjectWriter, cache: CacheTree): String? {
             var entries = List<TreeEntry>.newList<TreeEntry>()
+            var count = 0
 
             // Files.
             var fi = 0
@@ -43,6 +50,7 @@ namespace Am.Git
                 var f = node.files.get(fi)
                 var modeStr = IndexTreeBuilder.modeToString(f.mode)
                 entries.add(new TreeEntry(modeStr, f.name, f.sha))
+                count = count + 1
                 fi = fi + 1
             }
 
@@ -52,9 +60,12 @@ namespace Am.Git
             while (di < dirNames.getSize()) {
                 var name = dirNames.get(di)
                 var child = node.subdirs.get(name)
-                var subSha = IndexTreeBuilder.writeNode(child, writer)
+                var childCache = new CacheTree(name)
+                var subSha = IndexTreeBuilder.writeNode(child, writer, childCache)
                 if (subSha != null) {
                     entries.add(new TreeEntry("40000", name, subSha))
+                    cache.children.add(childCache)
+                    count = count + childCache.entryCount
                 }
                 di = di + 1
             }
@@ -65,7 +76,10 @@ namespace Am.Git
             }
             TreeBuilder.sortEntries(entries)
             var serialised = TreeBuilder.serialize(entries)
-            return writer.write("tree", serialised)
+            var sha = writer.write("tree", serialised)
+            cache.entryCount = count
+            cache.sha = sha
+            return sha
         }
 
         // Index stores mode as a UInt (e.g. 33188 = 0o100644). Tree

@@ -106,6 +106,64 @@ namespace Am.Git.Tests {
             GitIndexTest.cleanupGitDir()
         }
 
+        // The TREE extension (cached tree) survives write → read, with
+        // the same shape git writes: root, nested subtrees, and an
+        // invalidated node (-1, no SHA). Also: any content mutation
+        // drops the cache, since it would no longer describe the entries.
+        test cacheTreeRoundTrip() {
+            GitIndexTest.cleanupGitDir()
+            try {
+                var idx = new GitIndex()
+                idx.entries.add(GitIndexTest.entry("a.txt", "1111111111111111111111111111111111111111", 33188UI, 0US))
+                idx.entries.add(GitIndexTest.entry("src/b.txt", "2222222222222222222222222222222222222222", 33188UI, 0US))
+                idx.entries.add(GitIndexTest.entry("src/deep/c.txt", "3333333333333333333333333333333333333333", 33188UI, 0US))
+                var root = new CacheTree("")
+                root.entryCount = 3
+                root.sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                var src = new CacheTree("src")
+                src.entryCount = 2
+                src.sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                var deep = new CacheTree("deep")
+                src.children.add(deep)
+                root.children.add(src)
+                idx.cacheTree = root
+                idx.write("./testidx")
+
+                var read = GitIndex.read("./testidx")
+                Assert.assertEquals(3, read.entries.getSize())
+                var ct = read.cacheTree
+                Assert.assertTrue(ct != null)
+                Assert.assertTrue(read.cacheTreeMatches("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
+                Assert.assertTrue(!read.cacheTreeMatches("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
+                Assert.assertEquals(3, ct.entryCount)
+                Assert.assertEquals(1, ct.children.getSize())
+                var rsrc = ct.findChild("src")
+                Assert.assertTrue(rsrc != null)
+                Assert.assertEquals(2, rsrc.entryCount)
+                Assert.assertEquals("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", rsrc.sha)
+                var rdeep = rsrc.findChild("deep")
+                Assert.assertTrue(rdeep != null)
+                Assert.assertTrue(!rdeep.isValid())
+                Assert.assertEquals(-1, rdeep.entryCount)
+
+                var under = new HashMap<String, String>()
+                read.copyPathsUnder("src", under)
+                Assert.assertEquals(2, under.getSize())
+                Assert.assertTrue(under.containsKey("src/b.txt"))
+                Assert.assertTrue(under.containsKey("src/deep/c.txt"))
+                var all = new HashMap<String, String>()
+                read.copyPathsUnder("", all)
+                Assert.assertEquals(3, all.getSize())
+
+                read.removeByPath("a.txt")
+                Assert.assertTrue(read.cacheTree == null)
+            } catch (ex: Exception) {
+                GitIndexTest.cleanupGitDir()
+                throw ex
+            }
+            GitIndexTest.cleanupGitDir()
+        }
+
         // upsert distinguishes by (path, stage). Updating stage 2
         // must leave stages 1 and 3 untouched.
         test upsertPreservesOtherStages() {

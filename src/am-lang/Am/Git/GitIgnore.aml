@@ -58,12 +58,19 @@ namespace Am.Git
 
         private var rules: List<GitIgnoreRule> = List<GitIgnoreRule>.newList<GitIgnoreRule>()
 
+        // Directories whose .gitignore has been consulted (relative
+        // path, "" for the root), so a walk that enters a directory
+        // twice, or a caller that already ran the eager load, never
+        // adds the same rules again.
+        private var loadedDirs: HashSet<String> = new HashSet<String>()
+
         // Walk the worktree from `workTreePath`, load every
         // .gitignore at every depth, plus `.git/info/exclude`. The
         // walk uses `.git` as the skip dir - same convention as
         // every other tree walk in am-git.
         static fun load(workTreePath: String, gitDir: String): GitIgnore? {
             var g = new GitIgnore()
+            g.loadedDirs.add("")
             // .git/info/exclude first so file-level .gitignore rules
             // can override it (last match wins).
             var excludeFile = new File(gitDir + "/info/exclude")
@@ -74,11 +81,46 @@ namespace Am.Git
             return g
         }
 
+        /**
+         * Loads only `.git/info/exclude` and the worktree root's `.gitignore`. Meant for a
+         * directory walk that calls loadDirectory() as it enters each directory, so nested
+         * `.gitignore` files are read exactly when their directory is reached — the way git
+         * does it — instead of by a separate discovery walk over the whole tree.
+         */
+        static fun loadRoot(workTreePath: String, gitDir: String): GitIgnore {
+            var g = new GitIgnore()
+            var excludeFile = new File(gitDir + "/info/exclude")
+            if (excludeFile.exists()) {
+                g.loadFile(excludeFile.toString(), "")
+            }
+            g.loadDirectory(workTreePath, "")
+            return g
+        }
+
+        /**
+         * Reads `<absDirPath>/.gitignore`, if there is one, scoped to `relPrefix`. Call it when a
+         * walk enters a directory, before testing that directory's entries. Idempotent per
+         * directory.
+         * @param absDirPath The directory on disk
+         * @param relPrefix Its path relative to the worktree root, "" for the root
+         */
+        fun loadDirectory(absDirPath: String, relPrefix: String) {
+            if (this.loadedDirs.contains(relPrefix)) {
+                return
+            }
+            this.loadedDirs.add(relPrefix)
+            var ignoreFile = new File(absDirPath + "/.gitignore")
+            if (ignoreFile.exists()) {
+                this.loadFile(ignoreFile.toString(), relPrefix)
+            }
+        }
+
         // Recursive .gitignore discovery. At each directory, if a
         // .gitignore file is present, load it with the directory's
         // relative path as `basePath` so the rules are scoped
         // correctly.
         private fun loadGitIgnoreUnder(absDirPath: String, relPrefix: String) {
+            this.loadedDirs.add(relPrefix)
             var ignoreFile = new File(absDirPath + "/.gitignore")
             if (ignoreFile.exists()) {
                 this.loadFile(ignoreFile.toString(), relPrefix)
@@ -187,6 +229,9 @@ namespace Am.Git
         // rules are directory-only.
         fun isIgnored(relPath: String, isDir: Bool): Bool {
             var ignored = false
+            if (this.rules.getSize() == 0) {
+                return false
+            }
             // Split the path ONCE for all rules. ruleMatches used to
             // splitOn per rule — with ~10 rules and a walk visiting
             // tens of thousands of entries, those allocations were a

@@ -110,7 +110,7 @@ namespace Am.Git
         static fun snapshotWorkTree(workTreePath: String, gitDir: String): HashMap<String, String> {
             var resolved = workTreePath
             resolved = Repository.resolveWorkTree(resolved)
-            var ignore = GitIgnore.load(resolved, gitDir)
+            var ignore = GitIgnore.loadRoot(resolved, gitDir)
             // Tracked-but-ignored files must still be snapshotted, so the
             // disk walk keeps anything recorded in the index (see
             // StatusReport.addTracked / collectDiskPaths).
