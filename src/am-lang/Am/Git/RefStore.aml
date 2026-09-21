@@ -33,7 +33,7 @@ namespace Am.Git
         // Resolve `refs/...` to a SHA: loose file first, then the
         // packed-refs table. Null when the ref exists in neither.
         static fun resolve(gitDir: String, refPath: String): String? {
-            var loosePath = gitDir + "/" + refPath
+            var loosePath = Repository.commonDir(gitDir) + "/" + refPath
             var looseFile = new File(loosePath)
             if (looseFile.exists()) {
                 return String.readFromFile(loosePath).trim()
@@ -86,7 +86,7 @@ namespace Am.Git
                 if (name != null && name.startsWith(prefix)) {
                     var short = name.substringToEnd(prefix.length().toUInt())
                     // Loose shadows packed - skip when the loose file exists.
-                    var looseFile = new File(gitDir + "/" + name)
+                    var looseFile = new File(Repository.commonDir(gitDir) + "/" + name)
                     if (!looseFile.exists()) {
                         out.add(short)
                     }
@@ -149,7 +149,7 @@ namespace Am.Git
         // (`^` peel lines are KEPT - peeledFor needs the adjacency).
         private static fun readPackedLines(gitDir: String): List<String> {
             var out = List<String>.newList<String>()
-            var path = gitDir + "/packed-refs"
+            var path = Repository.commonDir(gitDir) + "/packed-refs"
             var f = new File(path)
             if (!f.exists()) {
                 return out

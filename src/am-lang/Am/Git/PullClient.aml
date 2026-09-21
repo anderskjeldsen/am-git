@@ -67,7 +67,7 @@ namespace Am.Git
             FetchClient.fetch(gitDir, url, remoteName)
 
             // Remote-tracking ref now reflects what the server has.
-            var remoteRefPath = gitDir + "/refs/remotes/" + remoteName + "/" + branch
+            var remoteRefPath = Repository.commonDir(gitDir) + "/refs/remotes/" + remoteName + "/" + branch
             var remoteRef = new File(remoteRefPath)
             if (!remoteRef.exists()) {
                 ("pull: remote did not advertise refs/heads/" + branch).println()
@@ -77,7 +77,7 @@ namespace Am.Git
 
             // Local branch - may not exist yet if we just initialised
             // this repo against the remote. Loose or packed (RefStore).
-            var localRefPath = gitDir + "/refs/heads/" + branch
+            var localRefPath = Repository.commonDir(gitDir) + "/refs/heads/" + branch
             var localSha: String? = RefStore.resolve(gitDir, "refs/heads/" + branch)
 
             if (localSha == remoteSha) {

@@ -83,7 +83,7 @@ namespace Am.Git
             g.loadedDirs.add("")
             // .git/info/exclude first so file-level .gitignore rules
             // can override it (last match wins).
-            var excludeFile = new File(gitDir + "/info/exclude")
+            var excludeFile = new File(Repository.commonDir(gitDir) + "/info/exclude")
             if (excludeFile.exists()) {
                 g.loadFile(excludeFile.toString(), "")
             }
@@ -99,7 +99,7 @@ namespace Am.Git
          */
         static fun loadRoot(workTreePath: String, gitDir: String): GitIgnore {
             var g = new GitIgnore()
-            var excludeFile = new File(gitDir + "/info/exclude")
+            var excludeFile = new File(Repository.commonDir(gitDir) + "/info/exclude")
             if (excludeFile.exists()) {
                 g.loadFile(excludeFile.toString(), "")
             }

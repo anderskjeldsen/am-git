@@ -161,6 +161,127 @@ namespace Am.Git
             return p
         }
 
+        // Where the repository state of work tree `workTree` ("" for the
+        // cwd) lives. Normally `<workTree>/.git`, a directory. In a linked
+        // work tree (`git worktree add`) `.git` is a FILE holding
+        // `gitdir: <path>` - the per-work-tree directory (HEAD, index,
+        // MERGE_HEAD, rebase state...) under the main repository's
+        // `.git/worktrees/<name>`; that is what is returned then. Objects,
+        // refs and config are NOT there - see commonDir(). A relative
+        // gitdir is relative to the work tree. Without a .git at all the
+        // plain `<workTree>/.git` comes back and the caller's "not a
+        // repository" path fires as before.
+        static fun resolveGitDir(workTree: String): String {
+            var dotGit = ".git"
+            if (workTree.length() > 0) {
+                dotGit = workTree + "/.git"
+            }
+            var f = new File(dotGit)
+            var isDir = false
+            try {
+                isDir = f.isDirectory()
+            } catch (ex: Exception) {
+                return dotGit
+            }
+            if (isDir || !f.exists()) {
+                return dotGit
+            }
+            var content = String.readFromFile(dotGit).trim()
+            if (!content.startsWith("gitdir: ")) {
+                return dotGit
+            }
+            var target = content.substringToEnd(8UI).trim()
+            if (target.length() == 0) {
+                return dotGit
+            }
+            if (Repository.isAbsolute(target) || workTree.length() == 0) {
+                return Repository.joinRelative("", target)
+            }
+            return Repository.joinRelative(workTree, target)
+        }
+
+        // The directory every work tree of a repository shares: objects,
+        // refs, packed-refs, config, info. A linked work tree's git dir
+        // carries a `commondir` file naming it (relative to that dir,
+        // "../.." in practice); a git dir without one is its own common
+        // dir. Per-work-tree paths (HEAD, index, ORIG_HEAD, MERGE_*,
+        // rebase-merge, logs/HEAD) must NOT go through here.
+        static fun commonDir(gitDir: String): String {
+            var marker = gitDir + "/commondir"
+            var f = new File(marker)
+            if (!f.exists()) {
+                return gitDir
+            }
+            var rel = String.readFromFile(marker).trim()
+            if (rel.length() == 0) {
+                return gitDir
+            }
+            if (Repository.isAbsolute(rel)) {
+                return Repository.joinRelative("", rel)
+            }
+            return Repository.joinRelative(gitDir, rel)
+        }
+
+        // "/x" on POSIX; "Vol:x" on AmigaDOS (a colon before any slash).
+        static fun isAbsolute(path: String): Bool {
+            if (path.startsWith("/")) {
+                return true
+            }
+            var colon = path.indexOf(":")
+            if (colon < 0) {
+                return false
+            }
+            var slash = path.indexOf("/")
+            return slash < 0 || colon < slash
+        }
+
+        // Join `rel` onto `base`, folding "." and ".." segments as they
+        // are met so the result never contains them: ".." drops the last
+        // segment of what has been built so far. AmigaDOS has no ".."
+        // and POSIX code paths elsewhere in am-git never build one, so
+        // this keeps a `commondir` of "../.." usable everywhere.
+        static fun joinRelative(base: String, rel: String): String {
+            var parts = List<String>.newList<String>()
+            var absolute = base.startsWith("/") || rel.startsWith("/")
+            var baseSegs = base.split(47US)
+            var i = 0
+            while (i < baseSegs.length().toInt()) {
+                var seg = baseSegs[i.toUInt()]
+                if (seg.length() > 0 && seg != ".") {
+                    parts.add(seg)
+                }
+                i = i + 1
+            }
+            var relSegs = rel.split(47US)
+            var j = 0
+            while (j < relSegs.length().toInt()) {
+                var seg = relSegs[j.toUInt()]
+                if (seg == "..") {
+                    if (parts.getSize() > 0 && parts.get(parts.getSize() - 1) != "..") {
+                        parts.removeAt(parts.getSize() - 1)
+                    } else {
+                        parts.add(seg)
+                    }
+                } else if (seg.length() > 0 && seg != ".") {
+                    parts.add(seg)
+                }
+                j = j + 1
+            }
+            var sb = new StringBuilder()
+            if (absolute) {
+                sb.add("/")
+            }
+            var k = 0
+            while (k < parts.getSize()) {
+                if (k > 0) {
+                    sb.add("/")
+                }
+                sb.add(parts.get(k))
+                k = k + 1
+            }
+            return sb.toString()
+        }
+
         static fun ensureParentDir(path: String) {
             var lastSlash = path.lastIndexOf("/")
             if (lastSlash <= 0) {

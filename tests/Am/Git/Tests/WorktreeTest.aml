@@ -1,0 +1,145 @@
+namespace Am.Git.Tests {
+
+    // Linked work trees (`git worktree add`): the work tree's `.git` is a
+    // FILE naming a per-work-tree directory under the main repository's
+    // `.git/worktrees/<name>`, which holds HEAD / index / MERGE_HEAD and a
+    // `commondir` file pointing back at the shared `.git` (objects, refs,
+    // config). Repository.resolveGitDir follows the file, Repository.
+    // commonDir follows the marker, and everything that reads shared
+    // state goes through the latter - so HEAD resolves, objects are
+    // found and status works from inside a linked work tree.
+    class WorktreeTest {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+        import Am.Git
+        import Am.Tests
+
+        test plainRepositoryIsItsOwnCommonDir() {
+            WorktreeTest.scaffold()
+            try {
+                var gitDir = Repository.resolveGitDir("./testwt-main")
+                Assert.assertEquals("./testwt-main/.git", gitDir)
+                Assert.assertEquals("./testwt-main/.git", Repository.commonDir(gitDir))
+                // No .git at all: the plain path comes back for the caller's
+                // "not a repository" error.
+                Assert.assertEquals("./testwt-nowhere/.git", Repository.resolveGitDir("./testwt-nowhere"))
+            } catch (ex: Exception) {
+                WorktreeTest.cleanup()
+                throw ex
+            }
+            WorktreeTest.cleanup()
+        }
+
+        test linkedWorkTreeResolvesThroughGitFile() {
+            WorktreeTest.scaffold()
+            try {
+                var linkGitDir = Repository.resolveGitDir("./testwt-link")
+                Assert.assertEquals("testwt-main/.git/worktrees/link", linkGitDir)
+                Assert.assertEquals("testwt-main/.git", Repository.commonDir(linkGitDir))
+
+                // HEAD is per work tree, its branch's ref is shared.
+                var head = HeadReader.read(linkGitDir)
+                Assert.assertEquals("main", head.branch)
+                Assert.assertEquals(WorktreeTest.c1, head.commitSha)
+
+                // Objects come from the common dir.
+                var store = new ObjectStore(linkGitDir)
+                Assert.assertTrue(store.has(WorktreeTest.c1))
+                var writer = new LooseObjectWriter(linkGitDir)
+                var blob = writer.write("blob", "via link\n".toBytes("UTF-8"))
+                Assert.assertTrue(new File("./testwt-main/.git/objects/" + blob.substring(0UI, 2UI) + "/" + blob.substringToEnd(2UI)).exists())
+
+                // Config too: written through the link, read from the main .git.
+                var cfg = GitConfig.read(linkGitDir)
+                cfg.setValue("user.name", "via link")
+                cfg.write(linkGitDir)
+                Assert.assertEquals("via link", GitConfig.read("./testwt-main/.git").getValue("user.name"))
+                Assert.assertTrue(!new File(linkGitDir + "/config").exists())
+            } catch (ex: Exception) {
+                WorktreeTest.cleanup()
+                throw ex
+            }
+            WorktreeTest.cleanup()
+        }
+
+        test statusInsideLinkedWorkTree() {
+            WorktreeTest.scaffold()
+            try {
+                var linkGitDir = Repository.resolveGitDir("./testwt-link")
+                var st = StatusReport.pathStatus(linkGitDir, "./testwt-link")
+                Assert.assertEquals(0, st.buildKeys().getSize())
+
+                "changed\n".writeToFile("./testwt-link/a.txt")
+                "new\n".writeToFile("./testwt-link/b.txt")
+                var st2 = StatusReport.pathStatus(linkGitDir, "./testwt-link")
+                Assert.assertEquals("M", st2.get("a.txt"))
+                Assert.assertEquals("?", st2.get("b.txt"))
+
+                // The main work tree is untouched by the link's changes.
+                var mainSt = StatusReport.pathStatus("./testwt-main/.git", "./testwt-main")
+                Assert.assertEquals(0, mainSt.buildKeys().getSize())
+            } catch (ex: Exception) {
+                WorktreeTest.cleanup()
+                throw ex
+            }
+            WorktreeTest.cleanup()
+        }
+
+        test absoluteGitDirAndRelativePathFolding() {
+            WorktreeTest.scaffold()
+            try {
+                var cwd = File.getCurrentDirectory()
+                var abs = cwd + "/testwt-main/.git/worktrees/link"
+                ("gitdir: " + abs + "\n").writeToFile("./testwt-link/.git")
+                Assert.assertEquals(abs, Repository.resolveGitDir("./testwt-link"))
+                Assert.assertEquals(cwd + "/testwt-main/.git", Repository.commonDir(abs))
+
+                Assert.assertEquals("a/b", Repository.joinRelative("a/b/c/d", "../.."))
+                Assert.assertEquals("/x/y", Repository.joinRelative("/x/./z", "../y/"))
+                Assert.assertEquals("q", Repository.joinRelative("", "q"))
+                Assert.assertEquals("../q", Repository.joinRelative("p", "../../q"))
+            } catch (ex: Exception) {
+                WorktreeTest.cleanup()
+                throw ex
+            }
+            WorktreeTest.cleanup()
+        }
+
+        static var c1: String = ""
+
+        // A main repository with one commit (a.txt = "two\n") and a linked
+        // work tree "testwt-link" laid out exactly as `git worktree add`
+        // does it, with a relative gitdir.
+        static fun scaffold() {
+            WorktreeTest.cleanup()
+            Repository.init("./testwt-main", "main", false)
+            var gitDir = "./testwt-main/.git"
+            var writer = new LooseObjectWriter(gitDir)
+            var blob = writer.write("blob", "two\n".toBytes("UTF-8"))
+            var t = List<UByte>.newList<UByte>()
+            CheckoutClientTest.treeEntry(t, "100644", "a.txt", blob)
+            var tree = writer.write("tree", t.toArray())
+            WorktreeTest.c1 = CheckoutClientTest.commitObj(writer, tree, null, "c1")
+            (WorktreeTest.c1 + "\n").writeToFile(gitDir + "/refs/heads/main")
+            "ref: refs/heads/main\n".writeToFile(gitDir + "/HEAD")
+            "two\n".writeToFile("./testwt-main/a.txt")
+            var store = new ObjectStore(gitDir)
+            GitIndex.fromTree(tree, store).write(gitDir)
+
+            var linkGitDir = gitDir + "/worktrees/link"
+            Repository.ensureDir(linkGitDir)
+            "ref: refs/heads/main\n".writeToFile(linkGitDir + "/HEAD")
+            "../..\n".writeToFile(linkGitDir + "/commondir")
+            Repository.ensureDir("./testwt-link")
+            "gitdir: ../testwt-main/.git/worktrees/link\n".writeToFile("./testwt-link/.git")
+            "two\n".writeToFile("./testwt-link/a.txt")
+            GitIndex.fromTree(tree, store).write(linkGitDir)
+        }
+
+        static fun cleanup() {
+            CheckoutClientTest.deleteRecursive("./testwt-main")
+            CheckoutClientTest.deleteRecursive("./testwt-link")
+        }
+    }
+}

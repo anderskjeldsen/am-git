@@ -15,6 +15,10 @@ namespace Am.Git
     class LooseObjectReader(private var gitDir: String)
     {
         import Am.Lang
+
+        // Objects are shared by every work tree of a repository: they live
+        // under the common dir, not a linked work tree's own git dir.
+        private var commonDir: String = Repository.commonDir(this.gitDir)
         import Am.IO
         import Am.Z
 
@@ -82,7 +86,7 @@ namespace Am.Git
         fun pathFor(sha: String): String {
             var dir = sha.substring(0UI, 2UI)
             var rest = sha.substringToEnd(2UI)
-            return this.gitDir + "/objects/" + dir + "/" + rest
+            return this.commonDir + "/objects/" + dir + "/" + rest
         }
 
         // Reverse of `PackObject.typeName`. Throws on unknown type so

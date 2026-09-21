@@ -112,7 +112,7 @@ namespace Am.Git
         }
 
         private static fun configValue(key: String): String? {
-            var local = GitConfig.read(".git").getValue(key)
+            var local = GitConfig.read(Repository.resolveGitDir("")).getValue(key)
             if (local != null) {
                 return local
             }

@@ -25,7 +25,7 @@ namespace Am.Git
         import Am.IO
 
         static fun read(gitDir: String): GitConfig {
-            return GitConfig.readPath(gitDir + "/config")
+            return GitConfig.readPath(Repository.commonDir(gitDir) + "/config")
         }
 
         // Read a config file at an arbitrary path (e.g. `~/.gitconfig`).
@@ -192,8 +192,9 @@ namespace Am.Git
                 i = i + 1
             }
 
-            Repository.ensureParentDir(gitDir + "/config")
-            sb.toString().writeToFile(gitDir + "/config")
+            var path = Repository.commonDir(gitDir) + "/config"
+            Repository.ensureParentDir(path)
+            sb.toString().writeToFile(path)
         }
 
         // Render a sectionKey ("core" or "remote.origin") as an INI

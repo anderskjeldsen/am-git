@@ -116,8 +116,9 @@ namespace Am.Git
         private static fun collectHaves(gitDir: String, remoteName: String): List<String> {
             var haves = List<String>.newList<String>()
             var seen = new HashMap<String, Bool>()
-            FetchClient.collectRefShas(gitDir + "/refs/heads", haves, seen)
-            FetchClient.collectRefShas(gitDir + "/refs/remotes/" + remoteName, haves, seen)
+            var common = Repository.commonDir(gitDir)
+            FetchClient.collectRefShas(common + "/refs/heads", haves, seen)
+            FetchClient.collectRefShas(common + "/refs/remotes/" + remoteName, haves, seen)
             return haves
         }
 
@@ -161,7 +162,7 @@ namespace Am.Git
                 var refPath: String? = null
                 if (r.name.startsWith("refs/heads/")) {
                     var branch = r.name.substringToEnd(11UI)
-                    refPath = gitDir + "/refs/remotes/" + remoteName + "/" + branch
+                    refPath = Repository.commonDir(gitDir) + "/refs/remotes/" + remoteName + "/" + branch
                 } else if (r.name.startsWith("refs/tags/")) {
                     refPath = gitDir + "/" + r.name
                 }

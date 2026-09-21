@@ -268,7 +268,7 @@ namespace AmGit
         }
 
         private static fun configList() {
-            var cfg = GitConfig.read(".git")
+            var cfg = GitConfig.read(Program.gitDir())
             var keys = cfg.keys()
             // Sort bytewise for stable output - same rule as
             // GitConfig.write uses internally.
@@ -282,7 +282,7 @@ namespace AmGit
         }
 
         private static fun configGet(key: String) {
-            var cfg = GitConfig.read(".git")
+            var cfg = GitConfig.read(Program.gitDir())
             var v = cfg.getValue(key)
             if (v != null) {
                 v.println()
@@ -296,18 +296,18 @@ namespace AmGit
                     "' - keys must be `<section>.<key>` or `<section>.<sub>.<key>`").println()
                 return
             }
-            var cfg = GitConfig.read(".git")
+            var cfg = GitConfig.read(Program.gitDir())
             cfg.setValue(key, value)
-            cfg.write(".git")
+            cfg.write(Program.gitDir())
         }
 
         private static fun configUnset(key: String) {
-            var cfg = GitConfig.read(".git")
+            var cfg = GitConfig.read(Program.gitDir())
             if (!cfg.unsetValue(key)) {
                 ("config: key '" + key + "' not set").println()
                 return
             }
-            cfg.write(".git")
+            cfg.write(Program.gitDir())
         }
 
         // A key needs at least one `.` (separating section from field
@@ -318,6 +318,26 @@ namespace AmGit
             return key != null && key.length() > 0 && key.indexOf(".") > 0
         }
 
+        // The git dir of the work tree the command runs in, resolved
+        // once: ".git" itself, or - in a linked work tree, where .git is
+        // a file - the per-work-tree directory it names (Repository.
+        // resolveGitDir). Per-work-tree state (HEAD, index, MERGE_HEAD,
+        // ...) lives there; refs, objects and config are in commonDir().
+        private static var resolvedGitDir: String? = null
+
+        static fun gitDir(): String {
+            var d = Program.resolvedGitDir
+            if (d == null) {
+                d = Repository.resolveGitDir("")
+                Program.resolvedGitDir = d
+            }
+            return d
+        }
+
+        static fun commonDir(): String {
+            return Repository.commonDir(Program.gitDir())
+        }
+
         private static fun runInit(args: String[]) {
             try {
                 var target = "."
@@ -325,7 +345,7 @@ namespace AmGit
                     target = args[1UI]
                 }
                 // normalizePath turns "." and "./" into "", so the cwd case
-                // uses the same bare relative ".git" every reader uses, and
+                // uses the same bare relative Program.gitDir() every reader uses, and
                 // init cannot end up pointed at a different directory than
                 // the commands that follow it. See Repository.normalizePath
                 // for why "." is a trap on AmigaOS.
@@ -503,7 +523,7 @@ namespace AmGit
                 var stream = new FileStream(file, FileAccess.readOnly)
                 var content = stream.readAll()
                 if (write) {
-                    var writer = new LooseObjectWriter(".git")
+                    var writer = new LooseObjectWriter(Program.gitDir())
                     writer.write("blob", content).println()
                 } else {
                     PackObject.computeSha("blob", content).println()
@@ -540,7 +560,7 @@ namespace AmGit
         // against `./.git` in the cwd.
         private static fun runHead(args: String[]) {
             try {
-                var info = HeadReader.read(".git")
+                var info = HeadReader.read(Program.gitDir())
                 if (info.detached) {
                     ("detached HEAD at " + info.commitSha).println()
                 } else if (info.isInitial()) {
@@ -560,7 +580,7 @@ namespace AmGit
         // same on-disk state.
         private static fun runWriteTree(args: String[]) {
             try {
-                var writer = new LooseObjectWriter(".git")
+                var writer = new LooseObjectWriter(Program.gitDir())
                 var builder = new TreeBuilder(Repository.resolveWorkTree("."), writer)
                 builder.build().println()
             } catch (ex: Exception) {
@@ -617,7 +637,7 @@ namespace AmGit
                     committerTime = new DateTime()
                 }
 
-                var writer = new LooseObjectWriter(".git")
+                var writer = new LooseObjectWriter(Program.gitDir())
                 var commitWriter = new CommitWriter(writer)
                 commitWriter.write(treeSha, parentSha,
                                     author, authorTime,
@@ -677,7 +697,7 @@ namespace AmGit
                 // advancing the rebase's todo, leaving a half-rebased
                 // state. The user should `am-git rebase --continue`
                 // or `--abort`.
-                if (RebaseState.isInProgress(".git")) {
+                if (RebaseState.isInProgress(Program.gitDir())) {
                     "commit: rebase in progress - use `am-git rebase --continue` or `--abort`".println()
                     return
                 }
@@ -693,7 +713,7 @@ namespace AmGit
                     return
                 }
 
-                var head = HeadReader.read(".git")
+                var head = HeadReader.read(Program.gitDir())
 
                 var author = Identity.loadAuthor()
                 var committer = Identity.loadCommitter()
@@ -710,17 +730,17 @@ namespace AmGit
                     committerTime = new DateTime()
                 }
 
-                var writer = new LooseObjectWriter(".git")
+                var writer = new LooseObjectWriter(Program.gitDir())
                 // Prefer the index when one exists - real git semantics.
                 // No index file -> fall back to walking the working
                 // tree, preserving am-git's pre-index "commit
                 // everything" behaviour for repos that haven't run
                 // `am-git add` yet.
                 var treeSha: String? = null
-                var indexFile = new File(".git/index")
+                var indexFile = new File(Program.gitDir() + "/index")
                 var idxForUnmergedCheck: GitIndex? = null
                 if (indexFile.exists()) {
-                    var idx = GitIndex.read(".git")
+                    var idx = GitIndex.read(Program.gitDir())
                     idxForUnmergedCheck = idx
                     if (idx.entries.getSize() == 0) {
                         "commit: nothing to commit (index is empty)".println()
@@ -745,7 +765,7 @@ namespace AmGit
                     treeSha = IndexTreeBuilder.build(idx, writer)
                     // The build recorded the cached tree on the index:
                     // persist it so the next status skips HEAD's trees.
-                    idx.write(".git")
+                    idx.write(Program.gitDir())
                 } else {
                     treeSha = new TreeBuilder(Repository.resolveWorkTree("."), writer).build()
                 }
@@ -758,10 +778,10 @@ namespace AmGit
                 if (head.commitSha != null) {
                     parents.add(head.commitSha)
                 }
-                var mergeHeadFile = new File(".git/MERGE_HEAD")
+                var mergeHeadFile = new File(Program.gitDir() + "/MERGE_HEAD")
                 var inMergeFinalisation = mergeHeadFile.exists()
                 if (inMergeFinalisation) {
-                    var rawMergeHead = String.readFromFile(".git/MERGE_HEAD")
+                    var rawMergeHead = String.readFromFile(Program.gitDir() + "/MERGE_HEAD")
                     parents.add(Program.trim(rawMergeHead))
                 }
 
@@ -776,9 +796,9 @@ namespace AmGit
                 // on the unborn-branch path); for detached HEAD we
                 // overwrite `.git/HEAD` itself.
                 if (head.detached) {
-                    (commitSha + "\n").writeToFile(".git/HEAD")
+                    (commitSha + "\n").writeToFile(Program.gitDir() + "/HEAD")
                 } else {
-                    var refPath = ".git/refs/heads/" + head.branch
+                    var refPath = Program.commonDir() + "/refs/heads/" + head.branch
                     Repository.ensureParentDir(refPath)
                     (commitSha + "\n").writeToFile(refPath)
                 }
@@ -794,14 +814,14 @@ namespace AmGit
                 // fresh `ObjectStore` - same-process write->read of a
                 // loose object isn't reliable on AmigaOS, and we
                 // already have every object we just wrote in memory.
-                GitIndex.fromTreeMap(treeSha, writer.written).write(".git")
+                GitIndex.fromTreeMap(treeSha, writer.written).write(Program.gitDir())
 
                 // If this was a merge-commit finalisation, the merge
                 // is done - clear the two metadata files so the next
                 // commit isn't accidentally promoted into a merge.
                 if (inMergeFinalisation) {
-                    Program.deleteIfExists(".git/MERGE_HEAD")
-                    Program.deleteIfExists(".git/MERGE_MSG")
+                    Program.deleteIfExists(Program.gitDir() + "/MERGE_HEAD")
+                    Program.deleteIfExists(Program.gitDir() + "/MERGE_MSG")
                 }
 
                 // Summary line. `firstLine` is the message up to the
@@ -839,7 +859,7 @@ namespace AmGit
                 }
                 var flag = args[1UI]
                 var sha = args[2UI]
-                var reader = new LooseObjectReader(".git")
+                var reader = new LooseObjectReader(Program.gitDir())
                 var obj = reader.read(sha)
                 if (flag == "-t") {
                     obj.typeName().println()
@@ -882,7 +902,7 @@ namespace AmGit
                 if (args.length() >= 3UI) {
                     haveSha = args[2UI]
                 }
-                var store = new ObjectStore(".git")
+                var store = new ObjectStore(Program.gitDir())
                 var walker = new ObjectWalker(store)
                 var shas = walker.collect(newSha, haveSha)
                 var i = 0
@@ -912,7 +932,7 @@ namespace AmGit
                 if (args.length() >= 4UI) {
                     haveSha = args[3UI]
                 }
-                var store = new ObjectStore(".git")
+                var store = new ObjectStore(Program.gitDir())
                 var walker = new ObjectWalker(store)
                 var shas = walker.collect(newSha, haveSha)
                 ("Walking " + shas.getSize().toString() + " objects").println()
@@ -956,7 +976,7 @@ namespace AmGit
                 var newSha = args[3UI]
                 var refName = args[4UI]
 
-                var store = new ObjectStore(".git")
+                var store = new ObjectStore(Program.gitDir())
                 var walker = new ObjectWalker(store)
                 var shas = walker.collect(newSha, oldSha)
                 ("Walking " + shas.getSize().toString() + " objects").println()
@@ -1021,14 +1041,14 @@ namespace AmGit
                 if (args.length() >= 3UI) {
                     branch = args[2UI]
                 }
-                var rc = PullClient.pull(".git", ".", remoteUrl, branch, "origin")
+                var rc = PullClient.pull(Program.gitDir(), ".", remoteUrl, branch, "origin")
                 if (rc == 2) {
                     // Non-fast-forward: the fetch is done and the remote-
                     // tracking ref holds the server's tip. Merge it into
                     // the CURRENT branch with the same 3-way machinery as
                     // `am-git merge` (conflicts land in the worktree with
                     // markers + MERGE_HEAD, exactly like a local merge).
-                    var head = HeadReader.read(".git")
+                    var head = HeadReader.read(Program.gitDir())
                     if (head.detached || head.commitSha == null) {
                         "pull: cannot merge into a detached or unborn HEAD".println()
                         return
@@ -1043,10 +1063,10 @@ namespace AmGit
                          "checkout first, or merge origin/" + mergeBranch + " explicitly").println()
                         return
                     }
-                    var remoteRefPath = ".git/refs/remotes/origin/" + mergeBranch
+                    var remoteRefPath = Program.commonDir() + "/refs/remotes/origin/" + mergeBranch
                     var theirsSha = String.readFromFile(remoteRefPath).trim()
                     var theirsName = "origin/" + mergeBranch
-                    var store = new ObjectStore(".git")
+                    var store = new ObjectStore(Program.gitDir())
                     var baseSha = MergeBase.find(head.commitSha, theirsSha, store)
                     if (baseSha == null) {
                         "pull: refusing to merge unrelated histories".println()
@@ -1081,7 +1101,7 @@ namespace AmGit
                     ("merge-base: cannot resolve '" + args[2UI] + "'").println()
                     return
                 }
-                var store = new ObjectStore(".git")
+                var store = new ObjectStore(Program.gitDir())
                 var baseSha = MergeBase.find(aSha, bSha, store)
                 if (baseSha != null) {
                     baseSha.println()
@@ -1117,7 +1137,7 @@ namespace AmGit
                     ("merge-plan: cannot resolve '" + args[2UI] + "'").println()
                     return
                 }
-                var store = new ObjectStore(".git")
+                var store = new ObjectStore(Program.gitDir())
                 var baseSha = MergeBase.find(oursSha, theirsSha, store)
                 if (baseSha == null) {
                     "merge-plan: no common ancestor (unrelated histories)".println()
@@ -1206,7 +1226,7 @@ namespace AmGit
                     "usage: am-git merge <branch>".println()
                     return
                 }
-                var head = HeadReader.read(".git")
+                var head = HeadReader.read(Program.gitDir())
                 if (head.detached) {
                     "merge: cannot merge from detached HEAD".println()
                     return
@@ -1224,7 +1244,7 @@ namespace AmGit
                 }
                 var oursSha = head.commitSha
 
-                var store = new ObjectStore(".git")
+                var store = new ObjectStore(Program.gitDir())
                 var baseSha = MergeBase.find(oursSha, theirsSha, store)
                 if (baseSha == null) {
                     "merge: refusing to merge unrelated histories".println()
@@ -1256,7 +1276,7 @@ namespace AmGit
         // is fast-forwardable.
         private static fun fastForwardMerge(head: HeadInfo, theirsSha: String,
                                              theirsName: String) {
-            var refPath = ".git/refs/heads/" + head.branch
+            var refPath = Program.commonDir() + "/refs/heads/" + head.branch
             Repository.ensureParentDir(refPath)
             (theirsSha + "\n").writeToFile(refPath)
 
@@ -1264,7 +1284,7 @@ namespace AmGit
             // reuse CheckoutClient since the semantics are the same
             // as a regular branch checkout - only the ref name
             // differs, and we've already moved it.
-            CheckoutClient.checkout(".git", ".", head.branch)
+            CheckoutClient.checkout(Program.gitDir(), ".", head.branch)
 
             ("Fast-forward: " + head.branch + " advanced to " +
                 theirsSha.substring(0UI, 7UI) + " (was " +
@@ -1286,10 +1306,10 @@ namespace AmGit
             // Read or initialise the index. For a fresh worktree-only
             // commit history the index may not exist yet; the applier
             // populates it with stage-0 entries for everything.
-            var idx = GitIndex.read(".git")
+            var idx = GitIndex.read(Program.gitDir())
             var applier = new MergeApplier(Repository.resolveWorkTree("."), store, idx)
             var conflicts = applier.apply(plan)
-            idx.write(".git")
+            idx.write(Program.gitDir())
 
             if (conflicts.getSize() == 0) {
                 Program.completeMergeCommit(head, oursSha, theirsSha, theirsName, store)
@@ -1300,7 +1320,7 @@ namespace AmGit
             // once the user resolves. MERGE_HEAD holds the second
             // parent SHA; MERGE_MSG is a default commit message
             // including the conflict list (same shape as real git).
-            (theirsSha + "\n").writeToFile(".git/MERGE_HEAD")
+            (theirsSha + "\n").writeToFile(Program.gitDir() + "/MERGE_HEAD")
             Program.writeMergeMsg(theirsName, conflicts)
             ("Auto-merging produced conflicts in " +
                 conflicts.getSize().toString() + " file(s):").println()
@@ -1330,8 +1350,8 @@ namespace AmGit
             var committerTime = Identity.loadCommitterDate()
             if (committerTime == null) { committerTime = new DateTime() }
 
-            var idx = GitIndex.read(".git")
-            var writer = new LooseObjectWriter(".git")
+            var idx = GitIndex.read(Program.gitDir())
+            var writer = new LooseObjectWriter(Program.gitDir())
             var treeSha = IndexTreeBuilder.build(idx, writer)
 
             var parents = List<String>.newList<String>()
@@ -1343,15 +1363,15 @@ namespace AmGit
                 treeSha, parents, author, authorTime,
                 committer, committerTime, message)
 
-            var refPath = ".git/refs/heads/" + head.branch
+            var refPath = Program.commonDir() + "/refs/heads/" + head.branch
             Repository.ensureParentDir(refPath)
             (commitSha + "\n").writeToFile(refPath)
 
             // Clean up any stale merge metadata (a previous interrupted
             // merge could have left these around - but in the clean
             // path neither file should exist).
-            Program.deleteIfExists(".git/MERGE_HEAD")
-            Program.deleteIfExists(".git/MERGE_MSG")
+            Program.deleteIfExists(Program.gitDir() + "/MERGE_HEAD")
+            Program.deleteIfExists(Program.gitDir() + "/MERGE_MSG")
 
             ("Merge made by 'am-git merge' [" + head.branch + " " +
                 commitSha.substring(0UI, 7UI) + "]").println()
@@ -1371,7 +1391,7 @@ namespace AmGit
                 sb.add("#\t").add(conflicts.get(i)).add("\n")
                 i = i + 1
             }
-            sb.toString().writeToFile(".git/MERGE_MSG")
+            sb.toString().writeToFile(Program.gitDir() + "/MERGE_MSG")
         }
 
         private static fun deleteIfExists(path: String) {
@@ -1435,7 +1455,7 @@ namespace AmGit
                 }
                 // Starting a fresh rebase. Refuse if one's already
                 // in progress - the user should --continue or --abort.
-                if (RebaseState.isInProgress(".git")) {
+                if (RebaseState.isInProgress(Program.gitDir())) {
                     "rebase: a rebase is already in progress. Use `--continue` or `--abort`.".println()
                     return
                 }
@@ -1456,7 +1476,7 @@ namespace AmGit
         // ORIG_HEAD, resets the branch to upstream, and dispatches
         // the commit-replay loop.
         private static fun runRebaseStart(upstreamName: String) {
-            var head = HeadReader.read(".git")
+            var head = HeadReader.read(Program.gitDir())
             if (head.detached) {
                 "rebase: cannot rebase from detached HEAD".println()
                 return
@@ -1471,7 +1491,7 @@ namespace AmGit
                 return
             }
 
-            var store = new ObjectStore(".git")
+            var store = new ObjectStore(Program.gitDir())
             var baseSha = MergeBase.find(head.commitSha, upstreamSha, store)
             if (baseSha == null) {
                 "rebase: refusing to rebase on unrelated history".println()
@@ -1508,13 +1528,13 @@ namespace AmGit
             // Save ORIG_HEAD (real git's convention) so the user can
             // do their own `am-git reset --hard ORIG_HEAD` even
             // outside the rebase machinery if they want.
-            (head.commitSha + "\n").writeToFile(".git/ORIG_HEAD")
+            (head.commitSha + "\n").writeToFile(Program.gitDir() + "/ORIG_HEAD")
 
             // Reset the branch to upstream - both ref and worktree
             // + index. From here, every successful apply moves the
             // ref forward; a conflict freezes state for --continue.
             Program.moveBranchRef(head.branch, upstreamSha)
-            CheckoutClient.applyCommitToWorkTree(".git", ".", upstreamSha, false)
+            CheckoutClient.applyCommitToWorkTree(Program.gitDir(), ".", upstreamSha, false)
 
             // Build the initial state - no stoppedSha yet, full todo
             // queue. The processing loop pops commits off the front
@@ -1552,7 +1572,7 @@ namespace AmGit
                 if (!store.has(nextSha)) {
                     ("rebase: commit " + nextSha + " not in object store").println()
                     state.stoppedSha = nextSha
-                    state.save(".git")
+                    state.save(Program.gitDir())
                     return
                 }
                 var obj = store.read(nextSha)
@@ -1570,7 +1590,7 @@ namespace AmGit
                     // Conflict. Persist state so `--continue` can pick
                     // up after the user resolves.
                     state.stoppedSha = nextSha
-                    state.save(".git")
+                    state.save(Program.gitDir())
                     ("rebase: conflict re-applying " + nextSha.substring(0UI, 7UI) +
                         " '" + Program.firstLine(commit.message) + "'").println()
                     "  Resolve the conflicts, run `am-git add <file>...`, then `am-git rebase --continue`.".println()
@@ -1584,7 +1604,7 @@ namespace AmGit
             }
 
             // Drained the todo cleanly. Tidy up.
-            RebaseState.clear(".git")
+            RebaseState.clear(Program.gitDir())
             var branch = Program.stripRefsHeads(state.headName)
             ("Successfully rebased " + branch + " onto " +
                 state.onto.substring(0UI, 7UI)).println()
@@ -1595,11 +1615,11 @@ namespace AmGit
         // the stopped commit from the index, then drain the rest of
         // the todo.
         private static fun runRebaseContinue() {
-            if (!RebaseState.isInProgress(".git")) {
+            if (!RebaseState.isInProgress(Program.gitDir())) {
                 "rebase: no rebase in progress".println()
                 return
             }
-            var state = RebaseState.load(".git")
+            var state = RebaseState.load(Program.gitDir())
             if (state.stoppedSha == null) {
                 "rebase: state file has no stopped-sha - corrupted rebase, try --abort".println()
                 return
@@ -1607,7 +1627,7 @@ namespace AmGit
 
             // Index must be clean (no stage > 0 rows). The user is
             // expected to have `am-git add`ed every resolved file.
-            var idx = GitIndex.read(".git")
+            var idx = GitIndex.read(Program.gitDir())
             if (idx.hasUnmerged()) {
                 "rebase: unresolved merge conflicts in the index - `am-git add` the resolved paths first".println()
                 var i = 0
@@ -1624,13 +1644,13 @@ namespace AmGit
             // Resolve the head ref. We re-read HEAD rather than
             // trusting state, so that any manual ref edits the user
             // made aren't silently clobbered.
-            var head = HeadReader.read(".git")
+            var head = HeadReader.read(Program.gitDir())
             if (head.commitSha == null) {
                 "rebase: HEAD has no commit - corrupted state, try --abort".println()
                 return
             }
 
-            var store = new ObjectStore(".git")
+            var store = new ObjectStore(Program.gitDir())
             // Re-fetch the stopped commit's metadata.
             if (!store.has(state.stoppedSha)) {
                 ("rebase: stopped commit " + state.stoppedSha + " not in object store").println()
@@ -1654,7 +1674,7 @@ namespace AmGit
             if (committerTime == null) {
                 committerTime = new DateTime()
             }
-            var writer = new LooseObjectWriter(".git")
+            var writer = new LooseObjectWriter(Program.gitDir())
             var newTreeSha = IndexTreeBuilder.build(idx, writer)
             var newCommitSha = new CommitWriter(writer).writeRawAuthor(
                 newTreeSha, head.commitSha,
@@ -1677,19 +1697,19 @@ namespace AmGit
         // `am-git rebase --abort` - read orig-head, reset --hard to
         // it, clear the state dir.
         private static fun runRebaseAbort() {
-            if (!RebaseState.isInProgress(".git")) {
+            if (!RebaseState.isInProgress(Program.gitDir())) {
                 "rebase: no rebase in progress".println()
                 return
             }
-            var state = RebaseState.load(".git")
+            var state = RebaseState.load(Program.gitDir())
             if (state.origHead == null) {
                 "rebase: state file missing orig-head - can't abort cleanly. Inspect .git/rebase-merge/.".println()
                 return
             }
             var branch = Program.stripRefsHeads(state.headName)
             Program.moveBranchRef(branch, state.origHead)
-            CheckoutClient.applyCommitToWorkTree(".git", ".", state.origHead, false)
-            RebaseState.clear(".git")
+            CheckoutClient.applyCommitToWorkTree(Program.gitDir(), ".", state.origHead, false)
+            RebaseState.clear(Program.gitDir())
             ("Rebase aborted; " + branch + " restored to " +
                 state.origHead.substring(0UI, 7UI)).println()
         }
@@ -1754,7 +1774,7 @@ namespace AmGit
                     "cherry-pick: revert in progress - finish or abort that first".println()
                     return
                 }
-                if (RebaseState.isInProgress(".git")) {
+                if (RebaseState.isInProgress(Program.gitDir())) {
                     "cherry-pick: rebase in progress - finish or abort that first".println()
                     return
                 }
@@ -1771,7 +1791,7 @@ namespace AmGit
         // `--continue` knows which commit's metadata to finalise
         // with.
         private static fun runCherryPickStart(commitish: String) {
-            var head = HeadReader.read(".git")
+            var head = HeadReader.read(Program.gitDir())
             if (head.detached) {
                 "cherry-pick: cannot cherry-pick onto detached HEAD".println()
                 return
@@ -1785,7 +1805,7 @@ namespace AmGit
                 ("cherry-pick: cannot resolve '" + commitish + "'").println()
                 return
             }
-            var store = new ObjectStore(".git")
+            var store = new ObjectStore(Program.gitDir())
             if (!store.has(pickedSha)) {
                 ("cherry-pick: " + pickedSha + " not in object store").println()
                 return
@@ -1811,7 +1831,7 @@ namespace AmGit
             if (newSha == null) {
                 // Conflict. Persist the picked SHA so --continue can
                 // pull author + message back out of the object store.
-                (pickedSha + "\n").writeToFile(".git/CHERRY_PICK_HEAD")
+                (pickedSha + "\n").writeToFile(Program.gitDir() + "/CHERRY_PICK_HEAD")
                 ("cherry-pick: conflict applying " + pickedSha.substring(0UI, 7UI) +
                     " '" + Program.firstLine(commit.message) + "'").println()
                 "  Resolve the conflicts, run `am-git add <file>...`, then `am-git cherry-pick --continue`.".println()
@@ -1832,13 +1852,13 @@ namespace AmGit
                 "cherry-pick: no cherry-pick in progress".println()
                 return
             }
-            var pickedSha = Program.trim(String.readFromFile(".git/CHERRY_PICK_HEAD"))
+            var pickedSha = Program.trim(String.readFromFile(Program.gitDir() + "/CHERRY_PICK_HEAD"))
             if (pickedSha == null || pickedSha.length() != 40) {
                 "cherry-pick: .git/CHERRY_PICK_HEAD is corrupted; use --abort".println()
                 return
             }
 
-            var idx = GitIndex.read(".git")
+            var idx = GitIndex.read(Program.gitDir())
             if (idx.hasUnmerged()) {
                 "cherry-pick: unresolved merge conflicts in the index - `am-git add` the resolved paths first".println()
                 var ci = 0
@@ -1852,13 +1872,13 @@ namespace AmGit
                 return
             }
 
-            var head = HeadReader.read(".git")
+            var head = HeadReader.read(Program.gitDir())
             if (head.commitSha == null) {
                 "cherry-pick: HEAD has no commit - corrupted state, use --abort".println()
                 return
             }
 
-            var store = new ObjectStore(".git")
+            var store = new ObjectStore(Program.gitDir())
             if (!store.has(pickedSha)) {
                 ("cherry-pick: picked commit " + pickedSha + " not in object store").println()
                 return
@@ -1875,7 +1895,7 @@ namespace AmGit
             if (committerTime == null) {
                 committerTime = new DateTime()
             }
-            var writer = new LooseObjectWriter(".git")
+            var writer = new LooseObjectWriter(Program.gitDir())
             var newTreeSha = IndexTreeBuilder.build(idx, writer)
             var newCommitSha = new CommitWriter(writer).writeRawAuthor(
                 newTreeSha, head.commitSha,
@@ -1884,7 +1904,7 @@ namespace AmGit
                 pickedCommit.message)
 
             Program.moveBranchRef(head.branch, newCommitSha)
-            Program.deleteIfExists(".git/CHERRY_PICK_HEAD")
+            Program.deleteIfExists(Program.gitDir() + "/CHERRY_PICK_HEAD")
             ("Cherry-picked " + pickedSha.substring(0UI, 7UI) + " -> " +
                 newCommitSha.substring(0UI, 7UI) + " '" +
                 Program.firstLine(pickedCommit.message) + "' (continued)").println()
@@ -1900,19 +1920,19 @@ namespace AmGit
                 "cherry-pick: no cherry-pick in progress".println()
                 return
             }
-            var head = HeadReader.read(".git")
+            var head = HeadReader.read(Program.gitDir())
             if (head.commitSha == null) {
                 "cherry-pick: HEAD has no commit to restore to".println()
                 return
             }
-            CheckoutClient.applyCommitToWorkTree(".git", ".", head.commitSha, false)
-            Program.deleteIfExists(".git/CHERRY_PICK_HEAD")
+            CheckoutClient.applyCommitToWorkTree(Program.gitDir(), ".", head.commitSha, false)
+            Program.deleteIfExists(Program.gitDir() + "/CHERRY_PICK_HEAD")
             "Cherry-pick aborted; workdir restored.".println()
         }
 
         // True iff `.git/CHERRY_PICK_HEAD` exists.
         private static fun cherryPickInProgress(): Bool {
-            return new File(".git/CHERRY_PICK_HEAD").exists()
+            return new File(Program.gitDir() + "/CHERRY_PICK_HEAD").exists()
         }
 
         // `am-git revert <commit>` - produce a new commit that undoes
@@ -1965,7 +1985,7 @@ namespace AmGit
                     "revert: cherry-pick in progress - finish or abort that first".println()
                     return
                 }
-                if (RebaseState.isInProgress(".git")) {
+                if (RebaseState.isInProgress(Program.gitDir())) {
                     "revert: rebase in progress - finish or abort that first".println()
                     return
                 }
@@ -1980,7 +2000,7 @@ namespace AmGit
         // 3-way merge has base=commit's tree, theirs=parent's tree -
         // i.e. the inverse-diff direction.
         private static fun runRevertStart(commitish: String) {
-            var head = HeadReader.read(".git")
+            var head = HeadReader.read(Program.gitDir())
             if (head.detached) {
                 "revert: cannot revert onto detached HEAD".println()
                 return
@@ -1994,7 +2014,7 @@ namespace AmGit
                 ("revert: cannot resolve '" + commitish + "'").println()
                 return
             }
-            var store = new ObjectStore(".git")
+            var store = new ObjectStore(Program.gitDir())
             if (!store.has(pickedSha)) {
                 ("revert: " + pickedSha + " not in object store").println()
                 return
@@ -2018,7 +2038,7 @@ namespace AmGit
 
             var newSha = Program.invertedReplayCommit(commit, head.commitSha, head.branch, store)
             if (newSha == null) {
-                (pickedSha + "\n").writeToFile(".git/REVERT_HEAD")
+                (pickedSha + "\n").writeToFile(Program.gitDir() + "/REVERT_HEAD")
                 ("revert: conflict reverting " + pickedSha.substring(0UI, 7UI) +
                     " '" + Program.firstLine(commit.message) + "'").println()
                 "  Resolve the conflicts, run `am-git add <file>...`, then `am-git revert --continue`.".println()
@@ -2049,10 +2069,10 @@ namespace AmGit
 
             var plan = MergePlan.compute(baseTree, oursTree, theirsTree, store)
 
-            var idx = GitIndex.read(".git")
+            var idx = GitIndex.read(Program.gitDir())
             var applier = new MergeApplier(Repository.resolveWorkTree("."), store, idx)
             var conflicts = applier.apply(plan)
-            idx.write(".git")
+            idx.write(Program.gitDir())
             if (conflicts.getSize() > 0) {
                 return null
             }
@@ -2060,8 +2080,8 @@ namespace AmGit
             // Build a new commit. Author = the user doing the revert
             // (not the original commit's author), message =
             // `Revert "<first line>"\n\nThis reverts commit <SHA>.\n`
-            var idxAfter = GitIndex.read(".git")
-            var writer = new LooseObjectWriter(".git")
+            var idxAfter = GitIndex.read(Program.gitDir())
+            var writer = new LooseObjectWriter(Program.gitDir())
             var newTreeSha = IndexTreeBuilder.build(idxAfter, writer)
 
             var author = Identity.loadAuthor()
@@ -2093,13 +2113,13 @@ namespace AmGit
                 "revert: no revert in progress".println()
                 return
             }
-            var pickedSha = Program.trim(String.readFromFile(".git/REVERT_HEAD"))
+            var pickedSha = Program.trim(String.readFromFile(Program.gitDir() + "/REVERT_HEAD"))
             if (pickedSha == null || pickedSha.length() != 40) {
                 "revert: .git/REVERT_HEAD is corrupted; use --abort".println()
                 return
             }
 
-            var idx = GitIndex.read(".git")
+            var idx = GitIndex.read(Program.gitDir())
             if (idx.hasUnmerged()) {
                 "revert: unresolved merge conflicts in the index - `am-git add` the resolved paths first".println()
                 var ri = 0
@@ -2113,12 +2133,12 @@ namespace AmGit
                 return
             }
 
-            var head = HeadReader.read(".git")
+            var head = HeadReader.read(Program.gitDir())
             if (head.commitSha == null) {
                 "revert: HEAD has no commit - corrupted state, use --abort".println()
                 return
             }
-            var store = new ObjectStore(".git")
+            var store = new ObjectStore(Program.gitDir())
             if (!store.has(pickedSha)) {
                 ("revert: picked commit " + pickedSha + " not in object store").println()
                 return
@@ -2137,7 +2157,7 @@ namespace AmGit
             var committerTime = Identity.loadCommitterDate()
             if (committerTime == null) { committerTime = new DateTime() }
 
-            var writer = new LooseObjectWriter(".git")
+            var writer = new LooseObjectWriter(Program.gitDir())
             var newTreeSha = IndexTreeBuilder.build(idx, writer)
             var message = Program.buildRevertMessage(pickedCommit)
             var newCommitSha = new CommitWriter(writer).write(
@@ -2147,7 +2167,7 @@ namespace AmGit
                 message)
 
             Program.moveBranchRef(head.branch, newCommitSha)
-            Program.deleteIfExists(".git/REVERT_HEAD")
+            Program.deleteIfExists(Program.gitDir() + "/REVERT_HEAD")
             ("Reverted " + pickedSha.substring(0UI, 7UI) + " -> " +
                 newCommitSha.substring(0UI, 7UI) + " (continued)").println()
         }
@@ -2160,19 +2180,19 @@ namespace AmGit
                 "revert: no revert in progress".println()
                 return
             }
-            var head = HeadReader.read(".git")
+            var head = HeadReader.read(Program.gitDir())
             if (head.commitSha == null) {
                 "revert: HEAD has no commit to restore to".println()
                 return
             }
-            CheckoutClient.applyCommitToWorkTree(".git", ".", head.commitSha, false)
-            Program.deleteIfExists(".git/REVERT_HEAD")
+            CheckoutClient.applyCommitToWorkTree(Program.gitDir(), ".", head.commitSha, false)
+            Program.deleteIfExists(Program.gitDir() + "/REVERT_HEAD")
             "Revert aborted; workdir restored.".println()
         }
 
         // True iff `.git/REVERT_HEAD` exists.
         private static fun revertInProgress(): Bool {
-            return new File(".git/REVERT_HEAD").exists()
+            return new File(Program.gitDir() + "/REVERT_HEAD").exists()
         }
 
         // Default revert message - matches `git revert`'s template.
@@ -2191,7 +2211,7 @@ namespace AmGit
         // checkout, no commits to replay.
         private static fun rebaseFastForward(head: HeadInfo, upstreamSha: String) {
             Program.moveBranchRef(head.branch, upstreamSha)
-            CheckoutClient.applyCommitToWorkTree(".git", ".", upstreamSha, false)
+            CheckoutClient.applyCommitToWorkTree(Program.gitDir(), ".", upstreamSha, false)
             ("Fast-forward: " + head.branch + " advanced to " +
                 upstreamSha.substring(0UI, 7UI)).println()
         }
@@ -2263,18 +2283,18 @@ namespace AmGit
 
             var plan = MergePlan.compute(baseTree, oursTree, theirsTree, store)
 
-            var idx = GitIndex.read(".git")
+            var idx = GitIndex.read(Program.gitDir())
             var applier = new MergeApplier(Repository.resolveWorkTree("."), store, idx)
             var conflicts = applier.apply(plan)
-            idx.write(".git")
+            idx.write(Program.gitDir())
 
             if (conflicts.getSize() > 0) {
                 return null
             }
 
             // Build a new tree from the resolved index, then commit.
-            var idxAfter = GitIndex.read(".git")
-            var writer = new LooseObjectWriter(".git")
+            var idxAfter = GitIndex.read(Program.gitDir())
+            var writer = new LooseObjectWriter(Program.gitDir())
             var newTreeSha = IndexTreeBuilder.build(idxAfter, writer)
 
             var committer = Identity.loadCommitter()
@@ -2327,7 +2347,7 @@ namespace AmGit
         // ensureParentDir + trailing-newline contract lives in one
         // spot.
         private static fun moveBranchRef(branch: String, sha: String) {
-            var refPath = ".git/refs/heads/" + branch
+            var refPath = Program.commonDir() + "/refs/heads/" + branch
             Repository.ensureParentDir(refPath)
             (sha + "\n").writeToFile(refPath)
         }
@@ -2376,7 +2396,7 @@ namespace AmGit
                     i = i + 1UI
                 }
 
-                var head = HeadReader.read(".git")
+                var head = HeadReader.read(Program.gitDir())
                 if (head.commitSha == null) {
                     "reset: current branch has no commits - nothing to reset".println()
                     return
@@ -2389,7 +2409,7 @@ namespace AmGit
                     ("reset: cannot resolve '" + target + "'").println()
                     return
                 }
-                var store = new ObjectStore(".git")
+                var store = new ObjectStore(Program.gitDir())
                 if (!store.has(targetSha)) {
                     ("reset: " + targetSha + " is not in the object store").println()
                     return
@@ -2406,9 +2426,9 @@ namespace AmGit
                 // status / log reflects the move even if the working-
                 // tree write fails partway through.
                 if (head.detached) {
-                    (targetSha + "\n").writeToFile(".git/HEAD")
+                    (targetSha + "\n").writeToFile(Program.gitDir() + "/HEAD")
                 } else {
-                    var refPath = ".git/refs/heads/" + head.branch
+                    var refPath = Program.commonDir() + "/refs/heads/" + head.branch
                     Repository.ensureParentDir(refPath)
                     (targetSha + "\n").writeToFile(refPath)
                 }
@@ -2422,18 +2442,18 @@ namespace AmGit
                 // from <target>'s tree. --hard additionally
                 // materialises the tree into the working tree.
                 if (mode == "hard") {
-                    CheckoutClient.applyCommitToWorkTree(".git", ".", targetSha, false)
+                    CheckoutClient.applyCommitToWorkTree(Program.gitDir(), ".", targetSha, false)
                 } else {
                     // mixed: index only.
                     var rootTreeSha = WorkTree.extractRootTreeSha(obj.content)
-                    GitIndex.fromTree(rootTreeSha, store).write(".git")
+                    GitIndex.fromTree(rootTreeSha, store).write(Program.gitDir())
                 }
 
                 // Clear any in-progress merge state - a reset is the
                 // canonical way to abandon one (matches `git merge
                 // --abort` semantics when the target is HEAD).
-                Program.deleteIfExists(".git/MERGE_HEAD")
-                Program.deleteIfExists(".git/MERGE_MSG")
+                Program.deleteIfExists(Program.gitDir() + "/MERGE_HEAD")
+                Program.deleteIfExists(Program.gitDir() + "/MERGE_MSG")
 
                 Program.printResetSummary(head, targetSha, mode)
             } catch (ex: Exception) {
@@ -2501,16 +2521,16 @@ namespace AmGit
                     return
                 }
 
-                var store = new ObjectStore(".git")
+                var store = new ObjectStore(Program.gitDir())
                 var left = new HashMap<String, String>()
                 var right = new HashMap<String, String>()
                 var rightIsWorkTree = false
 
                 if (staged) {
                     // index vs HEAD: left = HEAD's tree, right = index.
-                    var head = HeadReader.read(".git")
+                    var head = HeadReader.read(Program.gitDir())
                     left = DiffCommand.snapshotCommit(head.commitSha, store)
-                    right = DiffCommand.snapshotIndex(".git")
+                    right = DiffCommand.snapshotIndex(Program.gitDir())
                     if (positional.getSize() > 0) {
                         "diff: --staged ignores any positional commit args".println()
                     }
@@ -2536,12 +2556,12 @@ namespace AmGit
                         return
                     }
                     left = DiffCommand.snapshotCommit(cSha, store)
-                    right = DiffCommand.snapshotWorkTree(".", ".git")
+                    right = DiffCommand.snapshotWorkTree(".", Program.gitDir())
                     rightIsWorkTree = true
                 } else {
                     // No args: worktree vs index.
-                    left = DiffCommand.snapshotIndex(".git")
-                    right = DiffCommand.snapshotWorkTree(".", ".git")
+                    left = DiffCommand.snapshotIndex(Program.gitDir())
+                    right = DiffCommand.snapshotWorkTree(".", Program.gitDir())
                     rightIsWorkTree = true
                 }
 
@@ -2612,7 +2632,7 @@ namespace AmGit
                     ("show: cannot resolve '" + commitish + "'").println()
                     return
                 }
-                var store = new ObjectStore(".git")
+                var store = new ObjectStore(Program.gitDir())
                 if (!store.has(sha)) {
                     ("show: " + sha + " not in object store").println()
                     return
@@ -2697,7 +2717,7 @@ namespace AmGit
                 ("show: cannot resolve '" + commitish + "'").println()
                 return
             }
-            var store = new ObjectStore(".git")
+            var store = new ObjectStore(Program.gitDir())
             if (!store.has(sha)) {
                 ("show: " + sha + " not in object store").println()
                 return
@@ -2730,7 +2750,7 @@ namespace AmGit
                     }
                     i++
                 }
-                var idx = GitIndex.read(".git")
+                var idx = GitIndex.read(Program.gitDir())
                 var j = 0
                 while (j < idx.entries.getSize()) {
                     var e = idx.entries.get(j)
@@ -2739,7 +2759,7 @@ namespace AmGit
                     j = j + 1
                 }
                 if (rewrite) {
-                    idx.write(".git")
+                    idx.write(Program.gitDir())
                     "(index rewritten)".println()
                 }
             } catch (ex: Exception) {
@@ -2773,7 +2793,7 @@ namespace AmGit
             // current HEAD points at - `HeadReader` already handles
             // detached / symbolic / unborn cases.
             if (s == "HEAD") {
-                var head = HeadReader.read(".git")
+                var head = HeadReader.read(Program.gitDir())
                 return head.commitSha
             }
             // Try local branches first, then tags, then remotes -
@@ -2781,23 +2801,23 @@ namespace AmGit
             // files and packed-refs (real-git clones keep most refs
             // packed), and annotated tags peel through their tag
             // object down to the commit.
-            var branchSha = RefStore.resolve(".git", "refs/heads/" + s)
+            var branchSha = RefStore.resolve(Program.gitDir(), "refs/heads/" + s)
             if (branchSha != null) {
                 return branchSha
             }
-            var tagSha = RefStore.resolve(".git", "refs/tags/" + s)
+            var tagSha = RefStore.resolve(Program.gitDir(), "refs/tags/" + s)
             if (tagSha != null) {
                 // Annotated tag: prefer the packed `^peel` line (free),
                 // else follow the tag object chain to its commit.
-                var peeled = RefStore.peeledFor(".git", "refs/tags/" + s)
+                var peeled = RefStore.peeledFor(Program.gitDir(), "refs/tags/" + s)
                 if (peeled != null) {
                     return peeled
                 }
-                var store = new ObjectStore(".git")
+                var store = new ObjectStore(Program.gitDir())
                 return RefStore.peelToCommit(store, tagSha)
             }
             // `origin/main` style remote-tracking names.
-            var remoteSha = RefStore.resolve(".git", "refs/remotes/" + s)
+            var remoteSha = RefStore.resolve(Program.gitDir(), "refs/remotes/" + s)
             if (remoteSha != null) {
                 return remoteSha
             }
@@ -2854,7 +2874,7 @@ namespace AmGit
                     paths.add(args[i.toUInt()])
                     i = i + 1
                 }
-                var n = AddCommand.run(".git", ".", paths)
+                var n = AddCommand.run(Program.gitDir(), ".", paths)
                 ("Staged " + n.toString() + " file(s)").println()
             } catch (ex: Exception) {
                 "add: failed".println()
@@ -2873,11 +2893,11 @@ namespace AmGit
                     "usage: am-git unstage <path>...".println()
                     return
                 }
-                var idx = GitIndex.read(".git")
-                var head = HeadReader.read(".git")
+                var idx = GitIndex.read(Program.gitDir())
+                var head = HeadReader.read(Program.gitDir())
                 var headIdx: GitIndex? = null
                 if (head.commitSha != null) {
-                    var store = new ObjectStore(".git")
+                    var store = new ObjectStore(Program.gitDir())
                     var obj = store.read(head.commitSha)
                     var rootTree = WorkTree.extractRootTreeSha(obj.content)
                     headIdx = GitIndex.fromTree(rootTree, store)
@@ -2900,7 +2920,7 @@ namespace AmGit
                     count = count + 1
                     i = i + 1UI
                 }
-                idx.write(".git")
+                idx.write(Program.gitDir())
                 ("Unstaged " + count.toString() + " path(s)").println()
             } catch (ex: Exception) {
                 "unstage: failed".println()
@@ -2927,7 +2947,7 @@ namespace AmGit
                     "usage: am-git rm [--cached] <path>...".println()
                     return
                 }
-                var idx = GitIndex.read(".git")
+                var idx = GitIndex.read(Program.gitDir())
                 var removed = 0
                 var i = firstPath
                 while (i < args.length().toInt()) {
@@ -2948,7 +2968,7 @@ namespace AmGit
                     }
                     i = i + 1
                 }
-                idx.write(".git")
+                idx.write(Program.gitDir())
                 ("Removed " + removed.toString() + " entry/entries from the index").println()
             } catch (ex: Exception) {
                 ("rm: " + ex.message).println()
@@ -3001,7 +3021,7 @@ namespace AmGit
                     return
                 }
 
-                var idx = GitIndex.read(".git")
+                var idx = GitIndex.read(Program.gitDir())
                 var srcEntry = idx.findByPath(src)
                 if (srcEntry == null) {
                     ("mv: '" + src + "' is not tracked").println()
@@ -3040,7 +3060,7 @@ namespace AmGit
                     srcEntry.uid, srcEntry.gid,
                     0US)  // flags reset - namelen is set on write
                 idx.upsert(moved)
-                idx.write(".git")
+                idx.write(Program.gitDir())
                 ("Renamed " + src + " -> " + dst).println()
             } catch (ex: Exception) {
                 ("mv: " + ex.message).println()
@@ -3117,7 +3137,7 @@ namespace AmGit
                     }
                     i = i + 1
                 }
-                StatusReport.run(".git", ".", porcelain)
+                StatusReport.run(Program.gitDir(), ".", porcelain)
             } catch (ex: Exception) {
                 ("status: " + ex.message).println()
             }
@@ -3133,7 +3153,7 @@ namespace AmGit
                     "usage: am-git checkout <branch>".println()
                     return
                 }
-                CheckoutClient.checkout(".git", ".", args[1UI])
+                CheckoutClient.checkout(Program.gitDir(), ".", args[1UI])
             } catch (ex: Exception) {
                 ("checkout: " + ex.message).println()
             }
@@ -3165,15 +3185,15 @@ namespace AmGit
         }
 
         private static fun listBranches() {
-            var head = HeadReader.read(".git")
+            var head = HeadReader.read(Program.gitDir())
             var currentBranch: String? = null
             if (!head.detached) {
                 currentBranch = head.branch
             }
-            var names = Program.collectBranchNames(".git/refs/heads", "")
+            var names = Program.collectBranchNames(Program.commonDir() + "/refs/heads", "")
             // Union in packed-only branches (real-git clones keep refs
             // in packed-refs; loose-shadowed names are already skipped).
-            var packedB = RefStore.packedNamesUnder(".git", "refs/heads/")
+            var packedB = RefStore.packedNamesUnder(Program.gitDir(), "refs/heads/")
             var pb = 0
             while (pb < packedB.getSize()) {
                 names.add(packedB.get(pb))
@@ -3221,12 +3241,12 @@ namespace AmGit
         }
 
         private static fun createBranch(name: String) {
-            var head = HeadReader.read(".git")
+            var head = HeadReader.read(Program.gitDir())
             if (head.commitSha == null) {
                 "branch: HEAD has no commit yet - create one first".println()
                 return
             }
-            var path = ".git/refs/heads/" + name
+            var path = Program.commonDir() + "/refs/heads/" + name
             var existing = new File(path)
             if (existing.exists()) {
                 ("branch: refs/heads/" + name + " already exists").println()
@@ -3238,12 +3258,12 @@ namespace AmGit
         }
 
         private static fun deleteBranch(name: String) {
-            var head = HeadReader.read(".git")
+            var head = HeadReader.read(Program.gitDir())
             if (!head.detached && head.branch == name) {
                 ("branch: refusing to delete current branch '" + name + "'").println()
                 return
             }
-            var path = ".git/refs/heads/" + name
+            var path = Program.commonDir() + "/refs/heads/" + name
             var f = new File(path)
             if (!f.exists()) {
                 ("branch: refs/heads/" + name + " does not exist").println()
@@ -3298,9 +3318,9 @@ namespace AmGit
         private static fun listTags() {
             // collectBranchNames is name-misleading but
             // implementation-neutral - it just walks any refs/* dir.
-            var names = Program.collectBranchNames(".git/refs/tags", "")
+            var names = Program.collectBranchNames(Program.commonDir() + "/refs/tags", "")
             // Union in packed-only tags (real-git clones pack them all).
-            var packedT = RefStore.packedNamesUnder(".git", "refs/tags/")
+            var packedT = RefStore.packedNamesUnder(Program.gitDir(), "refs/tags/")
             var pt = 0
             while (pt < packedT.getSize()) {
                 names.add(packedT.get(pt))
@@ -3364,7 +3384,7 @@ namespace AmGit
         private static fun createTag(name: String, commitish: String?) {
             var targetSha: String? = null
             if (commitish == null) {
-                var head = HeadReader.read(".git")
+                var head = HeadReader.read(Program.gitDir())
                 if (head.commitSha == null) {
                     "tag: HEAD has no commit yet - create one first".println()
                     return
@@ -3376,13 +3396,13 @@ namespace AmGit
                     ("tag: cannot resolve '" + commitish + "'").println()
                     return
                 }
-                var store = new ObjectStore(".git")
+                var store = new ObjectStore(Program.gitDir())
                 if (!store.has(targetSha)) {
                     ("tag: " + targetSha + " is not in the object store").println()
                     return
                 }
             }
-            var path = ".git/refs/tags/" + name
+            var path = Program.commonDir() + "/refs/tags/" + name
             var existing = new File(path)
             if (existing.exists()) {
                 ("tag: refs/tags/" + name + " already exists").println()
@@ -3394,7 +3414,7 @@ namespace AmGit
         }
 
         private static fun deleteTag(name: String) {
-            var path = ".git/refs/tags/" + name
+            var path = Program.commonDir() + "/refs/tags/" + name
             var f = new File(path)
             if (!f.exists()) {
                 ("tag: refs/tags/" + name + " does not exist").println()
@@ -3438,7 +3458,7 @@ namespace AmGit
 
                 var start: String? = null
                 if (startRef == null) {
-                    var head = HeadReader.read(".git")
+                    var head = HeadReader.read(Program.gitDir())
                     start = head.commitSha
                 } else {
                     start = Program.resolveCommitish(startRef)
@@ -3451,7 +3471,7 @@ namespace AmGit
                     "log: no commits yet".println()
                     return
                 }
-                var store = new ObjectStore(".git")
+                var store = new ObjectStore(Program.gitDir())
                 var current = start
                 var shown = 0
                 loop {
@@ -3548,7 +3568,7 @@ namespace AmGit
                         return
                     }
                 }
-                FetchClient.fetch(".git", remoteUrl, remoteName)
+                FetchClient.fetch(Program.gitDir(), remoteUrl, remoteName)
             } catch (ex: Exception) {
                 ("fetch: " + ex.message).println()
             }
@@ -3575,7 +3595,7 @@ namespace AmGit
         }
 
         private static fun urlFromConfig(remoteName: String): String {
-            var cfg = GitConfig.read(".git")
+            var cfg = GitConfig.read(Program.gitDir())
             return cfg.getRemoteUrl(remoteName)
         }
 
@@ -3625,7 +3645,7 @@ namespace AmGit
                     }
                 }
                 if (branch == null) {
-                    var head = HeadReader.read(".git")
+                    var head = HeadReader.read(Program.gitDir())
                     if (head.detached) {
                         "push: HEAD is detached - pass <branch> explicitly".println()
                         return
@@ -3633,7 +3653,7 @@ namespace AmGit
                     branch = head.branch
                 }
 
-                var ok = PushClient.push(".git", remoteUrl, branch, force)
+                var ok = PushClient.push(Program.gitDir(), remoteUrl, branch, force)
                 if (ok) {
                     "Push complete.".println()
                 } else {
