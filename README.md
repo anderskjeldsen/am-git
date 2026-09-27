@@ -184,6 +184,7 @@ Run `am-git help` for the full list with one-line descriptions.
 | `revert <commit>` | Commit the inverse of a commit; `--continue` / `--abort`. |
 | `diff [--staged] [--name-only \| --name-status] [<a> [<b>]]` | Unified diff. |
 | `show [<commit>]` | Commit metadata + path-level changes. |
+| `show --text-blob <commit>:<path>` | Text-capture protocol: `text` followed by blob contents, `binary`, or `missing`. Errors start with `show:`. |
 | `commit -m <msg>` | Commit the staged index on top of HEAD. |
 | `head` / `whoami` | Resolved HEAD / commit identity. |
 | `cat-file (-p\|-t) <sha>` | Object content / type. |
