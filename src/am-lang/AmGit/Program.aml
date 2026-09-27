@@ -3118,14 +3118,35 @@ namespace AmGit
             }
         }
 
-        // `am-git checkout <branch>` - repoint HEAD at refs/heads/<branch>
-        // and bring the working tree in line with that branch's tip.
-        // Refuses if the branch doesn't exist locally; doesn't detect
-        // dirty files (clobbers them).
+        // Branch checkout switches HEAD; explicit path checkout does not.
+        // In particular `checkout HEAD -- file` is discard, not a request
+        // to switch branches. Keep it separate from CheckoutClient's guard.
         private static fun runCheckout(args: String[]) {
             try {
-                if (args.length() != 2UI) {
-                    "usage: am-git checkout <branch>".println()
+                var firstPath = 0
+                var source: String? = null
+                if (args.length() >= 3UI && args[1UI] == "--") {
+                    firstPath = 2
+                } else if (args.length() >= 4UI && args[2UI] == "--") {
+                    source = Program.resolveCommitish(args[1UI])
+                    if (source == null) {
+                        throw new Exception("cannot resolve checkout source: " + args[1UI])
+                    }
+                    firstPath = 3
+                }
+                if (firstPath > 0) {
+                    var paths = new List<String>()
+                    var i = firstPath
+                    while (i < args.length().toInt()) {
+                        paths.add(args[i.toUInt()])
+                        i = i + 1
+                    }
+                    var count = FileCheckout.restore(".git", ".", source, paths)
+                    ("Restored " + count.toString() + " file(s)").println()
+                    return
+                }
+                if (args.length() != 2UI || args[1UI] == "--") {
+                    "usage: am-git checkout <branch> | [<commit>] -- <file>...".println()
                     return
                 }
                 CheckoutClient.checkout(".git", ".", args[1UI])
@@ -3683,6 +3704,7 @@ namespace AmGit
             "  branch [<name> | -d <name>]         List / create / delete local branches".println()
             "  tag [<name> [<commit>]] | -d <name> List / create (lightweight) / delete tags".println()
             "  checkout <branch>                   Switch HEAD and the working tree to a branch".println()
+            "  checkout [<commit>] -- <file>...    Restore selected files; with commit, also restore index".println()
             "  merge <branch>                      Merge <branch> into the current branch".println()
             "  merge-base <a> <b>                  Print the lowest common ancestor of two commits".println()
             "  reset [--soft|--mixed|--hard]       Move HEAD (and optionally index / worktree) to <commit>".println()

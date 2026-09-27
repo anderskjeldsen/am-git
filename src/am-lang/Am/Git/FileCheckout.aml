@@ -1,0 +1,76 @@
+namespace Am.Git {
+    // Path checkout is deliberately separate from branch checkout: it must
+    // never move HEAD, rewrite other index entries, or prune unrelated files.
+    // An explicit commit restores BOTH index and worktree (the IDE's discard
+    // action). With no commit, restore the worktree from the existing index.
+    class FileCheckout {
+        import Am.Lang
+        import Am.Collections
+        import Am.IO
+
+        static fun restore(gitDir: String, workTree: String, commitSha: String?, paths: List<String>): Int {
+            var store = new ObjectStore(gitDir)
+            var index = GitIndex.read(gitDir)
+            var source = index
+            if (commitSha != null) {
+                var commit = store.read(commitSha)
+                if (commit.typeCode != 1) { throw new Exception("source is not a commit") }
+                source = GitIndex.fromTree(WorkTree.extractRootTreeSha(commit.content), store)
+            }
+            var entries = new List<IndexEntry>()
+            var contents = new List<PackObject>()
+            var destinations = new List<String>()
+            // Preflight every requested file and object before overwriting any
+            // local data. Unknown paths are errors, never a branch fallback.
+            each(paths, raw) {
+                var path = Repository.normalizePath(raw)
+                if (path.length() == 0 || path.startsWith("/") || path.indexOf(":") >= 0) {
+                    throw new Exception("expected a repository-relative file path: " + raw)
+                }
+                var parts = path.split(47US)
+                var parent = Repository.normalizePath(workTree)
+                each(parts, part) {
+                    if (part == ".." || part == ".git" || part.length() == 0) {
+                        throw new Exception("invalid checkout path: " + raw)
+                    }
+                    if (parent.length() > 0 && !parent.endsWith(":")) { parent = parent + "/" }
+                    parent = parent + part
+                    var component = new File(parent)
+                    if (component.isSymbolicLink()) {
+                        throw new Exception("refusing to write through a symbolic link: " + parent)
+                    }
+                }
+                var entry = source.findByPath(path)
+                if (entry == null) { throw new Exception("path not found in checkout source: " + path) }
+                // Same regular-file mode support as the existing WorkTree
+                // writer. Do not silently materialise symlinks/submodules as
+                // regular files or follow an existing directory in their place.
+                if (entry.mode != 33188UI && entry.mode != 33261UI) {
+                    throw new Exception("file mode not supported for path checkout: " + path)
+                }
+                var destination = new File(parent)
+                if (destination.exists() && destination.isDirectory()) {
+                    throw new Exception("checkout target is a directory: " + path)
+                }
+                var blob = store.read(entry.sha)
+                if (blob.typeCode != 3) { throw new Exception("checkout source is not a blob: " + path) }
+                entries.add(entry)
+                contents.add(blob)
+                destinations.add(parent)
+            }
+            var i = 0
+            while (i < entries.getSize()) {
+                var entry = entries.get(i)
+                Repository.writeBytes(destinations.get(i), contents.get(i).content)
+                if (commitSha != null) {
+                    index.clearConflictStages(entry.path)
+                    index.removeByPath(entry.path)
+                    index.upsert(entry)
+                }
+                i = i + 1
+            }
+            if (commitSha != null) { index.write(gitDir) }
+            return entries.getSize()
+        }
+    }
+}

@@ -174,6 +174,8 @@ Run `am-git help` for the full list with one-line descriptions.
 | `branch [<name> \| -d <name>]` | List / create / delete local branches. |
 | `tag [<name> [<commit>]] \| -d <name>` | List / create (lightweight) / delete tags. |
 | `checkout <branch>` | Switch HEAD + working tree. |
+| `checkout HEAD -- <file>...` | Discard selected regular files' staged and local changes, restoring HEAD without switching branches. |
+| `checkout -- <file>...` | Restore selected regular files from the index, preserving staged changes. |
 | `merge <branch>` | Merge into the current branch (ff / merge commit / conflicts). |
 | `merge-base <a> <b>` | Print the lowest common ancestor. |
 | `reset [--soft\|--mixed\|--hard] [<commit>]` | Move HEAD (and index / worktree). |
