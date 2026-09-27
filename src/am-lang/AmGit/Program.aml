@@ -2584,6 +2584,10 @@ namespace AmGit
         // this commit touch?" from the command line.
         private static fun runShow(args: String[]) {
             try {
+                if (args.length() == 3UI && args[1UI].equals("--text-blob")) {
+                    Program.showTextBlob(args[2UI])
+                    return
+                }
                 if (args.length() > 2UI) {
                     "usage: am-git show [<commit>[:<path>]]".println()
                     return
@@ -2703,6 +2707,26 @@ namespace AmGit
                 return
             }
             var blob = store.read(snapshot.get(path))
+            String.fromBytes(blob.content, "UTF-8").print()
+        }
+
+        // Machine-readable text capture for IDE historical diffs. The first
+        // line is a status, so an empty blob and source beginning "show:" or
+        // "fatal:" cannot be confused with a failed read. Check bytes BEFORE
+        // String/stdout conversion, which can truncate at NUL on this runtime.
+        private static fun showTextBlob(spec: String) {
+            var colon = spec.indexOf(":")
+            if (colon <= 0) { "show: expected <commit>:<path>".println() return }
+            var sha = Program.resolveCommitish(spec.substring(0UI, colon.toUInt()))
+            if (sha == null) { "show: cannot resolve commit".println() return }
+            var path = spec.substringToEnd((colon + 1).toUInt())
+            var store = new ObjectStore(".git")
+            var snapshot = DiffCommand.snapshotCommit(sha, store)
+            if (!snapshot.containsKey(path)) { "missing".println() return }
+            var blob = store.read(snapshot.get(path))
+            if (blob.typeCode != 3) { "show: not a blob".println() return }
+            if (LineDiff.isBinary(blob.content)) { "binary".println() return }
+            "text".println()
             String.fromBytes(blob.content, "UTF-8").print()
         }
 
